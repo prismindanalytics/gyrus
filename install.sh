@@ -301,8 +301,8 @@ check_source() {
   local path="$2"
   if [ -d "$path" ]; then
     local count
-    count=$(find "$path" -type f 2>/dev/null | head -500 | wc -l | tr -d ' ')
-    if [ "$count" -gt 0 ]; then
+    count=$(find "$path" -type f 2>/dev/null | head -500 | wc -l | tr -d ' ' || true)
+    if [ "$count" -gt 0 ] 2>/dev/null; then
       FOUND_INDEX=$((FOUND_INDEX + 1))
       FOUND_TOOLS+=("$name")
       FOUND_COUNTS+=("$count")
@@ -346,7 +346,7 @@ for d in "$HOME/Documents" "$HOME/Projects" "$HOME/repos" "$HOME/code" "$HOME/de
   [ -d "$d" ] && AIDER_DIRS="$AIDER_DIRS $d"
 done
 if [ -n "$AIDER_DIRS" ]; then
-  AIDER_COUNT=$(find $AIDER_DIRS -maxdepth 4 -name ".aider.chat.history.md" -type f 2>/dev/null | sort -u | wc -l | tr -d ' ')
+  AIDER_COUNT=$(find $AIDER_DIRS -maxdepth 4 -name ".aider.chat.history.md" -type f 2>/dev/null | sort -u | wc -l | tr -d ' ' || echo "0")
 else
   AIDER_COUNT=0
 fi
@@ -455,10 +455,10 @@ fi
 # ─── The Wow Moment: First Run ───
 echo ""
 echo -e "${BOLD}  Ready to build your knowledge base?${NC}"
-echo -e "  ${DIM}Gyrus will scan your sessions, extract insights, and build${NC}"
-echo -e "  ${DIM}organized wiki pages per project. Takes a few minutes.${NC}"
+echo -e "  ${DIM}Gyrus will show a cost and time estimate first.${NC}"
+echo -e "  ${DIM}You can choose to run now and watch, run in background, or cancel.${NC}"
 echo ""
-read -r -p "  Build now? [Y/n]: " DO_BUILD < /dev/tty
+read -r -p "  Start? [Y/n]: " DO_BUILD < /dev/tty
 DO_BUILD="${DO_BUILD:-Y}"
 
 set -a; source "$ENV_FILE"; set +a
