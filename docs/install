@@ -135,9 +135,10 @@ else
   print_ok "Downloaded to $GYRUS_DIR"
 fi
 
-# Create `gyrus` CLI wrapper in PATH
+# Create `gyrus` CLI command
 GYRUS_BIN="$HOME/.local/bin/gyrus"
 mkdir -p "$(dirname "$GYRUS_BIN")"
+export PATH="$HOME/.local/bin:$PATH"  # ensure it's in PATH for this session
 cat > "$GYRUS_BIN" <<'WRAPPER'
 #!/bin/bash
 # Gyrus CLI — knowledge base for AI coding tools
@@ -182,6 +183,11 @@ WRAPPER
 chmod +x "$GYRUS_BIN"
 print_ok "Installed 'gyrus' command to $GYRUS_BIN"
 echo -e "  ${DIM}Usage: gyrus compare, gyrus update, gyrus digest, gyrus help${NC}"
+if ! echo "$PATH" | grep -q "$HOME/.local/bin"; then
+  echo ""
+  echo -e "  ${YELLOW}!${NC} Add to your shell profile to use 'gyrus' from anywhere:"
+  echo -e "  ${DIM}  echo 'export PATH=\"\$HOME/.local/bin:\$PATH\"' >> ~/.zshrc${NC}"
+fi
 
 # ─── Step 4: API keys ───
 print_step "Step 4: API keys"
@@ -289,21 +295,68 @@ install_skill() {
 # Use REPO_URL for downloads (set during download path, may not exist for local installs)
 SKILL_REPO_URL="https://raw.githubusercontent.com/prismindanalytics/gyrus/main"
 
-# Claude Code slash command
+# Detect available tools and offer skill installation
+SKILL_OPTIONS=()
+SKILL_LABELS=()
+SKILL_INSTALLED=()
+
 if [ -d "$HOME/.claude" ]; then
-  CLAUDE_CMD_DIR="$HOME/.claude/commands"
-  install_skill "skills/claude-code/gyrus.md" "$CLAUDE_CMD_DIR/gyrus.md" "Claude Code: /gyrus command installed"
+  SKILL_OPTIONS+=("claude-code")
+  SKILL_LABELS+=("Claude Code /gyrus slash command")
 fi
-
-# Codex
-if [ -d "$HOME/.codex" ]; then
-  install_skill "skills/codex/gyrus-instructions.md" "$GYRUS_DIR/skills/codex/gyrus-instructions.md" "Codex: instructions saved"
+if [ -d "$HOME/.codex" ] || [ -d "$HOME/.codex/sessions" ]; then
+  SKILL_OPTIONS+=("codex")
+  SKILL_LABELS+=("Codex AGENTS.md instructions")
 fi
-
-# Cowork
 COWORK_SKILLS_DIR="$HOME/Library/Application Support/Claude/local-agent-mode-sessions"
 if [ -d "$COWORK_SKILLS_DIR" ] || [ -d "$HOME/.config/Claude/local-agent-mode-sessions" ]; then
-  install_skill "skills/cowork/gyrus/SKILL.md" "$GYRUS_DIR/skills/cowork/gyrus/SKILL.md" "Cowork: skill installed"
+  SKILL_OPTIONS+=("cowork")
+  SKILL_LABELS+=("Cowork /gyrus skill")
+fi
+
+if [ ${#SKILL_OPTIONS[@]} -gt 0 ]; then
+  echo ""
+  echo -e "  ${DIM}Detected AI tools. Skills let your tools query the Gyrus knowledge base.${NC}"
+  echo ""
+  for i in "${!SKILL_OPTIONS[@]}"; do
+    echo -e "  ${GREEN}[$((i+1))]${NC} ${SKILL_LABELS[$i]}"
+  done
+  echo ""
+  echo -e "  ${DIM}Press Enter to install all, or type numbers to skip (e.g., '2'):${NC}"
+  read -r -p "  Skip (or Enter for all): " SKILL_SKIP < /dev/tty
+
+  for i in "${!SKILL_OPTIONS[@]}"; do
+    # Check if this index should be skipped
+    skip=false
+    if [ -n "${SKILL_SKIP:-}" ]; then
+      for num in $SKILL_SKIP; do
+        if [ "$((num-1))" -eq "$i" ]; then
+          skip=true
+          break
+        fi
+      done
+    fi
+
+    if [ "$skip" = false ]; then
+      case "${SKILL_OPTIONS[$i]}" in
+        claude-code)
+          CLAUDE_CMD_DIR="$HOME/.claude/commands"
+          install_skill "skills/claude-code/gyrus.md" "$CLAUDE_CMD_DIR/gyrus.md" "Claude Code: /gyrus command installed"
+          ;;
+        codex)
+          install_skill "skills/codex/gyrus-instructions.md" "$GYRUS_DIR/skills/codex/gyrus-instructions.md" "Codex: instructions saved"
+          echo -e "  ${DIM}  Add to your AGENTS.md: \"Read ~/.gyrus/skills/codex/gyrus-instructions.md for project context\"${NC}"
+          ;;
+        cowork)
+          install_skill "skills/cowork/gyrus/SKILL.md" "$GYRUS_DIR/skills/cowork/gyrus/SKILL.md" "Cowork: /gyrus skill installed"
+          ;;
+      esac
+    else
+      echo -e "  ${DIM}⊘ Skipped: ${SKILL_LABELS[$i]}${NC}"
+    fi
+  done
+else
+  echo -e "  ${DIM}No AI tools detected — skills will be installed when you install tools later.${NC}"
 fi
 
 # ─── Step 6: Cron frequency ───
