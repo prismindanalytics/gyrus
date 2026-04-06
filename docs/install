@@ -57,7 +57,7 @@ fi
 
 # Ensure Python is available via uv (downloads if needed, no system modification)
 echo -e "  ${DIM}Ensuring Python $UV_PYTHON is available...${NC}"
-uv python install "$UV_PYTHON" 2>/dev/null || true
+"$UV" python install "$UV_PYTHON" 2>/dev/null || true
 print_ok "Python $UV_PYTHON ready (managed by uv — your system Python is untouched)"
 
 # ─── Step 2: Storage location ───
@@ -418,12 +418,12 @@ if [ -f "$CONFIG_FILE" ]; then
   else
     EXCLUDE_JSON="[]"
   fi
-  uv run --python "$UV_PYTHON" -c "
+  "$UV" run --python "$UV_PYTHON" -c "
 import json
 with open('$CONFIG_FILE') as f: cfg = json.load(f)
 cfg['excluded_tools'] = $EXCLUDE_JSON
 with open('$CONFIG_FILE', 'w') as f: json.dump(cfg, f, indent=2)
-" 2>/dev/null
+" 2>/dev/null || true
   if [ "${#EXCLUDED_KEYS[@]}" -gt 0 ]; then
     print_ok "Saved exclusions to config.json"
   else
@@ -451,7 +451,7 @@ if [ "$TOTAL_FOUND" -gt 0 ]; then
     [ -n "${ANTHROPIC_API_KEY:-}" ] && KEY_FLAGS="$KEY_FLAGS --anthropic-key $ANTHROPIC_API_KEY"
     [ -n "${OPENAI_API_KEY:-}" ] && KEY_FLAGS="$KEY_FLAGS --openai-key $OPENAI_API_KEY"
     [ -n "${GEMINI_API_KEY:-}" ] && KEY_FLAGS="$KEY_FLAGS --google-key $GEMINI_API_KEY"
-    uv run --python "$UV_PYTHON" "$INGEST_SCRIPT" --compare-models $KEY_FLAGS < /dev/tty 2>&1 || true
+    "$UV" run --python "$UV_PYTHON" "$INGEST_SCRIPT" --compare-models $KEY_FLAGS < /dev/tty 2>&1 || true
   else
     echo -e "  ${DIM}Skipped. Run later with: cd $GYRUS_DIR && uv run ingest.py --compare-models${NC}"
   fi
@@ -477,7 +477,7 @@ if [[ "$DO_BUILD" =~ ^[Yy] ]]; then
   [ -n "${ANTHROPIC_API_KEY:-}" ] && KEY_FLAGS="$KEY_FLAGS --anthropic-key $ANTHROPIC_API_KEY"
   [ -n "${OPENAI_API_KEY:-}" ] && KEY_FLAGS="$KEY_FLAGS --openai-key $OPENAI_API_KEY"
   [ -n "${GEMINI_API_KEY:-}" ] && KEY_FLAGS="$KEY_FLAGS --google-key $GEMINI_API_KEY"
-  uv run --python "$UV_PYTHON" "$INGEST_SCRIPT" $KEY_FLAGS < /dev/tty 2>&1 || true
+  "$UV" run --python "$UV_PYTHON" "$INGEST_SCRIPT" $KEY_FLAGS < /dev/tty 2>&1 || true
   echo "─────────────────────────────────────────"
 
   # Show the wow result

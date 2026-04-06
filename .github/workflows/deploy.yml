@@ -6,6 +6,7 @@ on:
     paths:
       - 'docs/**'
       - 'install.sh'
+      - 'uninstall.sh'
 
 jobs:
   deploy:
@@ -15,8 +16,10 @@ jobs:
       deployments: write
     steps:
       - uses: actions/checkout@v4
-      - name: Copy installer to docs
-        run: cp install.sh docs/install
+      - name: Copy scripts to docs
+        run: |
+          cp install.sh docs/install
+          cp uninstall.sh docs/uninstall
       - uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}

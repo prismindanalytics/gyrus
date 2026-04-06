@@ -788,7 +788,7 @@ Done. 269 sessions, 1226 thoughts, 31 project pages.
             <svg class="faq-chevron w-5 h-5 text-surface-700 shrink-0 transition-transform duration-200" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"></polyline></svg>
           </button>
           <div class="faq-answer px-6">
-            <p class="text-sm text-surface-800 pb-4 leading-relaxed">Three commands: remove the cron job (<code class="font-mono text-xs bg-surface-300 px-1.5 py-0.5 rounded">crontab -l | grep -v ingest.py | crontab -</code>), remove the Claude Code skill (<code class="font-mono text-xs bg-surface-300 px-1.5 py-0.5 rounded">rm ~/.claude/commands/gyrus.md</code>), and delete the directory (<code class="font-mono text-xs bg-surface-300 px-1.5 py-0.5 rounded">rm -rf ~/.gyrus</code>). Back up your knowledge base first if you want to keep it.</p>
+            <p class="text-sm text-surface-800 pb-4 leading-relaxed">One command: <code class="font-mono text-xs bg-surface-300 px-1.5 py-0.5 rounded">curl -fsSL https://gyrus.sh/uninstall | bash</code>. It removes the cron job, Claude Code skill, and <code class="font-mono text-xs">~/.gyrus/</code> directory. It will warn you to back up your knowledge base first.</p>
           </div>
         </div>
       </div>
