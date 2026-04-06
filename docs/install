@@ -299,9 +299,14 @@ FOUND_INDEX=0
 check_source() {
   local name="$1"
   local path="$2"
+  local pattern="${3:---}"  # optional file pattern
   if [ -d "$path" ]; then
     local count label
-    count=$(find "$path" -type f 2>/dev/null | wc -l | tr -d ' ' || echo "0")
+    if [ "$pattern" = "--" ]; then
+      count=$(find "$path" -maxdepth 3 -type d 2>/dev/null | wc -l | tr -d ' ' || echo "0")
+    else
+      count=$(find "$path" -maxdepth 4 -name "$pattern" -type f 2>/dev/null | wc -l | tr -d ' ' || echo "0")
+    fi
     if [ "$count" -gt 0 ] 2>/dev/null; then
       FOUND_INDEX=$((FOUND_INDEX + 1))
       FOUND_TOOLS+=("$name")
@@ -316,15 +321,16 @@ check_source() {
   fi
 }
 
-check_source "Claude Code" "$HOME/.claude/projects"
+check_source "Claude Code" "$HOME/.claude/projects" "*.jsonl"
 # Cowork: macOS vs Linux
 if [ -d "$HOME/Library/Application Support/Claude/local-agent-mode-sessions" ]; then
   check_source "Claude Cowork" "$HOME/Library/Application Support/Claude/local-agent-mode-sessions"
 elif [ -d "$HOME/.config/Claude/local-agent-mode-sessions" ]; then
   check_source "Claude Cowork" "$HOME/.config/Claude/local-agent-mode-sessions"
 fi
+# Antigravity sessions are directories, not files
 check_source "Antigravity / Gemini" "$HOME/.gemini/antigravity/brain"
-check_source "Codex" "$HOME/.codex/sessions"
+check_source "Codex" "$HOME/.codex/sessions" "*.jsonl"
 # Cursor: macOS vs Linux
 if [ -d "$HOME/Library/Application Support/Cursor/User/workspaceStorage" ]; then
   check_source "Cursor" "$HOME/Library/Application Support/Cursor/User/workspaceStorage"

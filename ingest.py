@@ -1140,24 +1140,24 @@ def find_tool_memory_files(max_chars=10000):
 
 # Model presets — user-friendly names mapped to provider + model ID
 MODEL_CATALOG = {
-    # Anthropic (Claude 4.6 generation)
-    "haiku":            {"provider": "anthropic", "model": "claude-haiku-4-5"},        # $1/$5 per MTok
-    "sonnet":           {"provider": "anthropic", "model": "claude-sonnet-4-6"},       # $3/$15 per MTok
-    "opus":             {"provider": "anthropic", "model": "claude-opus-4-6"},         # $5/$25 per MTok
-    # OpenAI (GPT 5.4 generation)
-    "gpt-5.4":          {"provider": "openai", "model": "gpt-5.4"},                   # $2.50/$15 per MTok
-    "gpt-5.4-mini":     {"provider": "openai", "model": "gpt-5.4-mini"},              # $0.75/$4.50 per MTok
-    "gpt-5.4-nano":     {"provider": "openai", "model": "gpt-5.4-nano"},              # $0.20/$1.25 per MTok
-    "gpt-5.4-pro":      {"provider": "openai", "model": "gpt-5.4-pro"},               # $30/$180 per MTok
-    "gpt-4.1":          {"provider": "openai", "model": "gpt-4.1"},                   # $2/$8 per MTok
-    "gpt-4.1-mini":     {"provider": "openai", "model": "gpt-4.1-mini"},              # $0.40/$1.60 per MTok
-    "gpt-4.1-nano":     {"provider": "openai", "model": "gpt-4.1-nano"},              # $0.10/$0.40 per MTok
-    "o3":               {"provider": "openai", "model": "o3"},                         # $2/$8 per MTok
-    "o4-mini":          {"provider": "openai", "model": "o4-mini"},                    # $1.10/$4.40 per MTok
-    # Google (Gemini 3.x generation)
-    "gemini-flash":     {"provider": "google", "model": "gemini-3-flash-preview"},             # preview
-    "gemini-lite":      {"provider": "google", "model": "gemini-3.1-flash-lite-preview"},      # preview
-    "gemini-pro":       {"provider": "google", "model": "gemini-3.1-pro-preview"},             # preview
+    # Anthropic
+    "haiku":            {"provider": "anthropic", "model": "claude-haiku-4-5",           "display": "Claude Haiku 4.5"},
+    "sonnet":           {"provider": "anthropic", "model": "claude-sonnet-4-6",          "display": "Claude Sonnet 4.6"},
+    "opus":             {"provider": "anthropic", "model": "claude-opus-4-6",            "display": "Claude Opus 4.6"},
+    # OpenAI
+    "gpt-5.4":          {"provider": "openai", "model": "gpt-5.4",                      "display": "GPT-5.4"},
+    "gpt-5.4-mini":     {"provider": "openai", "model": "gpt-5.4-mini",                 "display": "GPT-5.4 Mini"},
+    "gpt-5.4-nano":     {"provider": "openai", "model": "gpt-5.4-nano",                 "display": "GPT-5.4 Nano"},
+    "gpt-5.4-pro":      {"provider": "openai", "model": "gpt-5.4-pro",                  "display": "GPT-5.4 Pro"},
+    "gpt-4.1":          {"provider": "openai", "model": "gpt-4.1",                      "display": "GPT-4.1"},
+    "gpt-4.1-mini":     {"provider": "openai", "model": "gpt-4.1-mini",                 "display": "GPT-4.1 Mini"},
+    "gpt-4.1-nano":     {"provider": "openai", "model": "gpt-4.1-nano",                 "display": "GPT-4.1 Nano"},
+    "o3":               {"provider": "openai", "model": "o3",                            "display": "o3"},
+    "o4-mini":          {"provider": "openai", "model": "o4-mini",                       "display": "o4-mini"},
+    # Google
+    "gemini-flash":     {"provider": "google", "model": "gemini-3-flash-preview",        "display": "Gemini 3 Flash"},
+    "gemini-lite":      {"provider": "google", "model": "gemini-3.1-flash-lite-preview", "display": "Gemini 3.1 Flash Lite"},
+    "gemini-pro":       {"provider": "google", "model": "gemini-3.1-pro-preview",        "display": "Gemini 3.1 Pro"},
 }
 
 # Pricing: (input_per_mtok, output_per_mtok)
@@ -1182,6 +1182,13 @@ MODEL_PRICING = {
 # Defaults
 DEFAULT_EXTRACT_MODEL = "gpt-4.1-mini"
 DEFAULT_MERGE_MODEL = "sonnet"
+
+
+def _display_name(name_or_id):
+    """Get human-readable display name for a model."""
+    if name_or_id in MODEL_CATALOG:
+        return MODEL_CATALOG[name_or_id].get("display", name_or_id)
+    return name_or_id
 
 
 def _resolve_model(name_or_id):
@@ -2226,7 +2233,9 @@ def compare_models(keys, base_dir, file_config=None):
         print("  No API keys provided. Cannot compare models.")
         return None
 
-    print(f"  Models to test: {', '.join(available)}")
+    display_names = [_display_name(m) for m in available]
+    print(f"  Models to test: {', '.join(display_names)}")
+    print(f"  (This will make ~{len(available) * 3} API calls, estimated cost ~$0.50-1.00)")
 
     # Pick 3 diverse sessions
     all_sessions = (
@@ -2512,8 +2521,15 @@ Output ONLY the JSON object, no other text."""
         print(f"  {g.get('recommendation', '')}")
         print(f"  {'='*50}")
 
-    # Prompt for selection
-    print()
+    # Find default index (the recommended model)
+    best_idx = 0
+    for i, m in enumerate(available):
+        if m == best_model:
+            best_idx = i
+            break
+
+    # Prompt for extraction model selection
+    print("\n  EXTRACTION MODEL:")
     for i, model_name in enumerate(available, 1):
         entries = results.get(model_name, [])
         total = sum(len(e["thoughts"]) for e in entries)
@@ -2522,17 +2538,38 @@ Output ONLY the JSON object, no other text."""
         score = g.get("overall", "")
         score_str = f" [{score}/10]" if score else ""
         rec = " ★" if model_name == best_model else ""
-        print(f"  [{i}] {model_name}: {total} thoughts, ~${cost:.3f}/run{score_str}{rec}")
+        print(f"  [{i}] {_display_name(model_name)}: {total} thoughts, ~${cost:.3f}/run{score_str}{rec}")
 
     try:
-        choice = input(f"\n  Pick extraction model [1]: ").strip()
-        idx = int(choice) - 1 if choice else 0
+        choice = input(f"\n  Pick extraction model [{best_idx + 1}]: ").strip()
+        idx = int(choice) - 1 if choice else best_idx
         if 0 <= idx < len(available):
-            chosen = available[idx]
+            extract_chosen = available[idx]
         else:
-            chosen = available[0]
+            extract_chosen = available[best_idx]
     except (ValueError, EOFError):
-        chosen = available[0]
+        extract_chosen = available[best_idx]
+
+    # Prompt for merge model selection
+    merge_options = ["sonnet", "gpt-4.1", "gpt-5.4", "gemini-pro"]
+    merge_available = [m for m in merge_options if _resolve_model(m)["provider"] in _config["keys"]]
+    if not merge_available:
+        merge_available = [extract_chosen]  # fallback to same model
+
+    print("\n  MERGE MODEL (for wiki page generation):")
+    for i, model_name in enumerate(merge_available, 1):
+        rec = " ★" if i == 1 else ""
+        print(f"  [{i}] {_display_name(model_name)}{rec}")
+
+    try:
+        choice = input(f"\n  Pick merge model [1]: ").strip()
+        idx = int(choice) - 1 if choice else 0
+        if 0 <= idx < len(merge_available):
+            merge_chosen = merge_available[idx]
+        else:
+            merge_chosen = merge_available[0]
+    except (ValueError, EOFError):
+        merge_chosen = merge_available[0]
 
     # Write to config
     config_path = base_dir / "config.json"
@@ -2542,10 +2579,13 @@ Output ONLY the JSON object, no other text."""
             cfg = json.loads(config_path.read_text())
         except (json.JSONDecodeError, IOError):
             pass
-    cfg["extract_model"] = chosen
+    cfg["extract_model"] = extract_chosen
+    cfg["merge_model"] = merge_chosen
     config_path.write_text(json.dumps(cfg, indent=2) + "\n")
-    print(f"\n  Updated config.json: extract_model = {chosen}")
-    return chosen
+    print(f"\n  ✓ Updated config.json:")
+    print(f"    extract_model = {_display_name(extract_chosen)} ({extract_chosen})")
+    print(f"    merge_model   = {_display_name(merge_chosen)} ({merge_chosen})")
+    return extract_chosen
 
 
 def _generate_comparison_html(results, sessions, texts, model_order, output_path,
