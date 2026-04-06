@@ -64,13 +64,27 @@ print_ok "Python $UV_PYTHON ready (managed by uv — your system Python is untou
 print_step "Step 2: Where should Gyrus store your knowledge base?"
 
 echo ""
-echo -e "  Default: ${BOLD}$GYRUS_DIR${NC}"
-echo -e "  ${DIM}To sync across machines, point to a cloud folder:${NC}"
-echo -e "  ${DIM}  iCloud:  ~/Library/Mobile Documents/com~apple~CloudDocs/gyrus${NC}"
-echo -e "  ${DIM}  Dropbox: ~/Dropbox/gyrus${NC}"
-echo -e "  ${DIM}  Obsidian: ~/your-vault/gyrus${NC}"
+echo -e "  ${BOLD}[1]${NC} Default: ${BOLD}~/.gyrus${NC} ${DIM}(local only)${NC}"
+if [ "$(uname)" = "Darwin" ]; then
+  ICLOUD_DIR="$HOME/Library/Mobile Documents/com~apple~CloudDocs/gyrus"
+  echo -e "  ${BOLD}[2]${NC} iCloud:  ${DIM}~/Library/Mobile Documents/com~apple~CloudDocs/gyrus${NC}"
+fi
+echo -e "  ${BOLD}[3]${NC} Dropbox: ${DIM}~/Dropbox/gyrus${NC}"
+echo -e "  ${BOLD}[4]${NC} Custom path ${DIM}(Obsidian vault, Google Drive, etc.)${NC}"
 echo ""
-read -r -p "  Path (Enter for default): " CUSTOM_DIR < /dev/tty
+echo -e "  ${DIM}To sync across machines, choose a cloud folder. Same knowledge base everywhere.${NC}"
+echo ""
+read -r -p "  Choice [1]: " SYNC_CHOICE < /dev/tty
+SYNC_CHOICE="${SYNC_CHOICE:-1}"
+
+CUSTOM_DIR=""
+case "$SYNC_CHOICE" in
+  2) CUSTOM_DIR="${ICLOUD_DIR:-}" ;;
+  3) CUSTOM_DIR="$HOME/Dropbox/gyrus" ;;
+  4)
+    read -r -p "  Custom path: " CUSTOM_DIR < /dev/tty
+    ;;
+esac
 
 if [ -n "$CUSTOM_DIR" ]; then
   # Expand ~ if present
@@ -117,8 +131,33 @@ else
   curl -fsSL "$REPO_URL/ingest.py" -o "$INGEST_SCRIPT"
   curl -fsSL "$REPO_URL/storage.py" -o "$STORAGE_SCRIPT"
   curl -fsSL "$REPO_URL/storage_notion.py" -o "$STORAGE_NOTION_SCRIPT"
+  curl -fsSL "$REPO_URL/eval_prompts.py" -o "$GYRUS_DIR/eval_prompts.py" 2>/dev/null || true
   print_ok "Downloaded to $GYRUS_DIR"
 fi
+
+# Create `gyrus` CLI wrapper in PATH
+GYRUS_BIN="$HOME/.local/bin/gyrus"
+mkdir -p "$(dirname "$GYRUS_BIN")"
+if [ "$GYRUS_DIR" != "$HOME/.gyrus" ]; then
+  # Custom path — bake it into the wrapper
+  cat > "$GYRUS_BIN" <<EOF
+#!/bin/bash
+# Gyrus CLI wrapper
+UV_BIN="\${UV_BIN:-\$(command -v uv || echo "\$HOME/.local/bin/uv")}"
+cd "$GYRUS_DIR" && "\$UV_BIN" run --python 3.12 ingest.py "\$@"
+EOF
+else
+  cat > "$GYRUS_BIN" <<'WRAPPER'
+#!/bin/bash
+# Gyrus CLI wrapper
+GYRUS_HOME="${GYRUS_HOME:-$HOME/.gyrus}"
+UV_BIN="${UV_BIN:-$(command -v uv || echo "$HOME/.local/bin/uv")}"
+cd "$GYRUS_HOME" && "$UV_BIN" run --python 3.12 ingest.py "$@"
+WRAPPER
+fi
+chmod +x "$GYRUS_BIN"
+print_ok "Installed 'gyrus' command to $GYRUS_BIN"
+echo -e "  ${DIM}Usage: gyrus --compare-models, gyrus --update, gyrus --digest${NC}"
 
 # ─── Step 4: API keys ───
 print_step "Step 4: API keys"
@@ -513,8 +552,8 @@ if [[ "$DO_BUILD" =~ ^[Yy] ]]; then
   fi
 else
   echo ""
-  echo -e "  ${DIM}Skipped. Run this later (reads API key from .env automatically):${NC}"
-  echo "    cd $GYRUS_DIR && set -a && source .env && set +a && uv run --python $UV_PYTHON ingest.py --anthropic-key \$ANTHROPIC_API_KEY"
+  echo -e "  ${DIM}Skipped. Run later with:${NC}"
+  echo "    gyrus"
   echo ""
 fi
 
@@ -532,4 +571,10 @@ echo ""
 echo "  Your knowledge base: $GYRUS_DIR/projects/"
 echo "  Status overview:     $GYRUS_DIR/status.md"
 echo "  Logs:                $LOG_FILE"
+echo ""
+echo "  Commands:"
+echo "    gyrus --compare-models   # benchmark and choose models"
+echo "    gyrus --review-status    # review project statuses"
+echo "    gyrus --digest           # generate activity digest"
+echo "    gyrus --update           # update to latest version"
 echo ""
