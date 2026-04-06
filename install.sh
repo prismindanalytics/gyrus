@@ -138,26 +138,50 @@ fi
 # Create `gyrus` CLI wrapper in PATH
 GYRUS_BIN="$HOME/.local/bin/gyrus"
 mkdir -p "$(dirname "$GYRUS_BIN")"
-if [ "$GYRUS_DIR" != "$HOME/.gyrus" ]; then
-  # Custom path — bake it into the wrapper
-  cat > "$GYRUS_BIN" <<EOF
+cat > "$GYRUS_BIN" <<'WRAPPER'
 #!/bin/bash
-# Gyrus CLI wrapper
-UV_BIN="\${UV_BIN:-\$(command -v uv || echo "\$HOME/.local/bin/uv")}"
-cd "$GYRUS_DIR" && "\$UV_BIN" run --python 3.12 ingest.py "\$@"
-EOF
-else
-  cat > "$GYRUS_BIN" <<'WRAPPER'
-#!/bin/bash
-# Gyrus CLI wrapper
+# Gyrus CLI — knowledge base for AI coding tools
+# https://gyrus.sh
+
 GYRUS_HOME="${GYRUS_HOME:-$HOME/.gyrus}"
-UV_BIN="${UV_BIN:-$(command -v uv || echo "$HOME/.local/bin/uv")}"
+UV_BIN="${UV_BIN:-$(command -v uv 2>/dev/null || echo "$HOME/.local/bin/uv")}"
+
+# Translate subcommands to flags
+case "${1:-}" in
+  update)       shift; set -- --update "$@" ;;
+  compare)      shift; set -- --compare-models "$@" ;;
+  digest)       shift; set -- --digest "$@" ;;
+  status)       shift; set -- --review-status "$@" ;;
+  eval)         shift; set -- --eval "$@" ;;
+  curate)       shift; set -- --eval-curate "$@" ;;
+  run)          shift ;;  # explicit run, strip the word
+  help|-h|--help)
+    echo "Usage: gyrus [command] [options]"
+    echo ""
+    echo "Commands:"
+    echo "  (none)       Run ingestion (extract + merge)"
+    echo "  compare      Benchmark models on your sessions"
+    echo "  status       Review and set project statuses"
+    echo "  digest       Generate activity digest"
+    echo "  eval         Run prompt quality evaluation"
+    echo "  curate       Create golden test fixtures"
+    echo "  update       Update Gyrus to latest version"
+    echo ""
+    echo "Options:"
+    echo "  --dry-run    Run without saving"
+    echo "  --backfill   Rebuild pages from existing thoughts"
+    echo ""
+    echo "Config: $GYRUS_HOME/config.json"
+    echo "Docs:   https://gyrus.sh"
+    exit 0
+    ;;
+esac
+
 cd "$GYRUS_HOME" && "$UV_BIN" run --python 3.12 ingest.py "$@"
 WRAPPER
-fi
 chmod +x "$GYRUS_BIN"
 print_ok "Installed 'gyrus' command to $GYRUS_BIN"
-echo -e "  ${DIM}Usage: gyrus --compare-models, gyrus --update, gyrus --digest${NC}"
+echo -e "  ${DIM}Usage: gyrus compare, gyrus update, gyrus digest, gyrus help${NC}"
 
 # ─── Step 4: API keys ───
 print_step "Step 4: API keys"
@@ -243,7 +267,7 @@ if [ ! -f "$CONFIG_FILE" ]; then
 }
 CEOF
   print_ok "Default config: $EXTRACT_MODEL (extraction), $MERGE_MODEL (merging)"
-  echo -e "  ${DIM}Change anytime in $CONFIG_FILE or run: gyrus --compare-models${NC}"
+  echo -e "  ${DIM}Change anytime in $CONFIG_FILE or run: gyrus compare${NC}"
 fi
 
 # ─── Step 5: Install skills for AI tools ───
@@ -498,7 +522,7 @@ if [ "$TOTAL_FOUND" -gt 0 ]; then
     [ -n "${GEMINI_API_KEY:-}" ] && KEY_FLAGS="$KEY_FLAGS --google-key $GEMINI_API_KEY"
     "$UV" run --python "$UV_PYTHON" "$INGEST_SCRIPT" --compare-models $KEY_FLAGS < /dev/tty 2>&1 || true
   else
-    echo -e "  ${DIM}Skipped. Run later with: cd $GYRUS_DIR && uv run ingest.py --compare-models${NC}"
+    echo -e "  ${DIM}Skipped. Run later with: gyrus compare${NC}"
   fi
 fi
 
@@ -552,8 +576,7 @@ if [[ "$DO_BUILD" =~ ^[Yy] ]]; then
   fi
 else
   echo ""
-  echo -e "  ${DIM}Skipped. Run later with:${NC}"
-  echo "    gyrus"
+  echo -e "  ${DIM}Skipped. Run later with: gyrus${NC}"
   echo ""
 fi
 
@@ -573,8 +596,10 @@ echo "  Status overview:     $GYRUS_DIR/status.md"
 echo "  Logs:                $LOG_FILE"
 echo ""
 echo "  Commands:"
-echo "    gyrus --compare-models   # benchmark and choose models"
-echo "    gyrus --review-status    # review project statuses"
-echo "    gyrus --digest           # generate activity digest"
-echo "    gyrus --update           # update to latest version"
+echo "    gyrus                # run ingestion"
+echo "    gyrus compare        # benchmark and choose models"
+echo "    gyrus status         # review project statuses"
+echo "    gyrus digest         # generate activity digest"
+echo "    gyrus update         # update to latest version"
+echo "    gyrus help           # show all commands"
 echo ""

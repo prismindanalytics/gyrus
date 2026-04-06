@@ -95,7 +95,7 @@ Your AI tools                          Your knowledge base
 ```
 
 1. **Scans** sessions from 4 AI coding tools: Claude Code, Claude Cowork, OpenAI Codex, and Google Antigravity — with more added on request
-2. **Extracts** strategic decisions, insights, status changes (GPT-4.1 Mini by default — run `--compare-models` to benchmark on your data)
+2. **Extracts** strategic decisions, insights, status changes (GPT-4.1 Mini by default — run `gyrus compare` to benchmark on your data)
 3. **Resolves** project names ("Pulse App" = "pulse" = "Pulse") via fuzzy matching
 4. **Deduplicates** across sessions and machines
 5. **Merges** new knowledge into existing wiki pages (stronger model — Sonnet by default)
@@ -221,18 +221,18 @@ Or pass any raw model ID (e.g. `claude-sonnet-4-20250514`).
 | `digest.provider` | `"resend"` | Email provider: `"resend"` or `"smtp"` |
 | `digest.resend_api_key` | — | Resend API key (if provider is resend) |
 
-**Recommendation:** Run `--compare-models` to benchmark on your own data. It tests all available models, generates sample wiki pages, and an AI judge grades quality. You choose both extraction and merge models.
+**Recommendation:** Run `gyrus compare` to benchmark on your own data. It tests all available models, generates sample wiki pages, and an AI judge grades quality. You choose both extraction and merge models.
 
 ### CLI Reference
 
 | Command | Description |
 |---------|-------------|
-| `--compare-models` | Benchmark models on your sessions, pick extraction + merge models |
-| `--review-status` | Interactively review and set project statuses |
-| `--digest` | Generate a digest of recent activity |
-| `--eval` | Run prompt quality eval against golden fixtures |
-| `--eval-curate` | Create golden test fixtures from real sessions |
-| `--update` | Update Gyrus to the latest version from GitHub |
+| `gyrus compare` | Benchmark models on your sessions, pick extraction + merge models |
+| `gyrus status` | Interactively review and set project statuses |
+| `gyrus digest` | Generate a digest of recent activity |
+| `gyrus eval` | Run prompt quality eval against golden fixtures |
+| `gyrus curate` | Create golden test fixtures from real sessions |
+| `gyrus update` | Update Gyrus to the latest version from GitHub |
 | `--dry-run` | Run extraction without saving (for testing) |
 | `--backfill` | Rebuild knowledge pages from existing thoughts |
 | `--base-dir PATH` | Use a custom base directory (default: `~/.gyrus`) |
@@ -398,7 +398,7 @@ Get a daily email summarizing what changed across your projects:
 }
 ```
 
-The digest runs automatically after each ingestion. Generate one on demand with `--digest`. Supports Resend (recommended) and SMTP (Gmail, etc.).
+The digest runs automatically after each ingestion. Generate one on demand with `gyrus digest`. Supports Resend (recommended) and SMTP (Gmail, etc.).
 
 ---
 
@@ -408,19 +408,19 @@ Gyrus includes an eval framework for iteratively improving extraction and merge 
 
 ```bash
 # Create golden test fixtures from your sessions
-cd ~/.gyrus && uv run ingest.py --eval-curate
+gyrus curate
 
 # Run eval against golden fixtures
-cd ~/.gyrus && uv run ingest.py --eval
+gyrus eval
 
 # Save prompt version for comparison
-cd ~/.gyrus && uv run ingest.py --eval-save-prompt v1
+gyrus eval --eval-save-prompt v1
 
 # Compare two prompt versions
-cd ~/.gyrus && uv run ingest.py --eval --eval-compare v1 v2
+gyrus eval --eval-compare v1 v2
 
 # Regression gate (exit 1 if quality dropped)
-cd ~/.gyrus && uv run ingest.py --eval --eval-regression
+gyrus eval --eval-regression
 ```
 
 The eval scores extraction on 5 metrics (recall, precision, noise rejection, project attribution, count calibration) and merge on 5 metrics (hallucination detection, content completeness, structural integrity, staleness detection, append-only compliance).
@@ -548,7 +548,7 @@ PRs welcome.
 ## Update
 
 ```bash
-cd ~/.gyrus && uv run ingest.py --update
+gyrus update
 ```
 
 Downloads the latest scripts from GitHub. Your knowledge base, config, and API keys are preserved.
