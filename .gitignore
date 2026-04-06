@@ -1,0 +1,51 @@
+# Environment & secrets
+.env
+.dev.vars
+*.env.local
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Node
+node_modules/
+
+# Gyrus runtime
+.gyrus.lock
+.ingest-state.json
+ingest.log
+projects/
+status.md
+cross-cutting.md
+me.md
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Testing
+.pytest_cache/
+
+# Old Nerve architecture (pre-Gyrus)
+src/
+wrangler.toml
+schema.sql
+seed.sql
+setup.sql
+backfill_iterative.py
+ingest.sh
+package.json
+package-lock.json
+
+# Cloudflare
+.wrangler/

@@ -1,0 +1,732 @@
+<!DOCTYPE html>
+<html lang="en" class="scroll-smooth">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Gyrus — Your AI tools don't talk to each other. Gyrus fixes that.</title>
+  <meta name="description" content="Gyrus reads all your AI coding sessions, extracts strategic insights, and builds a compounding knowledge base that gets smarter every hour.">
+  <link rel="canonical" href="https://gyrus.sh">
+
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
+  <!-- Tailwind CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Inter', 'system-ui', '-apple-system', 'sans-serif'],
+            mono: ['JetBrains Mono', 'Menlo', 'Consolas', 'monospace'],
+          },
+          colors: {
+            brand: {
+              50: '#f0eaff',
+              100: '#d9ccff',
+              200: '#b899ff',
+              300: '#9966ff',
+              400: '#7c3aed',
+              500: '#6d28d9',
+              600: '#5b21b6',
+              700: '#4c1d95',
+              800: '#3b0f7a',
+              900: '#2e0a5e',
+            },
+            surface: {
+              0: '#09090b',
+              50: '#0c0c0f',
+              100: '#111114',
+              200: '#18181b',
+              300: '#1e1e22',
+              400: '#27272a',
+              500: '#3f3f46',
+              600: '#52525b',
+              700: '#71717a',
+              800: '#a1a1aa',
+              900: '#d4d4d8',
+            }
+          }
+        }
+      }
+    }
+  </script>
+
+  <style>
+    body {
+      font-family: 'Inter', system-ui, -apple-system, sans-serif;
+      background-color: #09090b;
+      color: #d4d4d8;
+    }
+
+    /* Gradient text utility */
+    .gradient-text {
+      background: linear-gradient(135deg, #a78bfa 0%, #7c3aed 40%, #6366f1 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    /* Terminal glow effect */
+    .terminal-glow {
+      box-shadow: 0 0 40px rgba(124, 58, 237, 0.08), 0 4px 24px rgba(0, 0, 0, 0.4);
+    }
+
+    /* Subtle grid background for hero */
+    .hero-bg {
+      background-image:
+        radial-gradient(ellipse 80% 60% at 50% -10%, rgba(124, 58, 237, 0.12) 0%, transparent 60%),
+        linear-gradient(rgba(255,255,255,0.02) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255,255,255,0.02) 1px, transparent 1px);
+      background-size: 100% 100%, 64px 64px, 64px 64px;
+    }
+
+    /* Copy button flash */
+    .copied {
+      background: rgba(34, 197, 94, 0.2) !important;
+    }
+
+    /* FAQ accordion animation */
+    .faq-answer {
+      max-height: 0;
+      overflow: hidden;
+      transition: max-height 0.3s ease, padding 0.3s ease;
+    }
+    .faq-answer.open {
+      max-height: 500px;
+    }
+
+    /* Smooth fade-in for sections */
+    .fade-section {
+      opacity: 0;
+      transform: translateY(20px);
+      transition: opacity 0.6s ease, transform 0.6s ease;
+    }
+    .fade-section.visible {
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+    /* Terminal cursor blink */
+    @keyframes blink {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0; }
+    }
+    .cursor-blink {
+      animation: blink 1.2s step-end infinite;
+    }
+  </style>
+</head>
+
+<body class="antialiased">
+
+  <!-- ════════════════════════════════════════════════════ -->
+  <!-- Navigation -->
+  <!-- ════════════════════════════════════════════════════ -->
+  <nav class="fixed top-0 left-0 right-0 z-50 bg-surface-0/80 backdrop-blur-xl border-b border-white/5">
+    <div class="max-w-5xl mx-auto px-6 h-14 flex items-center justify-between">
+      <a href="#" class="font-semibold text-lg tracking-tight text-white">Gyrus</a>
+      <div class="hidden sm:flex items-center gap-8 text-sm text-surface-800">
+        <a href="#how-it-works" class="hover:text-white transition-colors">How it works</a>
+        <a href="#pricing" class="hover:text-white transition-colors">Pricing</a>
+        <a href="#faq" class="hover:text-white transition-colors">FAQ</a>
+        <a href="https://github.com/prismindanalytics/gyrus" target="_blank" rel="noopener" class="hover:text-white transition-colors flex items-center gap-1.5">
+          <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
+          GitHub
+        </a>
+      </div>
+    </div>
+  </nav>
+
+
+  <!-- ════════════════════════════════════════════════════ -->
+  <!-- Hero -->
+  <!-- ════════════════════════════════════════════════════ -->
+  <section class="hero-bg min-h-screen flex items-center justify-center">
+    <div class="max-w-2xl mx-auto px-6 text-center -mt-16">
+      <h1 class="text-5xl sm:text-6xl md:text-7xl font-extrabold tracking-tight mb-4">
+        <span class="gradient-text">Gyrus</span>
+      </h1>
+      <p class="text-xs tracking-widest uppercase text-surface-600 mb-8"><span class="normal-case italic">a ridge on the cerebral cortex</span></p>
+
+      <p class="text-xl sm:text-2xl font-semibold text-white mb-5 leading-snug">
+        For builders using AI across<br>multiple projects and tools.
+      </p>
+
+      <p class="text-base sm:text-lg text-surface-700 max-w-lg mx-auto mb-12 leading-relaxed">
+        Claude Code, Cowork, Codex, Antigravity &mdash; none of them remember the others.<br class="hidden sm:block">
+        Gyrus reads all of them and builds one knowledge base. Plain markdown, local-first, editable.
+      </p>
+
+      <!-- Install command -->
+      <div class="inline-flex items-center bg-surface-200/80 border border-white/5 rounded-lg px-5 py-3 gap-3 font-mono text-sm group relative">
+        <span class="text-surface-600 select-none">$</span>
+        <code id="install-cmd" class="text-surface-900 select-all">curl -fsSL https://gyrus.sh/install | bash</code>
+        <button
+          id="copy-btn"
+          onclick="copyInstall()"
+          class="ml-2 p-1.5 rounded-md hover:bg-white/10 transition-colors text-surface-600 hover:text-white"
+          aria-label="Copy install command"
+          title="Copy to clipboard"
+        >
+          <svg id="copy-icon" class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+            <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+            <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"></path>
+          </svg>
+          <svg id="check-icon" class="w-4 h-4 hidden text-green-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+            <polyline points="20 6 9 17 4 12"></polyline>
+          </svg>
+        </button>
+      </div>
+      <p class="text-xs text-surface-600 mt-4">One command. Bring your own API key. macOS, Linux &amp; Windows.</p>
+    </div>
+  </section>
+
+
+  <!-- ════════════════════════════════════════════════════ -->
+  <!-- See It Work — Terminal Output -->
+  <!-- ════════════════════════════════════════════════════ -->
+  <section class="py-24 sm:py-32 fade-section">
+    <div class="max-w-3xl mx-auto px-6">
+      <h2 class="text-3xl sm:text-4xl font-bold text-white mb-3 text-center">See it work</h2>
+      <p class="text-surface-800 text-center mb-12 max-w-xl mx-auto">Run the install. Gyrus scans your sessions, extracts insights, and merges them into project wikis&thinsp;&mdash;&thinsp;automatically.</p>
+
+      <!-- Terminal block -->
+      <div class="terminal-glow rounded-xl overflow-hidden border border-white/5">
+        <div class="flex items-center gap-2 px-4 py-3 bg-surface-200 border-b border-white/5">
+          <span class="w-3 h-3 rounded-full bg-red-500/70"></span>
+          <span class="w-3 h-3 rounded-full bg-yellow-500/70"></span>
+          <span class="w-3 h-3 rounded-full bg-green-500/70"></span>
+          <span class="ml-3 text-xs text-surface-700 font-mono">gyrus init</span>
+        </div>
+        <div class="bg-surface-100 p-5 sm:p-6 font-mono text-sm leading-relaxed overflow-x-auto">
+<pre class="text-surface-800">Found: 51 cowork, 33 claude-code, 53 codex, 132 antigravity
+<span class="text-surface-600">  Cost estimate: ~$4.11 | Time estimate: ~14 minutes</span>
+
+<span class="text-surface-600">[1/269]</span> <span class="text-purple-400">claude-code</span> <span class="text-surface-600">travel-app</span> &mdash; <span class="text-white">5</span> thoughts
+<span class="text-surface-600">[2/269]</span> <span class="text-blue-400">cowork</span> <span class="text-surface-600">safety-alerts</span> &mdash; <span class="text-white">8</span> thoughts
+<span class="text-surface-600">[3/269]</span> <span class="text-green-400">codex</span> <span class="text-surface-600">clinic-notes</span> &mdash; <span class="text-white">4</span> thoughts
+<span class="text-surface-600">[4/269]</span> <span class="text-yellow-400">antigravity</span> <span class="text-surface-600">style-engine</span> &mdash; <span class="text-white">11</span> thoughts
+
+Merging 115 thoughts into <span class="text-indigo-400">'safety-alerts'</span>...
+  <span class="text-green-400">&#10003;</span> Updated <span class="text-white">'safety-alerts' v1</span>
+Merging 271 thoughts into <span class="text-indigo-400">'style-engine'</span>...
+  <span class="text-green-400">&#10003;</span> Updated <span class="text-white">'style-engine' v1</span>
+
+Done. 269 sessions, 1226 thoughts, 31 project pages.
+<span class="text-surface-600">  Cost: ~$4.88 | LLM calls: 266 extract, 32 merge</span><span class="cursor-blink text-surface-700">_</span></pre>
+        </div>
+      </div>
+
+      <!-- Wiki output card -->
+      <p class="text-surface-700 text-sm text-center mt-14 mb-4 uppercase tracking-wider font-medium">What a project page looks like</p>
+      <div class="terminal-glow rounded-xl overflow-hidden border border-white/5 bg-surface-200">
+        <div class="flex items-center gap-2 px-4 py-3 border-b border-white/5">
+          <svg class="w-4 h-4 text-surface-700" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>
+          <span class="text-xs text-surface-700 font-mono">safety-alerts.md</span>
+        </div>
+        <div class="p-6 sm:p-8 space-y-5">
+          <h3 class="text-2xl font-bold text-white">SafetyAlerts</h3>
+          <div class="flex flex-wrap gap-2 text-xs font-mono">
+            <span class="px-2 py-1 rounded bg-green-500/10 text-green-400 border border-green-500/20">active</span>
+            <span class="px-2 py-1 rounded bg-purple-500/10 text-purple-400 border border-purple-500/20">pre-launch</span>
+            <span class="px-2 py-1 rounded bg-yellow-500/10 text-yellow-400 border border-yellow-500/20">Priority: P1</span>
+          </div>
+          <div>
+            <h4 class="text-xs uppercase tracking-wider text-surface-700 font-semibold mb-2">Overview</h4>
+            <p class="text-surface-800 text-sm leading-relaxed">Consumer app aggregating safety alerts from government agencies into a personalized feed. iOS and Android sharing the same backend. Privacy-first: all user data on-device, only anonymous push tokens stored remotely.</p>
+          </div>
+          <div>
+            <h4 class="text-xs uppercase tracking-wider text-surface-700 font-semibold mb-2">Key Decisions <span class="text-surface-600 normal-case font-normal">(from 4 different tools)</span></h4>
+            <ul class="text-sm space-y-1.5">
+              <li class="flex gap-2"><span class="text-surface-600 font-mono text-xs shrink-0 pt-0.5">03-25</span><span class="text-surface-800">Killed scanner tab before App Store resubmission <span class="text-purple-400/60 text-xs">cowork</span></span></li>
+              <li class="flex gap-2"><span class="text-surface-600 font-mono text-xs shrink-0 pt-0.5">03-28</span><span class="text-surface-800">Fixed push notification key mismatch across platforms <span class="text-blue-400/60 text-xs">claude-code</span></span></li>
+              <li class="flex gap-2"><span class="text-surface-600 font-mono text-xs shrink-0 pt-0.5">03-30</span><span class="text-surface-800">Switched to direct Play Billing for donations <span class="text-yellow-400/60 text-xs">antigravity</span></span></li>
+              <li class="flex gap-2"><span class="text-surface-600 font-mono text-xs shrink-0 pt-0.5">04-01</span><span class="text-surface-800">Dynamic sitemap via edge worker for SEO pages <span class="text-green-400/60 text-xs">codex</span></span></li>
+            </ul>
+          </div>
+          <div>
+            <h4 class="text-xs uppercase tracking-wider text-surface-700 font-semibold mb-2">Sources</h4>
+            <p class="text-surface-600 text-xs">Built from 115 thoughts across claude-code, cowork, codex, and antigravity sessions</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+
+  <!-- ════════════════════════════════════════════════════ -->
+  <!-- How It Works -->
+  <!-- ════════════════════════════════════════════════════ -->
+  <section id="how-it-works" class="py-24 sm:py-32 fade-section">
+    <div class="max-w-4xl mx-auto px-6">
+      <h2 class="text-3xl sm:text-4xl font-bold text-white mb-16 text-center">How it works</h2>
+
+      <div class="grid md:grid-cols-3 gap-8">
+        <!-- Step 1 -->
+        <div class="text-center">
+          <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-purple-500/20 to-indigo-500/20 border border-purple-500/20 flex items-center justify-center mx-auto mb-5">
+            <span class="text-purple-400 font-bold font-mono text-lg">1</span>
+          </div>
+          <h3 class="text-lg font-semibold text-white mb-2">Scans all tools</h3>
+          <p class="text-surface-800 text-sm leading-relaxed">Reads Claude Code, Cowork, Codex, and Antigravity sessions from the same machine. Groups by workspace so a Cowork architecture session and a Claude Code build session end up on the same project page.</p>
+        </div>
+
+        <!-- Step 2 -->
+        <div class="text-center">
+          <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-purple-500/20 to-indigo-500/20 border border-purple-500/20 flex items-center justify-center mx-auto mb-5">
+            <span class="text-purple-400 font-bold font-mono text-lg">2</span>
+          </div>
+          <h3 class="text-lg font-semibold text-white mb-2">Extracts</h3>
+          <p class="text-surface-800 text-sm leading-relaxed">An LLM you choose picks out decisions, status changes, and project context. Not code diffs or terminal output.</p>
+        </div>
+
+        <!-- Step 3 -->
+        <div class="text-center">
+          <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-purple-500/20 to-indigo-500/20 border border-purple-500/20 flex items-center justify-center mx-auto mb-5">
+            <span class="text-purple-400 font-bold font-mono text-lg">3</span>
+          </div>
+          <h3 class="text-lg font-semibold text-white mb-2">Merges</h3>
+          <p class="text-surface-800 text-sm leading-relaxed">New insights merge into existing wiki pages. You can edit pages by hand anytime &mdash; your edits are preserved.</p>
+        </div>
+      </div>
+
+      <!-- Supported tools -->
+      <div class="mt-16 text-center">
+        <p class="text-xs uppercase tracking-wider text-surface-700 font-medium mb-5">Supported tools</p>
+        <div class="flex flex-wrap justify-center gap-3">
+          <span class="px-3 py-1.5 rounded-md bg-surface-200 border border-white/5 text-xs font-mono text-surface-800">Claude Code</span>
+          <span class="px-3 py-1.5 rounded-md bg-surface-200 border border-white/5 text-xs font-mono text-surface-800">Claude Cowork</span>
+          <span class="px-3 py-1.5 rounded-md bg-surface-200 border border-white/5 text-xs font-mono text-surface-800">OpenAI Codex</span>
+          <span class="px-3 py-1.5 rounded-md bg-surface-200 border border-white/5 text-xs font-mono text-surface-800">Google Antigravity</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+
+  <!-- ════════════════════════════════════════════════════ -->
+  <!-- Runs Continuously -->
+  <!-- ════════════════════════════════════════════════════ -->
+  <section class="py-20 sm:py-24 fade-section">
+    <div class="max-w-4xl mx-auto px-6">
+      <h2 class="text-3xl sm:text-4xl font-bold text-white mb-4 text-center">Runs automatically</h2>
+      <p class="text-surface-800 text-center mb-12 max-w-2xl mx-auto">A cron job checks for new sessions on your schedule. No new sessions&thinsp;=&thinsp;no API calls&thinsp;=&thinsp;<span class="text-white font-medium">zero cost</span>. Review your pages periodically &mdash; they're drafts, not gospel.</p>
+
+      <div class="grid sm:grid-cols-2 gap-8">
+        <!-- Cron -->
+        <div class="rounded-xl border border-surface-400 bg-surface-200 p-6">
+          <div class="flex items-center gap-3 mb-3">
+            <div class="w-8 h-8 rounded-lg bg-purple-500/10 flex items-center justify-center">
+              <svg class="w-4 h-4 text-purple-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
+            </div>
+            <h3 class="text-base font-semibold text-white">Scheduled sync</h3>
+          </div>
+          <p class="text-surface-800 text-sm leading-relaxed">The installer sets up a cron job (or Windows Scheduled Task) at whatever frequency you choose&thinsp;&mdash;&thinsp;every 30 minutes, hourly, every 4 hours, or daily. Each run checks for new sessions since the last one. If nothing changed, it exits immediately. <span class="text-surface-900">No LLM calls, no cost.</span></p>
+        </div>
+
+        <!-- Skills -->
+        <div class="rounded-xl border border-surface-400 bg-surface-200 p-6">
+          <div class="flex items-center gap-3 mb-3">
+            <div class="w-8 h-8 rounded-lg bg-purple-500/10 flex items-center justify-center">
+              <svg class="w-4 h-4 text-purple-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5z"></path><path d="M2 17l10 5 10-5"></path><path d="M2 12l10 5 10-5"></path></svg>
+            </div>
+            <h3 class="text-base font-semibold text-white">Tool skills</h3>
+          </div>
+          <p class="text-surface-800 text-sm leading-relaxed">Gyrus installs a <code class="text-xs font-mono text-purple-300">/gyrus</code> slash command into Claude Code and instruction files for Codex. Your AI tools can query the knowledge base mid-session&thinsp;&mdash;&thinsp;context flows both ways.</p>
+        </div>
+      </div>
+
+      <p class="text-surface-700 text-xs text-center mt-8">When there <em>are</em> new sessions: ~$0.01&ndash;0.04 per run &bull; Frequency is configurable during install &bull; Self-updates with <code class="font-mono text-surface-700">python3 ingest.py --update</code></p>
+    </div>
+  </section>
+
+
+  <!-- ════════════════════════════════════════════════════ -->
+  <!-- What Gets Extracted -->
+  <!-- ════════════════════════════════════════════════════ -->
+  <section class="py-24 sm:py-32 fade-section">
+    <div class="max-w-3xl mx-auto px-6">
+      <h2 class="text-3xl sm:text-4xl font-bold text-white mb-4 text-center">The problem it solves</h2>
+      <p class="text-surface-800 text-center mb-12 max-w-xl mx-auto">Monday you architect in Cowork. Tuesday you build in Claude Code. Wednesday you debug in Codex. Thursday you refactor in Antigravity. By Friday, none of them know what happened in the others.</p>
+
+      <div class="grid sm:grid-cols-2 gap-6">
+        <!-- Multi-tool scenario -->
+        <div class="rounded-xl border border-green-500/10 bg-green-500/[0.03] p-6">
+          <p class="text-xs uppercase tracking-wider text-green-400 font-semibold mb-4">What Gyrus captures</p>
+          <ul class="space-y-3 text-sm text-surface-800">
+            <li class="flex gap-2 items-start">
+              <span class="text-purple-400 mt-0.5 shrink-0 text-xs font-mono">cowork</span>
+              "Decided to cut the scanner feature before App Store resubmission"
+            </li>
+            <li class="flex gap-2 items-start">
+              <span class="text-blue-400 mt-0.5 shrink-0 text-xs font-mono">claude</span>
+              "Renamed package across 155 files &mdash; rebrand complete"
+            </li>
+            <li class="flex gap-2 items-start">
+              <span class="text-green-400 mt-0.5 shrink-0 text-xs font-mono">codex</span>
+              "OAuth token expiration causing 401s on /login endpoint"
+            </li>
+            <li class="flex gap-2 items-start">
+              <span class="text-yellow-400 mt-0.5 shrink-0 text-xs font-mono">antigravity</span>
+              "Tech stack decided: Next.js on edge hosting + managed Postgres"
+            </li>
+          </ul>
+        </div>
+
+        <!-- Not Extracted -->
+        <div class="rounded-xl border border-surface-400 bg-surface-200 p-6">
+          <p class="text-xs uppercase tracking-wider text-surface-700 font-semibold mb-4">What it skips</p>
+          <ul class="space-y-3 text-sm text-surface-700">
+            <li class="flex gap-2 items-start">
+              <span class="mt-0.5 shrink-0">&bull;</span>
+              Code diffs, file edits, terminal commands
+            </li>
+            <li class="flex gap-2 items-start">
+              <span class="mt-0.5 shrink-0">&bull;</span>
+              "Let me check that file" / "sounds good"
+            </li>
+            <li class="flex gap-2 items-start">
+              <span class="mt-0.5 shrink-0">&bull;</span>
+              CSS changes, dependency updates, config tweaks
+            </li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+
+  <!-- ════════════════════════════════════════════════════ -->
+  <!-- Knowledge Compounds -->
+  <!-- ════════════════════════════════════════════════════ -->
+  <section class="py-24 sm:py-32 fade-section">
+    <div class="max-w-3xl mx-auto px-6">
+      <h2 class="text-3xl sm:text-4xl font-bold text-white mb-4 text-center">Pages evolve over time</h2>
+      <p class="text-surface-800 text-center mb-12">Each run adds new context. Pages get more useful as you work, but they're LLM-maintained &mdash; review them like you'd review a junior's draft.</p>
+
+      <div class="space-y-0 border-l-2 border-purple-500/30 ml-4 sm:ml-8">
+        <div class="pl-6 sm:pl-8 py-4 relative">
+          <div class="absolute left-[-7px] top-5 w-3 h-3 rounded-full bg-purple-500/30 border-2 border-purple-400"></div>
+          <p class="text-xs font-mono text-surface-600 mb-1">Week 1</p>
+          <p class="text-surface-800">"Pulse is a real-time analytics dashboard"</p>
+        </div>
+        <div class="pl-6 sm:pl-8 py-4 relative">
+          <div class="absolute left-[-7px] top-5 w-3 h-3 rounded-full bg-purple-500/40 border-2 border-purple-400"></div>
+          <p class="text-xs font-mono text-surface-600 mb-1">Week 2</p>
+          <p class="text-surface-800">"Pulse targets early-stage startups. Switched to columnar DB for real-time queries"</p>
+        </div>
+        <div class="pl-6 sm:pl-8 py-4 relative">
+          <div class="absolute left-[-7px] top-5 w-3 h-3 rounded-full bg-purple-500/60 border-2 border-purple-400"></div>
+          <p class="text-xs font-mono text-surface-600 mb-1">Week 3</p>
+          <p class="text-surface-900">"Pulse's moat is sub-second latency + native payment integration"</p>
+        </div>
+        <div class="pl-6 sm:pl-8 py-4 relative">
+          <div class="absolute left-[-7px] top-5 w-3 h-3 rounded-full bg-purple-500 border-2 border-purple-300"></div>
+          <p class="text-xs font-mono text-surface-600 mb-1">Week 4</p>
+          <p class="text-white font-medium">"Pulse needs demo by April 1. Ship churn predictor or cut scope."</p>
+        </div>
+      </div>
+
+      <p class="text-center mt-12 text-sm text-surface-700">Pages work best for: project status, key decisions, timeline, next steps. They're weaker for precise architecture docs or exact dependency versions &mdash; review and edit as needed.</p>
+    </div>
+  </section>
+
+
+  <!-- ════════════════════════════════════════════════════ -->
+  <!-- Pricing -->
+  <!-- ════════════════════════════════════════════════════ -->
+  <section id="pricing" class="py-24 sm:py-32 fade-section">
+    <div class="max-w-2xl mx-auto px-6 text-center">
+      <h2 class="text-3xl sm:text-4xl font-bold text-white mb-4">What it costs</h2>
+      <p class="text-surface-800 mb-12">Gyrus runs on your machine. You pay your LLM provider directly. No accounts, no cloud, no middleman.</p>
+
+      <div class="rounded-xl border border-white/5 bg-surface-200 p-8 sm:p-10">
+        <div class="grid sm:grid-cols-2 gap-6 text-left mb-8">
+          <div>
+            <p class="text-xs uppercase tracking-wider text-surface-700 font-medium mb-1">Thought extraction</p>
+            <p class="text-white font-mono text-lg">~$0.01<span class="text-surface-700 text-sm">/session</span></p>
+            <p class="text-surface-600 text-xs mt-1">GPT-4.1-mini, Haiku, Gemini Flash</p>
+          </div>
+          <div>
+            <p class="text-xs uppercase tracking-wider text-surface-700 font-medium mb-1">Knowledge merging</p>
+            <p class="text-white font-mono text-lg">~$0.05<span class="text-surface-700 text-sm">/page update</span></p>
+            <p class="text-surface-600 text-xs mt-1">Sonnet, GPT-4.1, Gemini Pro</p>
+          </div>
+        </div>
+        <div class="border-t border-white/5 pt-6 flex flex-col sm:flex-row items-center justify-center gap-6">
+          <div class="text-center">
+            <p class="text-xs uppercase tracking-wider text-surface-700 font-medium mb-1">Typical monthly cost</p>
+            <p class="text-3xl font-bold gradient-text">$5-15</p>
+          </div>
+          <div class="hidden sm:block w-px h-12 bg-white/10"></div>
+          <div class="text-center">
+            <p class="text-xs uppercase tracking-wider text-surface-700 font-medium mb-1">Cloud accounts needed</p>
+            <p class="text-3xl font-bold text-white">Zero</p>
+          </div>
+        </div>
+      </div>
+
+      <p class="text-surface-700 text-xs text-center mt-8">
+        Run <code class="font-mono text-surface-700">--compare-models</code> to benchmark models on your own sessions and pick one. Supports Anthropic, OpenAI, and Google models. Swap anytime.
+      </p>
+    </div>
+  </section>
+
+
+  <!-- ════════════════════════════════════════════════════ -->
+  <!-- Personal Memory -->
+  <!-- ════════════════════════════════════════════════════ -->
+  <section class="py-16 sm:py-20 fade-section">
+    <div class="max-w-3xl mx-auto px-6 text-center">
+      <h2 class="text-2xl sm:text-3xl font-bold text-white mb-3">Not just projects</h2>
+      <p class="text-surface-800 max-w-xl mx-auto">Working patterns and cross-cutting decisions go into <code class="font-mono text-purple-400 text-sm">~/.gyrus/me.md</code>. Ideas and brainstorms go into <code class="font-mono text-purple-400 text-sm">ideas.md</code>. You can review project statuses in <code class="font-mono text-purple-400 text-sm">status.md</code> and edit them by hand.</p>
+    </div>
+  </section>
+
+
+  <!-- ════════════════════════════════════════════════════ -->
+  <!-- Cross-Machine Sync -->
+  <!-- ════════════════════════════════════════════════════ -->
+  <section class="py-24 sm:py-32 fade-section">
+    <div class="max-w-3xl mx-auto px-6 text-center">
+      <h2 class="text-3xl sm:text-4xl font-bold text-white mb-4">Sync across machines</h2>
+      <p class="text-surface-800 mb-12">Gyrus stores everything as plain markdown in <code class="font-mono text-purple-400 text-sm">~/.gyrus/</code>. Sync however you want:</p>
+
+      <div class="grid sm:grid-cols-2 gap-4 text-left max-w-xl mx-auto">
+        <div class="rounded-xl border border-white/5 bg-surface-200 p-5">
+          <p class="text-white font-medium text-sm mb-1">iCloud / Dropbox / Google Drive</p>
+          <p class="text-surface-700 text-xs">Point <code class="font-mono">~/.gyrus/</code> to a synced folder</p>
+        </div>
+        <div class="rounded-xl border border-white/5 bg-surface-200 p-5">
+          <p class="text-white font-medium text-sm mb-1">Git</p>
+          <p class="text-surface-700 text-xs"><code class="font-mono">cd ~/.gyrus && git init</code></p>
+        </div>
+        <div class="rounded-xl border border-white/5 bg-surface-200 p-5">
+          <p class="text-white font-medium text-sm mb-1">Obsidian</p>
+          <p class="text-surface-700 text-xs">Set your vault path to <code class="font-mono">~/.gyrus/</code></p>
+        </div>
+        <div class="rounded-xl border border-white/5 bg-surface-200 p-5">
+          <p class="text-white font-medium text-sm mb-1">Notion</p>
+          <p class="text-surface-700 text-xs">Optional adapter via <code class="font-mono">--storage=notion</code></p>
+        </div>
+      </div>
+
+      <p class="text-surface-700 text-sm mt-8">Run the installer on each machine. Same knowledge base, everywhere.</p>
+    </div>
+  </section>
+
+
+  <!-- ════════════════════════════════════════════════════ -->
+  <!-- Who It's For -->
+  <!-- ════════════════════════════════════════════════════ -->
+  <section class="py-20 sm:py-24 fade-section">
+    <div class="max-w-3xl mx-auto px-6">
+      <h2 class="text-3xl sm:text-4xl font-bold text-white mb-12 text-center">Who it's for</h2>
+
+      <div class="grid sm:grid-cols-2 gap-6">
+        <div class="rounded-xl border border-green-500/10 bg-green-500/[0.03] p-6">
+          <p class="text-xs uppercase tracking-wider text-green-400 font-semibold mb-4">Good fit</p>
+          <ul class="space-y-3 text-sm text-surface-800">
+            <li class="flex gap-2 items-start"><span class="text-green-500 mt-0.5 shrink-0">&bull;</span>Founders and solo builders juggling multiple projects</li>
+            <li class="flex gap-2 items-start"><span class="text-green-500 mt-0.5 shrink-0">&bull;</span>People using multiple AI coding tools across machines</li>
+            <li class="flex gap-2 items-start"><span class="text-green-500 mt-0.5 shrink-0">&bull;</span>Anyone who makes strategic decisions in AI chats and then forgets them</li>
+          </ul>
+        </div>
+        <div class="rounded-xl border border-surface-400 bg-surface-200 p-6">
+          <p class="text-xs uppercase tracking-wider text-surface-700 font-semibold mb-4">Less useful for</p>
+          <ul class="space-y-3 text-sm text-surface-700">
+            <li class="flex gap-2 items-start"><span class="mt-0.5 shrink-0">&bull;</span>One repo, one tool, no context loss</li>
+            <li class="flex gap-2 items-start"><span class="mt-0.5 shrink-0">&bull;</span>Teams that already maintain disciplined docs</li>
+            <li class="flex gap-2 items-start"><span class="mt-0.5 shrink-0">&bull;</span>Users expecting exact, source-of-truth technical documentation</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+
+  <!-- ════════════════════════════════════════════════════ -->
+  <!-- FAQ -->
+  <!-- ════════════════════════════════════════════════════ -->
+  <section id="faq" class="py-24 sm:py-32 fade-section">
+    <div class="max-w-2xl mx-auto px-6">
+      <h2 class="text-3xl sm:text-4xl font-bold text-white mb-12 text-center">FAQ</h2>
+
+      <div class="space-y-3">
+        <div class="faq-item rounded-xl border border-white/5 bg-surface-200 overflow-hidden">
+          <button class="faq-toggle w-full text-left px-6 py-4 flex items-center justify-between" aria-expanded="false">
+            <span class="text-sm font-medium text-white pr-4">How is this different from Mem0 / OpenMemory?</span>
+            <svg class="faq-chevron w-5 h-5 text-surface-700 shrink-0 transition-transform duration-200" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"></polyline></svg>
+          </button>
+          <div class="faq-answer px-6">
+            <div class="text-sm text-surface-800 pb-4 leading-relaxed space-y-3">
+              <p>Different approach. Mem0 and OpenMemory store facts as vector embeddings in a database. They're designed as memory APIs for AI apps.</p>
+              <p>Gyrus produces <strong class="text-white">editable markdown wiki pages</strong> organized by project. You can read them, edit them, sync them with any tool. The output is structured documents, not database rows.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="faq-item rounded-xl border border-white/5 bg-surface-200 overflow-hidden">
+          <button class="faq-toggle w-full text-left px-6 py-4 flex items-center justify-between" aria-expanded="false">
+            <span class="text-sm font-medium text-white pr-4">How is this different from AGENTS.md / .cursorrules?</span>
+            <svg class="faq-chevron w-5 h-5 text-surface-700 shrink-0 transition-transform duration-200" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"></polyline></svg>
+          </button>
+          <div class="faq-answer px-6">
+            <div class="text-sm text-surface-800 pb-4 leading-relaxed space-y-3">
+              <p>Those are static files you write and maintain by hand, scoped to a single repo. Gyrus extracts knowledge from your actual sessions across all your projects and tools automatically. They're complementary &mdash; AGENTS.md tells the AI how to behave, Gyrus captures what you've decided and built.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="faq-item rounded-xl border border-white/5 bg-surface-200 overflow-hidden">
+          <button class="faq-toggle w-full text-left px-6 py-4 flex items-center justify-between" aria-expanded="false">
+            <span class="text-sm font-medium text-white pr-4">Does it work with [tool X]?</span>
+            <svg class="faq-chevron w-5 h-5 text-surface-700 shrink-0 transition-transform duration-200" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"></polyline></svg>
+          </button>
+          <div class="faq-answer px-6">
+            <p class="text-sm text-surface-800 pb-4 leading-relaxed">Gyrus currently supports Claude Code, Claude Cowork, OpenAI Codex, and Google Antigravity. More tools added on request&thinsp;&mdash;&thinsp;each one just needs a session reader (~30 lines of Python). Contributions welcome.</p>
+          </div>
+        </div>
+
+        <div class="faq-item rounded-xl border border-white/5 bg-surface-200 overflow-hidden">
+          <button class="faq-toggle w-full text-left px-6 py-4 flex items-center justify-between" aria-expanded="false">
+            <span class="text-sm font-medium text-white pr-4">Will it read my private conversations?</span>
+            <svg class="faq-chevron w-5 h-5 text-surface-700 shrink-0 transition-transform duration-200" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"></polyline></svg>
+          </button>
+          <div class="faq-answer px-6">
+            <p class="text-sm text-surface-800 pb-4 leading-relaxed">Gyrus runs entirely on your machine by default. Sessions are sent to your chosen LLM API for extraction (same as using any AI tool), but your knowledge base stays local as plain markdown files. Nothing is stored in any cloud unless you opt in&thinsp;&mdash;&thinsp;you can choose to sync via iCloud, Dropbox, Notion, or Git if you want cross-machine access.</p>
+          </div>
+        </div>
+
+        <div class="faq-item rounded-xl border border-white/5 bg-surface-200 overflow-hidden">
+          <button class="faq-toggle w-full text-left px-6 py-4 flex items-center justify-between" aria-expanded="false">
+            <span class="text-sm font-medium text-white pr-4">Can I edit the wiki pages manually?</span>
+            <svg class="faq-chevron w-5 h-5 text-surface-700 shrink-0 transition-transform duration-200" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"></polyline></svg>
+          </button>
+          <div class="faq-answer px-6">
+            <p class="text-sm text-surface-800 pb-4 leading-relaxed">Yes, and you should. Pages are LLM-maintained drafts &mdash; they can be subtly wrong or overgeneralized. Edit them in any text editor. Gyrus preserves your manual edits during the next merge. You can also set project statuses in <code class="font-mono text-xs bg-surface-300 px-1.5 py-0.5 rounded">status.md</code>.</p>
+          </div>
+        </div>
+
+        <!-- FAQ 6 -->
+        <div class="faq-item rounded-xl border border-white/5 bg-surface-200 overflow-hidden">
+          <button class="faq-toggle w-full text-left px-6 py-4 flex items-center justify-between" aria-expanded="false">
+            <span class="text-sm font-medium text-white pr-4">How do I uninstall?</span>
+            <svg class="faq-chevron w-5 h-5 text-surface-700 shrink-0 transition-transform duration-200" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"></polyline></svg>
+          </button>
+          <div class="faq-answer px-6">
+            <p class="text-sm text-surface-800 pb-4 leading-relaxed">Three commands: remove the cron job (<code class="font-mono text-xs bg-surface-300 px-1.5 py-0.5 rounded">crontab -l | grep -v ingest.py | crontab -</code>), remove the Claude Code skill (<code class="font-mono text-xs bg-surface-300 px-1.5 py-0.5 rounded">rm ~/.claude/commands/gyrus.md</code>), and delete the directory (<code class="font-mono text-xs bg-surface-300 px-1.5 py-0.5 rounded">rm -rf ~/.gyrus</code>). Back up your knowledge base first if you want to keep it.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+
+  <!-- ════════════════════════════════════════════════════ -->
+  <!-- Final CTA -->
+  <!-- ════════════════════════════════════════════════════ -->
+  <section class="py-24 sm:py-32 text-center fade-section">
+    <div class="max-w-2xl mx-auto px-6">
+      <h2 class="text-3xl sm:text-4xl font-bold text-white mb-4">Try it on your sessions</h2>
+      <p class="text-surface-800 mb-8">Takes 2 minutes. You'll see what it finds.</p>
+      <div class="inline-flex items-center bg-surface-200 border border-white/5 rounded-lg px-4 py-3 gap-3 font-mono text-sm sm:text-base">
+        <span class="text-surface-700 select-none">$</span>
+        <code class="text-surface-900 select-all">curl -fsSL https://gyrus.sh/install | bash</code>
+        <button
+          onclick="copyInstall()"
+          class="ml-2 p-1.5 rounded-md hover:bg-white/10 transition-colors text-surface-700 hover:text-white"
+          aria-label="Copy install command"
+          title="Copy to clipboard"
+        >
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+            <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+            <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"></path>
+          </svg>
+        </button>
+      </div>
+    </div>
+  </section>
+
+
+  <!-- ════════════════════════════════════════════════════ -->
+  <!-- Footer -->
+  <!-- ════════════════════════════════════════════════════ -->
+  <footer class="border-t border-white/5 py-8">
+    <div class="max-w-5xl mx-auto px-6 flex flex-col sm:flex-row items-center justify-between gap-4 text-sm text-surface-700">
+      <p>Built by <a href="https://prismindanalytics.com" class="text-surface-800 hover:text-white transition-colors">Prismind Analytics</a></p>
+      <div class="flex items-center gap-6">
+        <span>MIT License</span>
+        <a href="https://github.com/prismindanalytics/gyrus" target="_blank" rel="noopener" class="text-surface-800 hover:text-white transition-colors flex items-center gap-1.5">
+          <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
+          GitHub
+        </a>
+      </div>
+    </div>
+  </footer>
+
+
+  <!-- ════════════════════════════════════════════════════ -->
+  <!-- Scripts -->
+  <!-- ════════════════════════════════════════════════════ -->
+  <script>
+    // Copy install command to clipboard
+    function copyInstall() {
+      var cmd = 'curl -fsSL https://gyrus.sh/install | bash';
+      navigator.clipboard.writeText(cmd).then(function() {
+        var btn = document.getElementById('copy-btn');
+        var copyIcon = document.getElementById('copy-icon');
+        var checkIcon = document.getElementById('check-icon');
+        copyIcon.classList.add('hidden');
+        checkIcon.classList.remove('hidden');
+        btn.classList.add('copied');
+        setTimeout(function() {
+          copyIcon.classList.remove('hidden');
+          checkIcon.classList.add('hidden');
+          btn.classList.remove('copied');
+        }, 2000);
+      });
+    }
+
+    // FAQ accordion
+    document.querySelectorAll('.faq-toggle').forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        var item = btn.closest('.faq-item');
+        var answer = item.querySelector('.faq-answer');
+        var chevron = item.querySelector('.faq-chevron');
+        var isOpen = answer.classList.contains('open');
+
+        // Close all others
+        document.querySelectorAll('.faq-answer.open').forEach(function(a) {
+          a.classList.remove('open');
+          a.closest('.faq-item').querySelector('.faq-chevron').style.transform = '';
+          a.closest('.faq-item').querySelector('.faq-toggle').setAttribute('aria-expanded', 'false');
+        });
+
+        if (!isOpen) {
+          answer.classList.add('open');
+          chevron.style.transform = 'rotate(180deg)';
+          btn.setAttribute('aria-expanded', 'true');
+        }
+      });
+    });
+
+    // Scroll-triggered fade-in
+    var observer = new IntersectionObserver(function(entries) {
+      entries.forEach(function(entry) {
+        if (entry.isIntersecting) {
+          entry.target.classList.add('visible');
+        }
+      });
+    }, { threshold: 0.1 });
+
+    document.querySelectorAll('.fade-section').forEach(function(el) {
+      observer.observe(el);
+    });
+  </script>
+
+</body>
+</html>

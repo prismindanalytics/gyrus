@@ -1,0 +1,33 @@
+[project]
+name = "gyrus"
+version = "0.1.0"
+description = "Your AI tools don't talk to each other. Gyrus fixes that."
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+authors = [
+    {name = "Prismind Analytics", email = "hello@prismindanalytics.com"},
+]
+keywords = ["ai", "knowledge-base", "developer-tools", "llm", "productivity"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Software Development :: Documentation",
+]
+
+# Zero external dependencies — stdlib only
+dependencies = []
+
+[project.urls]
+Homepage = "https://gyrus.sh"
+Repository = "https://github.com/prismindanalytics/gyrus"
+Issues = "https://github.com/prismindanalytics/gyrus/issues"
+
+[project.scripts]
+gyrus = "ingest:main"
+
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
