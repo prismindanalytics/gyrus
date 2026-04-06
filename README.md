@@ -186,7 +186,12 @@ Gyrus works with any supported LLM. Configure anytime in `~/.gyrus/config.json`:
 }
 ```
 
-**Available models:** `haiku`, `sonnet`, `opus`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.4-nano`, `o3`, `o4-mini`, `gemini-flash`, `gemini-lite`, `gemini-pro`. Or pass any raw model ID (e.g. `claude-sonnet-4-20250514`).
+**Available models (16):**
+- **Anthropic:** `haiku` (Claude Haiku 4.5), `sonnet` (Claude Sonnet 4.6), `opus` (Claude Opus 4.6)
+- **OpenAI:** `gpt-4.1-mini`, `gpt-4.1-nano`, `gpt-4.1`, `gpt-5.4-mini`, `gpt-5.4-nano`, `gpt-5.4`, `gpt-5.4-pro`, `o3`, `o4-mini`
+- **Google:** `gemini-flash` (Gemini 3 Flash), `gemini-lite` (Gemini 3.1 Flash Lite), `gemini-pro` (Gemini 3.1 Pro)
+
+Or pass any raw model ID (e.g. `claude-sonnet-4-20250514`).
 
 ### Full config.json Reference
 
@@ -210,8 +215,27 @@ Gyrus works with any supported LLM. Configure anytime in `~/.gyrus/config.json`:
 | `merge_model` | `sonnet` | Model for merging thoughts into knowledge pages (stronger) |
 | `excluded_tools` | `[]` | Tools to skip during ingestion (e.g. `["antigravity"]`) |
 | `repo_groups` | `{}` | Map repo folder names to canonical project names (e.g. `{"backend": "myapp", "frontend": "myapp"}`) |
+| `parallel_extractions` | `4` | Number of parallel extraction workers |
+| `digest.enabled` | `false` | Enable daily digest after each ingestion run |
+| `digest.email` | — | Email address to send digest to |
+| `digest.provider` | `"resend"` | Email provider: `"resend"` or `"smtp"` |
+| `digest.resend_api_key` | — | Resend API key (if provider is resend) |
 
-**Recommendation:** Use a fast/cheap model for extraction (Haiku, GPT-5.4-nano, Gemini Flash) and a stronger model for merging (Sonnet, GPT-5.4, Gemini Pro). Extraction runs on every session; merging runs once per touched project — so extraction volume is higher but each call is smaller.
+**Recommendation:** Run `--compare-models` to benchmark on your own data. It tests all available models, generates sample wiki pages, and an AI judge grades quality. You choose both extraction and merge models.
+
+### CLI Reference
+
+| Command | Description |
+|---------|-------------|
+| `--compare-models` | Benchmark models on your sessions, pick extraction + merge models |
+| `--review-status` | Interactively review and set project statuses |
+| `--digest` | Generate a digest of recent activity |
+| `--eval` | Run prompt quality eval against golden fixtures |
+| `--eval-curate` | Create golden test fixtures from real sessions |
+| `--update` | Update Gyrus to the latest version from GitHub |
+| `--dry-run` | Run extraction without saving (for testing) |
+| `--backfill` | Rebuild knowledge pages from existing thoughts |
+| `--base-dir PATH` | Use a custom base directory (default: `~/.gyrus`) |
 
 ---
 
@@ -355,7 +379,53 @@ Raw data flows through LLM extraction into a structured, compounding knowledge b
 > Week 3: "Pulse's moat is sub-second query latency + native payment integration"
 > Week 4: "Pulse needs demo by end of month. Ship churn predictor or cut scope."
 
-The knowledge compounds. That's the point.
+Pages are LLM-maintained drafts — review and edit them like any other doc.
+
+---
+
+## Daily Digest
+
+Get a daily email summarizing what changed across your projects:
+
+```json
+{
+  "digest": {
+    "enabled": true,
+    "email": "you@example.com",
+    "provider": "resend",
+    "resend_api_key": "re_..."
+  }
+}
+```
+
+The digest runs automatically after each ingestion. Generate one on demand with `--digest`. Supports Resend (recommended) and SMTP (Gmail, etc.).
+
+---
+
+## Quality Framework
+
+Gyrus includes an eval framework for iteratively improving extraction and merge quality.
+
+```bash
+# Create golden test fixtures from your sessions
+cd ~/.gyrus && uv run ingest.py --eval-curate
+
+# Run eval against golden fixtures
+cd ~/.gyrus && uv run ingest.py --eval
+
+# Save prompt version for comparison
+cd ~/.gyrus && uv run ingest.py --eval-save-prompt v1
+
+# Compare two prompt versions
+cd ~/.gyrus && uv run ingest.py --eval --eval-compare v1 v2
+
+# Regression gate (exit 1 if quality dropped)
+cd ~/.gyrus && uv run ingest.py --eval --eval-regression
+```
+
+The eval scores extraction on 5 metrics (recall, precision, noise rejection, project attribution, count calibration) and merge on 5 metrics (hallucination detection, content completeness, structural integrity, staleness detection, append-only compliance).
+
+Current extraction quality: **0.90** composite across 7 golden fixtures.
 
 ---
 
@@ -475,21 +545,21 @@ PRs welcome.
 
 ---
 
+## Update
+
+```bash
+cd ~/.gyrus && uv run ingest.py --update
+```
+
+Downloads the latest scripts from GitHub. Your knowledge base, config, and API keys are preserved.
+
 ## Uninstall
 
 ```bash
-# Remove the cron job
-crontab -l | grep -v "ingest.py" | crontab -
-
-# Remove the Claude Code skill
-rm -f ~/.claude/commands/gyrus.md
-
-# Remove Gyrus itself (back up ~/.gyrus/projects/ first if you want to keep your knowledge)
-rm -rf ~/.gyrus
-
-# Optional: remove uv if you don't use it for anything else
-rm -rf ~/.local/bin/uv ~/.cache/uv
+curl -fsSL https://gyrus.sh/uninstall | bash
 ```
+
+Removes the cron job, Claude Code skill, and `~/.gyrus/` directory. Warns you to back up your knowledge base first.
 
 On Windows:
 ```powershell
