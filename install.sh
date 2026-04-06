@@ -300,13 +300,18 @@ check_source() {
   local name="$1"
   local path="$2"
   if [ -d "$path" ]; then
-    local count
-    count=$(find "$path" -type f 2>/dev/null | head -500 | wc -l | tr -d ' ' || true)
+    local count label
+    count=$(find "$path" -type f 2>/dev/null | wc -l | tr -d ' ' || echo "0")
     if [ "$count" -gt 0 ] 2>/dev/null; then
       FOUND_INDEX=$((FOUND_INDEX + 1))
       FOUND_TOOLS+=("$name")
       FOUND_COUNTS+=("$count")
-      echo -e "  ${GREEN}[$FOUND_INDEX]${NC} $name: ${BOLD}$count${NC} session files found"
+      if [ "$count" -gt 999 ]; then
+        label="${count%???},${count#${count%???}}"  # rough thousands formatting
+      else
+        label="$count"
+      fi
+      echo -e "  ${GREEN}[$FOUND_INDEX]${NC} $name: ${BOLD}$label${NC} session files found"
     fi
   fi
 }
