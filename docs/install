@@ -388,7 +388,7 @@ esac
 # Use uv to run Python — self-contained, no system Python dependency
 UV_PATH=$(command -v uv)
 # ingest.py auto-loads .env, so no need to embed the API key in the cron entry
-CRON_CMD="$CRON_SCHEDULE cd \"$GYRUS_DIR\" && \"$UV_PATH\" run --python $UV_PYTHON \"$INGEST_SCRIPT\" >> \"$LOG_FILE\" 2>&1"
+CRON_CMD="$CRON_SCHEDULE cd \"$GYRUS_DIR\" && \"$UV_PATH\" run --python \"$UV_PYTHON\" \"$INGEST_SCRIPT\" >> \"$LOG_FILE\" 2>&1"
 
 EXISTING_CRON=$(crontab -l 2>/dev/null || true)
 if echo "$EXISTING_CRON" | grep -q "ingest.py"; then
@@ -541,11 +541,12 @@ if [ -f "$CONFIG_FILE" ]; then
     EXCLUDE_JSON="[]"
   fi
   "$UV" run --python "$UV_PYTHON" -c "
-import json
-with open('$CONFIG_FILE') as f: cfg = json.load(f)
-cfg['excluded_tools'] = $EXCLUDE_JSON
-with open('$CONFIG_FILE', 'w') as f: json.dump(cfg, f, indent=2)
-" 2>/dev/null || true
+import json, sys
+cfg_path = sys.argv[1]
+with open(cfg_path) as f: cfg = json.load(f)
+cfg['excluded_tools'] = json.loads(sys.argv[2])
+with open(cfg_path, 'w') as f: json.dump(cfg, f, indent=2)
+" "$CONFIG_FILE" "$EXCLUDE_JSON" 2>/dev/null || true
   if [ "${#EXCLUDED_KEYS[@]}" -gt 0 ]; then
     print_ok "Saved exclusions to config.json"
   else

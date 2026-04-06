@@ -41,7 +41,10 @@ def _notion_request(method, endpoint, notion_key, data=None):
                 time.sleep(retry_after)
                 continue
             # Read error body for debugging
-            err_body = e.read().decode("utf-8", errors="replace") if e.fp else ""
+            try:
+                err_body = e.read().decode("utf-8", errors="replace") if e.fp else ""
+            except Exception:
+                err_body = ""
             raise RuntimeError(f"Notion API {method} {endpoint} → {e.code}: {err_body}") from e
     raise RuntimeError(f"Notion API rate-limited after {MAX_RETRIES} retries: {method} {endpoint}")
 

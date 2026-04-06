@@ -197,20 +197,21 @@ Or pass any raw model ID (e.g. `claude-sonnet-4-20250514`).
 
 ```json
 {
-  "anthropic_key": "sk-ant-...",
-  "openai_key": "sk-...",
-  "google_key": "AI...",
   "extract_model": "gpt-4.1-mini",
   "merge_model": "sonnet",
   "excluded_tools": []
 }
 ```
 
+API keys go in `~/.gyrus/.env` (not config.json):
+```
+ANTHROPIC_API_KEY=sk-ant-...
+OPENAI_API_KEY=sk-...
+GEMINI_API_KEY=AI...
+```
+
 | Key | Default | Description |
 |-----|---------|-------------|
-| `anthropic_key` | — | Anthropic API key (required for Haiku/Sonnet/Opus) |
-| `openai_key` | — | OpenAI API key (required for GPT-5.4/o3/o4-mini) |
-| `google_key` | — | Google AI API key (required for Gemini models) |
 | `extract_model` | `gpt-4.1-mini` | Model for extracting thoughts from sessions |
 | `merge_model` | `sonnet` | Model for merging thoughts into knowledge pages (stronger) |
 | `excluded_tools` | `[]` | Tools to skip during ingestion (e.g. `["antigravity"]`) |

@@ -22,7 +22,7 @@ import time
 from collections import defaultdict
 from difflib import SequenceMatcher
 from pathlib import Path
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError
 
@@ -1365,6 +1365,19 @@ def call_llm(prompt, role="extract", max_tokens=2048, model_override=None):
             raise
 
 
+def _strip_json_fences(text):
+    """Safely extract JSON from markdown code fences."""
+    if "```json" in text:
+        parts = text.split("```json", 1)
+        if len(parts) > 1:
+            inner = parts[1]
+            text = inner.split("```")[0] if "```" in inner else inner
+    elif "```" in text:
+        parts = text.split("```")
+        text = parts[1] if len(parts) > 1 else text
+    return text.strip()
+
+
 def call_claude(text, anthropic_key, workspace="", repo_groups=None):
     """Extract thoughts — uses configured extraction model."""
     # Build workspace context header
@@ -1381,10 +1394,7 @@ def call_claude(text, anthropic_key, workspace="", repo_groups=None):
     prompt = EXTRACTION_PROMPT + workspace_header + "CONVERSATION:\n" + text
     try:
         text = call_llm(prompt, role="extract", max_tokens=2048)
-        if "```json" in text:
-            text = text.split("```json")[1].split("```")[0]
-        elif "```" in text:
-            text = text.split("```")[1].split("```")[0]
+        text = _strip_json_fences(text)
         return json.loads(text.strip())
     except (HTTPError, json.JSONDecodeError, KeyError, IndexError, ValueError) as e:
         print(f"  LLM extraction error: {e}")
@@ -1552,7 +1562,7 @@ def merge_into_knowledge_pages(thoughts_by_project, store, anthropic_key):
 
         try:
             response_text = call_sonnet(prompt, anthropic_key)
-        except (HTTPError, KeyError, IndexError) as e:
+        except (HTTPError, KeyError, IndexError, ValueError, json.JSONDecodeError) as e:
             print(f"    Merge API error: {e}")
             continue
 
@@ -1608,7 +1618,7 @@ def merge_into_me_page(thoughts, store, anthropic_key):
 
     try:
         response_text = call_sonnet(prompt, anthropic_key)
-    except (HTTPError, KeyError, IndexError) as e:
+    except (HTTPError, KeyError, IndexError, ValueError, json.JSONDecodeError) as e:
         print(f"    Me page merge error: {e}")
         return
 
@@ -1658,7 +1668,7 @@ def merge_into_ideas_page(thoughts, store, anthropic_key):
 
     try:
         response_text = call_sonnet(prompt, anthropic_key)
-    except (HTTPError, KeyError, IndexError) as e:
+    except (HTTPError, KeyError, IndexError, ValueError, json.JSONDecodeError) as e:
         print(f"    Ideas page merge error: {e}")
         return
 
@@ -1698,12 +1708,12 @@ def run_cross_reference_scan(store, anthropic_key, new_thoughts=None):
         content = p["content"]
         overview = ""
         if "## Overview" in content:
-            start = content.index("## Overview") + len("## Overview")
+            start = content.find("## Overview") + len("## Overview")
             end = content.find("\n##", start)
             overview = content[start:end].strip()[:300] if end > 0 else content[start:start + 300].strip()
         connections = ""
         if "## Connections" in content:
-            start = content.index("## Connections") + len("## Connections")
+            start = content.find("## Connections") + len("## Connections")
             end = content.find("\n##", start)
             connections = content[start:end].strip()[:200] if end > 0 else content[start:start + 200].strip()
         summaries.append(f"- **{p['slug']}**: {overview}\n  Connections: {connections or 'none'}")
@@ -1723,10 +1733,7 @@ def run_cross_reference_scan(store, anthropic_key, new_thoughts=None):
     try:
         response_text = call_sonnet(prompt, anthropic_key, max_tokens=2048)
 
-        if "```json" in response_text:
-            response_text = response_text.split("```json")[1].split("```")[0]
-        elif "```" in response_text:
-            response_text = response_text.split("```")[1].split("```")[0]
+        response_text = _strip_json_fences(response_text)
 
         findings = json.loads(response_text.strip())
 
@@ -1827,7 +1834,7 @@ def review_project_status(store):
         content = p["content"]
         detected_status = "unknown"
         if "## Status" in content:
-            start = content.index("## Status") + len("## Status")
+            start = content.find("## Status") + len("## Status")
             end = content.find("\n##", start)
             status_line = content[start:end].strip() if end > 0 else content[start:start + 120].strip()
             first_word = status_line.split("|")[0].strip().split()[0].lower() if status_line else "unknown"
@@ -1900,7 +1907,7 @@ def generate_status(store):
         content = p["content"]
         detected = "unknown"
         if "## Status" in content:
-            start = content.index("## Status") + len("## Status")
+            start = content.find("## Status") + len("## Status")
             end = content.find("\n##", start)
             status_line = content[start:end].strip() if end > 0 else ""
             first_word = status_line.split("|")[0].strip().split()[0].lower() if status_line else "unknown"
@@ -2334,10 +2341,7 @@ def compare_models(keys, base_dir, file_config=None):
         try:
             raw = call_llm(prompt, role="extract", max_tokens=2048, model_override=model_name)
             elapsed = time.time() - t0
-            if "```json" in raw:
-                raw = raw.split("```json")[1].split("```")[0]
-            elif "```" in raw:
-                raw = raw.split("```")[1].split("```")[0]
+            raw = _strip_json_fences(raw)
             thoughts = json.loads(raw.strip())
         except Exception:
             elapsed = time.time() - t0
@@ -2476,11 +2480,8 @@ Output ONLY the JSON object, no other text."""
 
             try:
                 raw = call_llm(grade_prompt, role="merge", max_tokens=2048, model_override=judge_model)
-                if "```json" in raw:
-                    raw = raw.split("```json")[1].split("```")[0]
-                elif "```" in raw:
-                    raw = raw.split("```")[1].split("```")[0]
-                grades = json.loads(raw.strip())
+                raw = _strip_json_fences(raw)
+                grades = json.loads(raw)
                 for m, g in grades.items():
                     score = g.get("overall", "?")
                     summary = g.get("summary", "")[:60]
@@ -3064,7 +3065,7 @@ def main():
             dt_str = t.get("created_at", "")[:10]
             try:
                 dt = datetime.fromisoformat(dt_str)
-                week_start = dt - __import__('datetime').timedelta(days=dt.weekday())
+                week_start = dt - timedelta(days=dt.weekday())
                 week_key = week_start.strftime("%Y-%m-%d")
             except (ValueError, TypeError):
                 week_key = "unknown"

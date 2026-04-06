@@ -120,7 +120,7 @@ def main():
             print(f"  Skipping {model_name} (no {provider} key)")
             continue
 
-        ingest._config["extract_model"] = model_name
+        # Set keys once (don't mutate extract_model — use model_override instead)
         ingest._config["keys"] = {k: v for k, v in key_map.items() if v}
 
         print(f"{'='*60}")
@@ -145,13 +145,10 @@ def main():
 
             t0 = time.time()
             try:
-                raw = ingest.call_llm(prompt, role="extract", max_tokens=2048)
+                raw = ingest.call_llm(prompt, role="extract", max_tokens=2048, model_override=model_name)
                 elapsed = time.time() - t0
-                if "```json" in raw:
-                    raw = raw.split("```json")[1].split("```")[0]
-                elif "```" in raw:
-                    raw = raw.split("```")[1].split("```")[0]
-                thoughts = json.loads(raw.strip())
+                raw = ingest._strip_json_fences(raw)
+                thoughts = json.loads(raw)
             except Exception as e:
                 elapsed = time.time() - t0
                 print(f"  Session {i+1}: ERROR ({elapsed:.1f}s) - {e}")
