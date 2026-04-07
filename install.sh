@@ -81,9 +81,6 @@ OPTION_NUM=$((OPTION_NUM + 1))
 OBSIDIAN_OPTION=$OPTION_NUM
 echo -e "  ${BOLD}[$OPTION_NUM]${NC} Obsidian vault ${DIM}(opens in Obsidian as linked notes)${NC}"
 OPTION_NUM=$((OPTION_NUM + 1))
-NOTION_OPTION=$OPTION_NUM
-echo -e "  ${BOLD}[$OPTION_NUM]${NC} Notion ${DIM}(one-way export via Claude Code MCP, not two-way sync)${NC}"
-OPTION_NUM=$((OPTION_NUM + 1))
 CUSTOM_OPTION=$OPTION_NUM
 echo -e "  ${BOLD}[$OPTION_NUM]${NC} Custom path"
 echo ""
@@ -108,13 +105,6 @@ case "$SYNC_CHOICE" in
   "$OBSIDIAN_OPTION")
     echo -e "  ${DIM}Enter your Obsidian vault path (e.g., ~/Documents/MyVault/gyrus):${NC}"
     read -r -p "  Vault path: " CUSTOM_DIR < /dev/tty
-    ;;
-  "$NOTION_OPTION")
-    echo -e "  ${DIM}Notion sync works via Claude Code's MCP connection.${NC}"
-    echo -e "  ${DIM}1. Connect Notion MCP in Claude Code (Settings → MCP Servers)${NC}"
-    echo -e "  ${DIM}2. Use /gyrus push-notion to sync pages to your Notion workspace${NC}"
-    echo -e ""
-    echo -e "  ${DIM}Gyrus will store locally first. You can push to Notion anytime.${NC}"
     ;;
   "$CUSTOM_OPTION")
     read -r -p "  Custom path: " CUSTOM_DIR < /dev/tty
