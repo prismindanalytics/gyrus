@@ -82,7 +82,7 @@ OBSIDIAN_OPTION=$OPTION_NUM
 echo -e "  ${BOLD}[$OPTION_NUM]${NC} Obsidian vault ${DIM}(opens in Obsidian as linked notes)${NC}"
 OPTION_NUM=$((OPTION_NUM + 1))
 NOTION_OPTION=$OPTION_NUM
-echo -e "  ${BOLD}[$OPTION_NUM]${NC} Notion ${DIM}(via Claude Code MCP — see gyrus.sh docs)${NC}"
+echo -e "  ${BOLD}[$OPTION_NUM]${NC} Notion ${DIM}(one-way export via Claude Code MCP, not two-way sync)${NC}"
 OPTION_NUM=$((OPTION_NUM + 1))
 CUSTOM_OPTION=$OPTION_NUM
 echo -e "  ${BOLD}[$OPTION_NUM]${NC} Custom path"
