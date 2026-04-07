@@ -65,12 +65,27 @@ print_step "Step 2: Where should Gyrus store your knowledge base?"
 
 echo ""
 echo -e "  ${BOLD}[1]${NC} Default: ${BOLD}~/.gyrus${NC} ${DIM}(local only)${NC}"
+OPTION_NUM=2
 if [ "$(uname)" = "Darwin" ]; then
   ICLOUD_DIR="$HOME/Library/Mobile Documents/com~apple~CloudDocs/gyrus"
-  echo -e "  ${BOLD}[2]${NC} iCloud:  ${DIM}~/Library/Mobile Documents/com~apple~CloudDocs/gyrus${NC}"
+  ICLOUD_OPTION=$OPTION_NUM
+  echo -e "  ${BOLD}[$OPTION_NUM]${NC} iCloud ${DIM}(syncs across Apple devices)${NC}"
+  OPTION_NUM=$((OPTION_NUM + 1))
 fi
-echo -e "  ${BOLD}[3]${NC} Dropbox: ${DIM}~/Dropbox/gyrus${NC}"
-echo -e "  ${BOLD}[4]${NC} Custom path ${DIM}(Obsidian vault, Google Drive, etc.)${NC}"
+DROPBOX_OPTION=$OPTION_NUM
+echo -e "  ${BOLD}[$OPTION_NUM]${NC} Dropbox ${DIM}(syncs across all platforms)${NC}"
+OPTION_NUM=$((OPTION_NUM + 1))
+GDRIVE_OPTION=$OPTION_NUM
+echo -e "  ${BOLD}[$OPTION_NUM]${NC} Google Drive ${DIM}(syncs via Google Drive desktop app)${NC}"
+OPTION_NUM=$((OPTION_NUM + 1))
+OBSIDIAN_OPTION=$OPTION_NUM
+echo -e "  ${BOLD}[$OPTION_NUM]${NC} Obsidian vault ${DIM}(opens in Obsidian as linked notes)${NC}"
+OPTION_NUM=$((OPTION_NUM + 1))
+NOTION_OPTION=$OPTION_NUM
+echo -e "  ${BOLD}[$OPTION_NUM]${NC} Notion ${DIM}(requires Notion API key — separate setup)${NC}"
+OPTION_NUM=$((OPTION_NUM + 1))
+CUSTOM_OPTION=$OPTION_NUM
+echo -e "  ${BOLD}[$OPTION_NUM]${NC} Custom path"
 echo ""
 echo -e "  ${DIM}To sync across machines, choose a cloud folder. Same knowledge base everywhere.${NC}"
 echo ""
@@ -78,10 +93,28 @@ read -r -p "  Choice [1]: " SYNC_CHOICE < /dev/tty
 SYNC_CHOICE="${SYNC_CHOICE:-1}"
 
 CUSTOM_DIR=""
+STORAGE_MODE="markdown"
 case "$SYNC_CHOICE" in
-  2) CUSTOM_DIR="${ICLOUD_DIR:-}" ;;
-  3) CUSTOM_DIR="$HOME/Dropbox/gyrus" ;;
-  4)
+  "${ICLOUD_OPTION:-99}") CUSTOM_DIR="${ICLOUD_DIR:-}" ;;
+  "$DROPBOX_OPTION") CUSTOM_DIR="$HOME/Dropbox/gyrus" ;;
+  "$GDRIVE_OPTION")
+    # Google Drive path varies by platform
+    if [ "$(uname)" = "Darwin" ]; then
+      CUSTOM_DIR="$HOME/Library/CloudStorage/GoogleDrive/My Drive/gyrus"
+    else
+      CUSTOM_DIR="$HOME/Google Drive/gyrus"
+    fi
+    ;;
+  "$OBSIDIAN_OPTION")
+    echo -e "  ${DIM}Enter your Obsidian vault path (e.g., ~/Documents/MyVault/gyrus):${NC}"
+    read -r -p "  Vault path: " CUSTOM_DIR < /dev/tty
+    ;;
+  "$NOTION_OPTION")
+    STORAGE_MODE="notion"
+    echo -e "  ${DIM}Notion storage selected. You'll need a Notion API key and database ID.${NC}"
+    echo -e "  ${DIM}See: https://github.com/prismindanalytics/gyrus#notion-integration${NC}"
+    ;;
+  "$CUSTOM_OPTION")
     read -r -p "  Custom path: " CUSTOM_DIR < /dev/tty
     ;;
 esac
