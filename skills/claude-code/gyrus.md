@@ -1,52 +1,20 @@
 # Gyrus — Query your knowledge base
 
-You have access to Gyrus, a knowledge base built from all your AI tool sessions (Claude Code, Claude Cowork, Codex, Cursor, Copilot, and more). It lives as markdown files in `~/.gyrus/`.
+You have access to Gyrus, a knowledge base built from all your AI tool sessions (Claude Code, Cowork, Codex, Antigravity). It lives as markdown files in `~/.gyrus/`.
 
-## How to use
+## Query the knowledge base
 
-Read the local markdown files directly.
-
-### Browse all projects
 ```bash
-ls ~/.gyrus/projects/
+ls ~/.gyrus/projects/              # browse all projects
+cat ~/.gyrus/projects/PROJECT.md   # read a project page
+grep -ri "SEARCH_TERM" ~/.gyrus/   # search across everything
+cat ~/.gyrus/status.md             # project statuses
+cat ~/.gyrus/me.md                 # personal patterns
+cat ~/.gyrus/latest-digest.md      # latest activity digest
 ```
 
-### Read a project page
-```bash
-cat ~/.gyrus/projects/PROJECT_NAME.md
-```
+## Run Gyrus
 
-### Search across all knowledge
-```bash
-grep -ri "SEARCH_TERM" ~/.gyrus/projects/
-```
-
-### Check overall status
-```bash
-cat ~/.gyrus/status.md
-```
-
-### Read personal memory
-```bash
-cat ~/.gyrus/me.md
-```
-
-### Read cross-project insights
-```bash
-cat ~/.gyrus/cross-cutting.md
-```
-
-### Push to Notion (requires Notion MCP connection)
-
-If the user has Notion MCP connected, you can push Gyrus project pages to Notion:
-
-1. Read the project page: `cat ~/.gyrus/projects/PROJECT_NAME.md`
-2. Use the Notion MCP `notion_create_page` tool to create a page in the user's workspace
-3. Or use `notion_update_block` to update an existing page
-
-The user can say "push my projects to Notion" or "sync gyrus to Notion".
-
-### Run Gyrus commands
 ```bash
 gyrus                 # run ingestion
 gyrus compare         # benchmark and choose models
@@ -55,17 +23,50 @@ gyrus digest          # generate activity digest
 gyrus update          # update to latest version
 ```
 
+## Export to connected services
+
+When the user says "push to [service]", "export to [service]", or "sync to [service]", check which MCP servers are available and use them to export Gyrus project pages.
+
+### How to export
+
+1. Read the project page(s): `cat ~/.gyrus/projects/*.md`
+2. Detect which relevant MCP tools are available to you
+3. Use the appropriate MCP tool to create/update content in the target service
+
+### Supported destinations (via MCP)
+
+| Service | MCP tool | What to create |
+|---------|----------|----------------|
+| **Notion** | `notion_create_page`, `notion_update_block` | One Notion page per project |
+| **Linear** | `linear_create_issue`, `linear_create_project` | Project status as Linear project, decisions as issues |
+| **Slack** | `slack_post_message` | Daily digest or project summary to a channel |
+| **GitHub** | `github_create_or_update_file` | Wiki pages in a repo, or update README |
+| **Google Docs** | `google_docs_create`, `google_docs_update` | One doc per project |
+| **Confluence** | `confluence_create_page` | One page per project in a space |
+| **Jira** | `jira_create_issue` | Open questions as Jira tickets |
+
+If the user asks to export but the target MCP isn't connected, suggest they connect it first (Settings → MCP Servers in Claude Code).
+
+### Export all projects
+
+If user says "push everything to Notion" or "export all to Slack":
+1. List all project pages: `ls ~/.gyrus/projects/`
+2. For each `.md` file, read it and push to the target
+3. Report what was exported
+
 ## When to use
 
-- User asks "what did we decide about X?" — search the knowledge base
-- User asks "has this been explored before?" — search projects
-- At the start of a project session — read that project's page for context
-- User says "gyrus", "check gyrus", or "what do we know about" — query the knowledge base
-- User says "push to Notion" or "sync to Notion" — push pages via Notion MCP
+- User asks "what did we decide about X?" → search the knowledge base
+- User asks "has this been explored before?" → search projects
+- At the start of a session → read the relevant project page for context
+- User says "gyrus", "check gyrus", "what do we know about" → query
+- User says "push to [service]" or "export to [service]" → export via MCP
+- User says "send digest to Slack" → read digest, post via Slack MCP
 
 ## Guidelines
 
-- Present results as a concise summary, not raw file dumps
+- Present results as concise summaries, not raw file dumps
 - Highlight key decisions, open questions, and recent activity
 - Note when information might be stale (check dates in the pages)
-- The knowledge base updates automatically — you're always reading the latest version
+- For exports: confirm the target and scope before pushing (one project vs all)
+- The knowledge base updates automatically via cron
