@@ -1317,7 +1317,7 @@ _COST_PER_CALL = {
 }
 
 
-def call_llm(prompt, role="extract", max_tokens=2048, model_override=None):
+def call_llm(prompt, role="extract", max_tokens=4096, model_override=None):
     """Unified LLM call. Role is 'extract' or 'merge' — picks the configured model."""
     model_name = model_override or (_config["extract_model"] if role == "extract" else _config["merge_model"])
     if role == "merge":
@@ -1393,9 +1393,22 @@ def call_claude(text, anthropic_key, workspace="", repo_groups=None):
 
     prompt = EXTRACTION_PROMPT + workspace_header + "CONVERSATION:\n" + text
     try:
-        text = call_llm(prompt, role="extract", max_tokens=2048)
+        text = call_llm(prompt, role="extract", max_tokens=4096)
         text = _strip_json_fences(text)
-        thoughts = json.loads(text)
+        try:
+            thoughts = json.loads(text)
+        except json.JSONDecodeError:
+            # Try to recover truncated JSON arrays: "[{...}, {..." → "[{...}]"
+            if text.startswith("["):
+                # Find the last complete object
+                last_close = text.rfind("}")
+                if last_close > 0:
+                    recovered = text[:last_close + 1] + "]"
+                    thoughts = json.loads(recovered)
+                else:
+                    thoughts = []
+            else:
+                thoughts = []
         # Normalize: some models return strings instead of objects
         normalized = []
         for t in thoughts:
@@ -2347,7 +2360,7 @@ def compare_models(keys, base_dir, file_config=None):
         prompt = EXTRACTION_PROMPT + ws_header + "CONVERSATION:\n" + text
         t0 = time.time()
         try:
-            raw = call_llm(prompt, role="extract", max_tokens=2048, model_override=model_name)
+            raw = call_llm(prompt, role="extract", max_tokens=4096, model_override=model_name)
             elapsed = time.time() - t0
             raw = _strip_json_fences(raw)
             thoughts = json.loads(raw.strip())
