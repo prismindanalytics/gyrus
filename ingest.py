@@ -1395,7 +1395,15 @@ def call_claude(text, anthropic_key, workspace="", repo_groups=None):
     try:
         text = call_llm(prompt, role="extract", max_tokens=2048)
         text = _strip_json_fences(text)
-        return json.loads(text.strip())
+        thoughts = json.loads(text)
+        # Normalize: some models return strings instead of objects
+        normalized = []
+        for t in thoughts:
+            if isinstance(t, dict):
+                normalized.append(t)
+            elif isinstance(t, str) and len(t) > 10:
+                normalized.append({"content": t, "project": None, "tags": [], "kind": "project"})
+        return normalized
     except (HTTPError, json.JSONDecodeError, KeyError, IndexError, ValueError) as e:
         print(f"  LLM extraction error: {e}")
         return []
