@@ -2436,7 +2436,8 @@ def compare_models(keys, base_dir, file_config=None):
 
     # ── Grade each model's output using the strongest available model ──
     # Pick the best judge: sonnet > gpt-4.1 > gpt-4.1-mini > haiku > gemini-pro
-    judge_priority = ["sonnet", "gpt-4.1", "gpt-4.1-mini", "haiku", "gemini-pro", "gemini-flash"]
+    # Best judges: frontier models from each provider
+    judge_priority = ["opus", "gpt-5.4", "gemini-pro", "sonnet", "gpt-4.1", "gpt-4.1-mini", "haiku"]
     judge_model = None
     for jp in judge_priority:
         resolved = _resolve_model(jp)
@@ -2458,16 +2459,18 @@ def compare_models(keys, base_dir, file_config=None):
                 # Truncate to 2000 chars per model to fit in context
                 pages_text += f"\n\n--- MODEL: {m} ---\n{page[:2000]}\n"
 
-            grade_prompt = f"""You are evaluating the quality of wiki pages generated from AI coding session extractions.
-Each page below was produced by a different extraction model (the thoughts were extracted by that model, then merged into a wiki page by Sonnet).
+            grade_prompt = f"""You are a strict evaluator of wiki pages generated from AI coding session extractions.
+Each page below was produced by a different extraction model. Your job is to grade quality based ONLY on what you see in each page.
+
+CRITICAL: Do NOT invent, assume, or reference any information not present in the pages below. If a page mentions "GPT-5.2" or any specific detail, only mark it as accurate if it's plausible given the context. Flag anything that looks hallucinated.
 
 Grade each model's wiki page on these criteria:
-1. **Strategic Value** (1-10): Does it capture decisions, insights, and status changes that matter weeks later? Or is it full of technical noise?
-2. **Accuracy** (1-10): Does the content seem factual and grounded, or does it hallucinate/invent details?
-3. **Completeness** (1-10): How thorough is the coverage? Does it miss important aspects?
-4. **Signal-to-Noise** (1-10): Ratio of strategic insights to implementation details or filler.
+1. **Strategic Value** (1-10): Does it capture decisions and insights that matter weeks later? Or technical noise?
+2. **Accuracy** (1-10): Does the content appear grounded in real decisions, or does it contain invented/hallucinated details?
+3. **Completeness** (1-10): How thorough is the coverage?
+4. **Signal-to-Noise** (1-10): Ratio of strategic insights to implementation filler.
 
-Output a JSON object mapping model names to grades:
+Output a JSON object:
 {{
   "model-name": {{
     "overall": 8,
@@ -2475,16 +2478,15 @@ Output a JSON object mapping model names to grades:
     "accuracy": 9,
     "completeness": 7,
     "signal_to_noise": 8,
-    "summary": "One sentence assessment",
+    "summary": "One factual sentence about this page's quality",
     "recommendation": "Best for X use case"
-  }},
-  ...
+  }}
 }}
 
 PAGES TO GRADE:
 {pages_text}
 
-Output ONLY the JSON object, no other text."""
+Output ONLY the JSON object."""
 
             try:
                 raw = call_llm(grade_prompt, role="merge", max_tokens=2048, model_override=judge_model)
