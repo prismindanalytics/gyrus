@@ -533,6 +533,11 @@ if [ "$(uname)" = "Darwin" ]; then
 fi
 
 # ─── Step 7: Scan & Select Sources ───
+if [ "$JOINING_EXISTING" = true ]; then
+  print_step "Step 7: Session sources"
+  print_ok "Using existing config (synced from other machine)"
+  TOTAL_FOUND=1  # fake count so Step 8 still runs
+else
 print_step "Step 7: Scanning for AI tool sessions..."
 
 FOUND_TOOLS=()
@@ -680,9 +685,10 @@ with open(cfg_path, 'w') as f: json.dump(cfg, f, indent=2)
     print_ok "All tools enabled"
   fi
 fi
+fi  # end of JOINING_EXISTING scan check
 
-# ─── Step 8: Compare models (optional) ───
-if [ "$TOTAL_FOUND" -gt 0 ]; then
+# ─── Step 8: Compare models (optional — skip when joining) ───
+if [ "$TOTAL_FOUND" -gt 0 ] && [ "$JOINING_EXISTING" != true ]; then
   print_step "Step 8: Choose your extraction model"
   echo ""
   echo -e "  ${DIM}Gyrus can test different AI models on your sessions${NC}"
@@ -708,15 +714,23 @@ if [ "$TOTAL_FOUND" -gt 0 ]; then
 fi
 
 # ─── The Wow Moment: First Run ───
-echo ""
-echo -e "${BOLD}  Ready to build your knowledge base?${NC}"
-echo -e "  ${DIM}Gyrus will show a cost and time estimate first.${NC}"
-echo -e "  ${DIM}You can choose to run now and watch, run in background, or cancel.${NC}"
-echo ""
-read -r -p "  Start? [Y/n]: " DO_BUILD < /dev/tty
-DO_BUILD="${DO_BUILD:-Y}"
+if [ "$JOINING_EXISTING" = true ]; then
+  # Joining — cron will handle ingestion of this machine's sessions
+  set -a; source "$ENV_FILE" 2>/dev/null; set +a
+  DO_BUILD="n"
+  echo ""
+  print_ok "Knowledge base synced from other machine. Cron will pick up this machine's sessions."
+else
+  echo ""
+  echo -e "${BOLD}  Ready to build your knowledge base?${NC}"
+  echo -e "  ${DIM}Gyrus will show a cost and time estimate first.${NC}"
+  echo -e "  ${DIM}You can choose to run now and watch, run in background, or cancel.${NC}"
+  echo ""
+  read -r -p "  Start? [Y/n]: " DO_BUILD < /dev/tty
+  DO_BUILD="${DO_BUILD:-Y}"
 
-set -a; source "$ENV_FILE"; set +a
+  set -a; source "$ENV_FILE"; set +a
+fi
 
 if [[ "$DO_BUILD" =~ ^[Yy] ]]; then
   echo ""
