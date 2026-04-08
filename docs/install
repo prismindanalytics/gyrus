@@ -202,6 +202,7 @@ case "${1:-}" in
   digest)       shift; set -- --digest "$@" ;;
   status)       shift; set -- --review-status "$@" ;;
   context)      shift; set -- --sync-context "$@" ;;
+  log)          shift; set -- --show-log "$@" ;;
   eval)         shift; set -- --eval "$@" ;;
   curate)       shift; set -- --eval-curate "$@" ;;
   run)          shift ;;  # explicit run, strip the word
@@ -215,6 +216,7 @@ case "${1:-}" in
     echo "  digest       Generate activity digest"
     echo "  eval         Run prompt quality evaluation"
     echo "  curate       Create golden test fixtures"
+    echo "  log          Show recent run history"
     echo "  update       Update Gyrus to latest version"
     echo ""
     echo "Options:"

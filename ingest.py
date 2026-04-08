@@ -10,7 +10,7 @@ Knowledge pages are local markdown files by default.
 https://gyrus.sh
 """
 
-__version__ = "2026.04.08.6"
+__version__ = "2026.04.08.7"
 
 import argparse
 import atexit
@@ -2011,6 +2011,93 @@ def _write_status_md(store, pages, statuses, recency):
 # ─── Daily Digest ───
 
 
+def _save_run_log(store, sessions, thoughts, cost):
+    """Append a structured entry to the run log."""
+    base = store.base_dir if hasattr(store, "base_dir") else Path.home() / ".gyrus"
+    log_path = base / "runs.jsonl"
+
+    # Count by tool
+    by_tool = defaultdict(int)
+    for s in sessions:
+        by_tool[s["type"]] += 1
+
+    # Count by project
+    by_project = defaultdict(int)
+    change_summaries = {}
+    for t in thoughts:
+        cp = t.get("canonical_project") or t.get("merged_into_page") or "uncategorized"
+        by_project[cp] += 1
+
+    # Read change summaries from pages (if available)
+    for p in store.get_all_pages():
+        content = p.get("content", "")
+        if "CHANGE_SUMMARY:" in content:
+            summary = content.split("CHANGE_SUMMARY:")[-1].strip().split("\n")[0]
+            if summary:
+                change_summaries[p["slug"]] = summary
+
+    entry = {
+        "timestamp": datetime.now().isoformat(),
+        "machine": _MACHINE,
+        "sessions": len(sessions),
+        "thoughts": len(thoughts),
+        "cost": round(cost, 3),
+        "by_tool": dict(by_tool),
+        "by_project": dict(by_project),
+        "pages_updated": list(by_project.keys()),
+        "extract_model": _config.get("extract_model", ""),
+        "merge_model": _config.get("merge_model", ""),
+    }
+
+    with open(log_path, "a") as f:
+        f.write(json.dumps(entry, default=str) + "\n")
+
+
+def show_run_log(base_dir, n=10):
+    """Display recent run history."""
+    log_path = Path(base_dir) / "runs.jsonl"
+    if not log_path.exists():
+        print("  No run history yet. Run 'gyrus' to start ingestion.")
+        return
+
+    entries = []
+    for line in log_path.read_text().splitlines():
+        try:
+            entries.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+
+    if not entries:
+        print("  No run history.")
+        return
+
+    recent = entries[-n:]
+    print(f"\n  Last {len(recent)} runs:\n")
+    print(f"  {'Date':<20} {'Machine':<15} {'Sessions':>8} {'Thoughts':>8} {'Cost':>8} {'Projects Updated'}")
+    print(f"  {'─'*20} {'─'*15} {'─'*8} {'─'*8} {'─'*8} {'─'*30}")
+
+    for e in recent:
+        ts = e.get("timestamp", "")[:16].replace("T", " ")
+        machine = e.get("machine", "?")[:14]
+        sessions = e.get("sessions", 0)
+        thoughts = e.get("thoughts", 0)
+        cost = e.get("cost", 0)
+        projects = e.get("pages_updated", [])
+
+        if sessions == 0 and thoughts == 0:
+            detail = "(no new sessions)"
+        else:
+            detail = ", ".join(projects[:5])
+            if len(projects) > 5:
+                detail += f" +{len(projects)-5} more"
+
+        print(f"  {ts:<20} {machine:<15} {sessions:>8} {thoughts:>8} ${cost:>7.3f} {detail}")
+
+    # Total cost
+    total = sum(e.get("cost", 0) for e in entries)
+    print(f"\n  Total cost (all runs): ${total:.2f}")
+
+
 def sync_tool_context(store):
     """Write Gyrus read instructions to AI tool instruction files.
 
@@ -2901,6 +2988,10 @@ def main():
                         help="Generate a digest from the latest ingestion run")
     parser.add_argument("--sync-context", action="store_true",
                         help="Write project context to AI tool instruction files")
+    parser.add_argument("--show-log", action="store_true",
+                        help="Show recent run history")
+    parser.add_argument("--log-count", type=int, default=10,
+                        help="Number of recent runs to show (default: 10)")
     parser.add_argument("--eval", action="store_true",
                         help="Run prompt quality eval against golden fixtures")
     parser.add_argument("--eval-curate", action="store_true",
@@ -3006,6 +3097,11 @@ def main():
             digest_config = file_config.get("digest", {})
             if digest_config.get("email"):
                 send_digest_email(digest, digest_config, env_base)
+        sys.exit(0)
+
+    # Handle --show-log early
+    if args.show_log:
+        show_run_log(env_base, n=args.log_count)
         sys.exit(0)
 
     # Handle --sync-context early
@@ -3472,7 +3568,7 @@ def main():
             digest_path.write_text(digest)
             print(f"  Digest: {digest_path}")
 
-    # ── Summary ──
+    # ── Summary + Run Log ──
     extract_model = _config["extract_model"]
     merge_model = _config["merge_model"]
     extract_cost = _usage["extract_calls"] * _COST_PER_CALL.get(extract_model, 0.01)
@@ -3485,6 +3581,10 @@ def main():
           f"{_usage['merge_calls']} merge ({merge_model})")
     if total_cost > 0:
         print(f"  Estimated cost this run: ~${total_cost:.3f}")
+
+    # Save structured run log
+    if not args.dry_run:
+        _save_run_log(store, all_sessions, batch_thoughts, total_cost)
 
     # Offer status review on first run (interactive terminal only)
     if batch_thoughts and not args.dry_run and sys.stdin.isatty():
