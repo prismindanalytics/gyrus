@@ -10,7 +10,7 @@ Knowledge pages are local markdown files by default.
 https://gyrus.sh
 """
 
-__version__ = "2026.04.08.2"
+__version__ = "2026.04.08.3"
 
 import argparse
 import atexit
@@ -3451,4 +3451,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-# auto-version test
