@@ -201,6 +201,7 @@ case "${1:-}" in
   compare)      shift; set -- --compare-models "$@" ;;
   digest)       shift; set -- --digest "$@" ;;
   status)       shift; set -- --review-status "$@" ;;
+  context)      shift; set -- --sync-context "$@" ;;
   eval)         shift; set -- --eval "$@" ;;
   curate)       shift; set -- --eval-curate "$@" ;;
   run)          shift ;;  # explicit run, strip the word
