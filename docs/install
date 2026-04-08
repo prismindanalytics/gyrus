@@ -232,9 +232,27 @@ chmod +x "$GYRUS_BIN"
 print_ok "Installed 'gyrus' command to $GYRUS_BIN"
 echo -e "  ${DIM}Usage: gyrus compare, gyrus update, gyrus digest, gyrus help${NC}"
 if ! echo "$PATH" | grep -q "$HOME/.local/bin"; then
-  echo ""
-  echo -e "  ${YELLOW}!${NC} Add to your shell profile to use 'gyrus' from anywhere:"
-  echo -e "  ${DIM}  echo 'export PATH=\"\$HOME/.local/bin:\$PATH\"' >> ~/.zshrc${NC}"
+  # Auto-add to shell profile
+  SHELL_PROFILE=""
+  if [ -f "$HOME/.zshrc" ]; then
+    SHELL_PROFILE="$HOME/.zshrc"
+  elif [ -f "$HOME/.bashrc" ]; then
+    SHELL_PROFILE="$HOME/.bashrc"
+  elif [ -f "$HOME/.bash_profile" ]; then
+    SHELL_PROFILE="$HOME/.bash_profile"
+  fi
+
+  if [ -n "$SHELL_PROFILE" ] && ! grep -q '\.local/bin' "$SHELL_PROFILE" 2>/dev/null; then
+    echo '' >> "$SHELL_PROFILE"
+    echo '# Added by Gyrus installer' >> "$SHELL_PROFILE"
+    echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$SHELL_PROFILE"
+    print_ok "Added ~/.local/bin to PATH in $(basename "$SHELL_PROFILE")"
+    echo -e "  ${DIM}Run 'source ~/${SHELL_PROFILE##*/}' or restart your terminal to use 'gyrus'${NC}"
+  else
+    echo -e "  ${YELLOW}!${NC} Add to your shell profile to use 'gyrus' from anywhere:"
+    echo -e "  ${DIM}  echo 'export PATH=\"\$HOME/.local/bin:\$PATH\"' >> ~/.zshrc${NC}"
+  fi
+  export PATH="$HOME/.local/bin:$PATH"
 fi
 
 # ─── Step 4: API keys ───
