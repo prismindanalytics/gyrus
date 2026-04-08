@@ -417,13 +417,65 @@ if [ ${#SKILL_OPTIONS[@]} -gt 0 ]; then
         claude-code)
           CLAUDE_CMD_DIR="$HOME/.claude/commands"
           install_skill "skills/claude-code/gyrus.md" "$CLAUDE_CMD_DIR/gyrus.md" "Claude Code: /gyrus command installed"
+          # Also add to global CLAUDE.md so Claude Code reads Gyrus context automatically
+          CLAUDE_GLOBAL="$HOME/.claude/CLAUDE.md"
+          GYRUS_MARKER="# Gyrus Knowledge Base"
+          if [ ! -f "$CLAUDE_GLOBAL" ] || ! grep -q "$GYRUS_MARKER" "$CLAUDE_GLOBAL" 2>/dev/null; then
+            cat >> "$CLAUDE_GLOBAL" <<CLAUDEEOF
+
+$GYRUS_MARKER
+
+You have a knowledge base at $GYRUS_DIR/ built from your AI coding sessions.
+At the start of a project session, read the relevant project page for context:
+
+  cat $GYRUS_DIR/projects/PROJECT_NAME.md
+
+Other useful files:
+  ls $GYRUS_DIR/projects/     # all project pages
+  cat $GYRUS_DIR/status.md    # project statuses
+  cat $GYRUS_DIR/me.md        # your working patterns
+
+Use /gyrus for the full skill with export commands.
+CLAUDEEOF
+            print_ok "Claude Code: global context added to ~/.claude/CLAUDE.md"
+          fi
           ;;
         codex)
           install_skill "skills/codex/gyrus-instructions.md" "$GYRUS_DIR/skills/codex/gyrus-instructions.md" "Codex: instructions saved"
-          echo -e "  ${DIM}  Add to your AGENTS.md: \"Read ~/.gyrus/skills/codex/gyrus-instructions.md for project context\"${NC}"
+          # Add Gyrus context to global AGENTS.md so Codex reads it automatically
+          AGENTS_MD="$HOME/AGENTS.md"
+          GYRUS_MARKER="# Gyrus Knowledge Base"
+          if [ ! -f "$AGENTS_MD" ] || ! grep -q "$GYRUS_MARKER" "$AGENTS_MD" 2>/dev/null; then
+            cat >> "$AGENTS_MD" <<AGENTSEOF
+
+$GYRUS_MARKER
+
+You have a knowledge base at $GYRUS_DIR/ built from your AI coding sessions.
+At the start of a project session, read the relevant project page:
+  cat $GYRUS_DIR/projects/PROJECT_NAME.md
+
+Other files: status.md (project statuses), me.md (working patterns).
+For full instructions: cat $GYRUS_DIR/skills/codex/gyrus-instructions.md
+AGENTSEOF
+            print_ok "Codex: global context added to ~/AGENTS.md"
+          fi
           ;;
         cowork)
-          install_skill "skills/cowork/gyrus/SKILL.md" "$GYRUS_DIR/skills/cowork/gyrus/SKILL.md" "Cowork: /gyrus skill installed"
+          # Install to skills-plugin directory so all Cowork sessions can see it
+          COWORK_PLUGIN="$HOME/Library/Application Support/Claude/local-agent-mode-sessions/skills-plugin"
+          if [ -d "$COWORK_PLUGIN" ]; then
+            WS_ID=$(ls "$COWORK_PLUGIN/" 2>/dev/null | head -1)
+            if [ -n "$WS_ID" ]; then
+              SESSION_ID=$(ls "$COWORK_PLUGIN/$WS_ID/" 2>/dev/null | head -1)
+              if [ -n "$SESSION_ID" ]; then
+                COWORK_SKILL_DIR="$COWORK_PLUGIN/$WS_ID/$SESSION_ID/skills/gyrus"
+                mkdir -p "$COWORK_SKILL_DIR"
+                install_skill "skills/cowork/gyrus/SKILL.md" "$COWORK_SKILL_DIR/SKILL.md" "Cowork: /gyrus skill installed to skills-plugin"
+              fi
+            fi
+          fi
+          # Also keep a copy in gyrus dir for reference
+          install_skill "skills/cowork/gyrus/SKILL.md" "$GYRUS_DIR/skills/cowork/gyrus/SKILL.md" "Cowork: skill backup saved"
           ;;
       esac
     else
