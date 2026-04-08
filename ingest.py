@@ -14,10 +14,11 @@ __version__ = "0.1.0"
 
 import argparse
 import atexit
+import glob
 import json
 import os
+import re
 import sys
-import glob
 import time
 from collections import defaultdict
 from difflib import SequenceMatcher
@@ -1438,6 +1439,7 @@ def resolve_aliases(thoughts, store, repo_groups=None):
     alias_list = store.get_aliases()
     aliases = {a["alias"]: a["canonical_slug"] for a in alias_list}
     repo_groups = repo_groups or {}
+    _uuid_re = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
 
     for t in thoughts:
         project = t.get("project")
@@ -1468,11 +1470,13 @@ def resolve_aliases(thoughts, store, repo_groups=None):
             t["canonical_project"] = aliases[project]
             continue
 
-        # Priority 3: Fuzzy match
+        # Priority 3: Fuzzy match (skip UUID slugs)
         best_match = None
         best_score = 0
         project_lower = project.lower().replace(" ", "").replace("-", "").replace("_", "")
         for alias, slug in aliases.items():
+            if _uuid_re.match(slug):
+                continue  # never match to a UUID slug
             alias_lower = alias.lower().replace(" ", "").replace("-", "").replace("_", "")
             score = SequenceMatcher(None, project_lower, alias_lower).ratio()
             if score > best_score:
@@ -1492,6 +1496,9 @@ def resolve_aliases(thoughts, store, repo_groups=None):
             else:
                 slug = project.lower().replace(" ", "-")
                 slug = "".join(c for c in slug if c.isalnum() or c == "-")
+            # Never create UUID slugs — skip if the result looks like a UUID
+            if _uuid_re.match(slug):
+                continue
             t["canonical_project"] = slug
             aliases[project] = slug
             store.save_alias(project, slug)
