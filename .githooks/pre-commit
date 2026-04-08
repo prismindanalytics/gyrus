@@ -1,0 +1,25 @@
+#!/bin/bash
+# Auto-bump version in ingest.py on every commit that includes it
+# Format: YYYY.MM.DD.N (N increments per day)
+
+if ! git diff --cached --name-only | grep -q "ingest.py"; then
+  exit 0  # ingest.py not in this commit, skip
+fi
+
+TODAY=$(date +%Y.%m.%d)
+CURRENT=$(grep '__version__' ingest.py | head -1 | sed 's/.*"\(.*\)"/\1/')
+
+if echo "$CURRENT" | grep -q "^$TODAY"; then
+  # Same day — increment sequence number
+  SEQ=$(echo "$CURRENT" | awk -F. '{print $NF}')
+  NEW_SEQ=$((SEQ + 1))
+  NEW_VERSION="$TODAY.$NEW_SEQ"
+else
+  # New day — start at 1
+  NEW_VERSION="$TODAY.1"
+fi
+
+sed -i '' "s/__version__ = \".*\"/__version__ = \"$NEW_VERSION\"/" ingest.py
+git add ingest.py
+
+echo "Version: $NEW_VERSION"
