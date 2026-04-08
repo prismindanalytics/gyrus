@@ -197,7 +197,14 @@ UV_BIN="${UV_BIN:-$(command -v uv 2>/dev/null || echo "$HOME/.local/bin/uv")}"
 
 # Translate subcommands to flags
 case "${1:-}" in
-  update)       shift; set -- --update "$@" ;;
+  update)
+    shift
+    # Bootstrap: always download latest ingest.py first, then run --update for remaining files
+    echo "  Downloading latest..."
+    curl -fsSL https://raw.githubusercontent.com/prismindanalytics/gyrus/main/ingest.py -o "$GYRUS_HOME/ingest.py" 2>/dev/null
+    curl -fsSL https://raw.githubusercontent.com/prismindanalytics/gyrus/main/eval_prompts.py -o "$GYRUS_HOME/eval_prompts.py" 2>/dev/null
+    set -- --update "$@"
+    ;;
   compare)      shift; set -- --compare-models "$@" ;;
   digest)       shift; set -- --digest "$@" ;;
   status)       shift; set -- --review-status "$@" ;;
