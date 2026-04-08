@@ -10,7 +10,7 @@ Knowledge pages are local markdown files by default.
 https://gyrus.sh
 """
 
-__version__ = "0.1.0"
+__version__ = "2026.04.08"
 
 import argparse
 import atexit
@@ -2195,6 +2195,7 @@ def self_update(base_dir=None):
         "ingest.py": base / "ingest.py",
         "storage.py": base / "storage.py",
         "storage_notion.py": base / "storage_notion.py",
+        "eval_prompts.py": base / "eval_prompts.py",
         "skills/codex/gyrus-instructions.md": base / "skills" / "codex" / "gyrus-instructions.md",
     }
 
@@ -2219,10 +2220,9 @@ def self_update(base_dir=None):
             break
 
     if remote_version and remote_version == __version__:
-        print(f"  Already up to date (v{__version__})")
-        return True
-
-    print(f"  Updating: v{__version__} -> v{remote_version or 'latest'}")
+        print(f"  Version: v{__version__} (latest)")
+    else:
+        print(f"  Updating: v{__version__} -> v{remote_version or 'latest'}")
 
     # Write ingest.py (already downloaded)
     target = files["ingest.py"]
