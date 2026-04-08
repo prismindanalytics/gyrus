@@ -121,6 +121,27 @@ if [ -n "$CUSTOM_DIR" ]; then
   ENV_FILE="$GYRUS_DIR/.env"
   LOG_FILE="$GYRUS_DIR/ingest.log"
 
+  # Detect existing Gyrus installation in the chosen folder
+  if [ -f "$GYRUS_DIR/config.json" ] || [ -d "$GYRUS_DIR/projects" ]; then
+    PAGE_COUNT=$(ls "$GYRUS_DIR/projects/"*.md 2>/dev/null | wc -l | tr -d ' ' || echo "0")
+    echo ""
+    echo -e "  ${GREEN}Found existing Gyrus knowledge base at this location!${NC}"
+    [ "$PAGE_COUNT" -gt 0 ] 2>/dev/null && echo -e "  ${BOLD}$PAGE_COUNT project pages${NC}, config, and API keys already present."
+    echo ""
+    echo -e "  ${BOLD}[1]${NC} Join this knowledge base ${DIM}(recommended — sync with other machines)${NC}"
+    echo -e "  ${BOLD}[2]${NC} Start fresh ${DIM}(overwrites existing config and scripts)${NC}"
+    echo ""
+    read -r -p "  Choice [1]: " JOIN_CHOICE < /dev/tty
+    JOIN_CHOICE="${JOIN_CHOICE:-1}"
+
+    if [ "$JOIN_CHOICE" = "1" ]; then
+      JOINING_EXISTING=true
+      print_ok "Joining existing knowledge base at $GYRUS_DIR"
+    else
+      JOINING_EXISTING=false
+    fi
+  fi
+
   # Create symlink from default location if using custom path
   if [ "$GYRUS_DIR" != "$HOME/.gyrus" ]; then
     if [ -L "$HOME/.gyrus" ]; then
@@ -135,8 +156,10 @@ if [ -n "$CUSTOM_DIR" ]; then
   fi
 fi
 
-# ─── Step 3: Download / copy scripts ───
-print_step "Step 3: Installing..."
+JOINING_EXISTING="${JOINING_EXISTING:-false}"
+
+# ─── Step 3: Download / copy scripts (always update, even when joining) ───
+print_step "Step 3: Installing scripts..."
 
 mkdir -p "$GYRUS_DIR"
 
@@ -215,6 +238,12 @@ if ! echo "$PATH" | grep -q "$HOME/.local/bin"; then
 fi
 
 # ─── Step 4: API keys ───
+if [ "$JOINING_EXISTING" = true ] && [ -f "$ENV_FILE" ]; then
+  print_step "Step 4: API keys"
+  print_ok "Using existing keys from synced .env"
+  # Source them for later steps
+  set -a; source "$ENV_FILE" 2>/dev/null; set +a
+else
 print_step "Step 4: API keys"
 
 echo ""
@@ -300,6 +329,8 @@ CEOF
   print_ok "Default config: $EXTRACT_MODEL (extraction), $MERGE_MODEL (merging)"
   echo -e "  ${DIM}Change anytime in $CONFIG_FILE or run: gyrus compare${NC}"
 fi
+
+fi  # end of JOINING_EXISTING API keys check
 
 # ─── Step 5: Install skills for AI tools ───
 print_step "Step 5: Installing skills for your AI tools..."
@@ -556,9 +587,9 @@ if [ -n "${EXCLUDE_INPUT:-}" ]; then
   done
 fi
 
-# Always save excluded_tools to config.json (empty array = include all)
+# Save excluded_tools to config.json (skip when joining — preserve shared config)
 CONFIG_FILE="$GYRUS_DIR/config.json"
-if [ -f "$CONFIG_FILE" ]; then
+if [ "$JOINING_EXISTING" != true ] && [ -f "$CONFIG_FILE" ]; then
   if [ "${#EXCLUDED_KEYS[@]}" -gt 0 ]; then
     EXCLUDE_JSON=$(printf '"%s",' "${EXCLUDED_KEYS[@]}")
     EXCLUDE_JSON="[${EXCLUDE_JSON%,}]"
