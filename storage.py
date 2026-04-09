@@ -14,48 +14,79 @@ from difflib import SequenceMatcher
 
 
 def _ensure_downloaded(path):
-    """Force iCloud to download a file if it's evicted (placeholder only).
-    On macOS, iCloud can evict files to save space. This forces a download."""
+    """Force cloud services to download a file if it's a placeholder.
+
+    Handles:
+    - iCloud: .icloud placeholder files, uses brctl to force download
+    - Dropbox: smart sync (online-only), reading the file triggers download
+    - Google Drive: file stream, reading the file triggers download
+
+    For Dropbox and Google Drive, simply opening the file is enough to
+    trigger a download. The retry loop in _safe_read handles the wait.
+    """
     import subprocess, platform
     p = Path(path)
-    if platform.system() != "Darwin" or not p.exists():
+    if not p.exists():
         return
-    # Check if file is evicted (iCloud placeholder) — has .icloud prefix in parent
-    icloud_placeholder = p.parent / f".{p.name}.icloud"
-    if icloud_placeholder.exists():
+
+    # iCloud: check for .icloud placeholder
+    if platform.system() == "Darwin":
+        icloud_placeholder = p.parent / f".{p.name}.icloud"
+        if icloud_placeholder.exists():
+            try:
+                subprocess.run(["brctl", "download", str(p)], timeout=30,
+                              capture_output=True)
+                for _ in range(60):  # up to 30 seconds
+                    if not icloud_placeholder.exists():
+                        break
+                    time.sleep(0.5)
+            except (subprocess.TimeoutExpired, FileNotFoundError):
+                pass
+
+    # Dropbox: check file status if dropbox CLI available
+    if "Dropbox" in str(p):
         try:
-            subprocess.run(["brctl", "download", str(p)], timeout=30,
-                          capture_output=True)
-            # Wait for download
-            for _ in range(60):  # up to 30 seconds
-                if not icloud_placeholder.exists():
-                    break
-                time.sleep(0.5)
-        except (subprocess.TimeoutExpired, FileNotFoundError):
-            pass  # brctl not available or timed out
+            result = subprocess.run(["dropbox", "filestatus", str(p)],
+                                   capture_output=True, text=True, timeout=5)
+            if "online" in result.stdout.lower():
+                # Touch the file to trigger download
+                p.stat()
+                time.sleep(1)
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass  # dropbox CLI not available
+
+    # Google Drive: accessing file triggers download automatically
+    # The retry in _safe_read handles the brief delay
 
 
-def _safe_write(path, content, retries=3):
-    """Write to a file with retry for cloud sync lock conflicts (iCloud/Dropbox)."""
+_RETRIABLE_ERRNOS = {
+    11,  # Resource deadlock avoided (iCloud)
+    35,  # Resource temporarily unavailable (Dropbox/EAGAIN)
+    16,  # Resource busy (Google Drive file stream)
+}
+
+
+def _safe_write(path, content, retries=5):
+    """Write to a file with retry for cloud sync lock conflicts."""
     for attempt in range(retries):
         try:
             Path(path).write_text(content)
             return
         except OSError as e:
-            if e.errno == 11 and attempt < retries - 1:  # Resource deadlock avoided
+            if e.errno in _RETRIABLE_ERRNOS and attempt < retries - 1:
                 time.sleep(0.5 * (attempt + 1))
                 continue
             raise
 
 
-def _safe_read(path, retries=3):
+def _safe_read(path, retries=5):
     """Read a file with retry for cloud sync lock conflicts."""
     _ensure_downloaded(path)
     for attempt in range(retries):
         try:
             return Path(path).read_text()
         except OSError as e:
-            if e.errno == 11 and attempt < retries - 1:
+            if e.errno in _RETRIABLE_ERRNOS and attempt < retries - 1:
                 time.sleep(0.5 * (attempt + 1))
                 continue
             raise
