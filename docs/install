@@ -229,7 +229,10 @@ case "${1:-}" in
     ;;
 esac
 
-cd "$GYRUS_HOME" && "$UV_BIN" run --python 3.12 ingest.py "$@"
+# Copy scripts to local temp to avoid iCloud/Dropbox sync lock conflicts
+mkdir -p /tmp/gyrus_run
+cp "$GYRUS_HOME"/*.py /tmp/gyrus_run/ 2>/dev/null
+cd "$GYRUS_HOME" && "$UV_BIN" run --python 3.12 /tmp/gyrus_run/ingest.py "$@"
 WRAPPER
 chmod +x "$GYRUS_BIN"
 print_ok "Installed 'gyrus' command to $GYRUS_BIN"
@@ -517,7 +520,8 @@ esac
 # Use uv to run Python — self-contained, no system Python dependency
 UV_PATH=$(command -v uv)
 # ingest.py auto-loads .env, so no need to embed the API key in the cron entry
-CRON_CMD="$CRON_SCHEDULE cd \"$GYRUS_DIR\" && \"$UV_PATH\" run --python \"$UV_PYTHON\" \"$INGEST_SCRIPT\" >> \"$LOG_FILE\" 2>&1"
+# Copy scripts to local temp before running to avoid iCloud/Dropbox sync lock conflicts
+CRON_CMD="$CRON_SCHEDULE mkdir -p /tmp/gyrus_run && cp \"$GYRUS_DIR\"/*.py /tmp/gyrus_run/ 2>/dev/null && cd \"$GYRUS_DIR\" && \"$UV_PATH\" run --python \"$UV_PYTHON\" /tmp/gyrus_run/ingest.py >> \"$LOG_FILE\" 2>&1"
 
 EXISTING_CRON=$(crontab -l 2>/dev/null || true)
 if echo "$EXISTING_CRON" | grep -q "ingest.py"; then

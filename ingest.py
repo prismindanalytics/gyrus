@@ -10,7 +10,7 @@ Knowledge pages are local markdown files by default.
 https://gyrus.sh
 """
 
-__version__ = "2026.04.08.7"
+__version__ = "2026.04.08.8"
 
 import argparse
 import atexit
@@ -33,10 +33,19 @@ import socket
 
 # ─── Lockfile (prevents conflicts on cloud-synced folders) ───
 
+def _lock_path():
+    """Get lock file path — always local, never in synced folder."""
+    import tempfile
+    lock_dir = Path(tempfile.gettempdir()) / "gyrus"
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    return lock_dir / ".gyrus.lock"
+
+
 def _acquire_lock(base_dir):
     """Acquire a lockfile to prevent concurrent ingestion runs.
+    Lock is stored locally (not in synced folder) to avoid iCloud/Dropbox conflicts.
     Returns True if acquired, False if another instance is running."""
-    lock_path = Path(base_dir) / ".gyrus.lock"
+    lock_path = _lock_path()
     if lock_path.exists():
         try:
             lock_data = json.loads(lock_path.read_text())
@@ -49,22 +58,27 @@ def _acquire_lock(base_dir):
                 print(f"  Another Gyrus instance is running on {lock_machine} "
                       f"({lock_age/60:.0f}m ago). Skipping.")
                 return False
-        except (json.JSONDecodeError, IOError):
-            pass  # Corrupt lock file — override it
+        except (json.JSONDecodeError, IOError, OSError):
+            pass  # Corrupt or inaccessible lock — override it
 
-    lock_path.write_text(json.dumps({
-        "machine": socket.gethostname(),
-        "pid": os.getpid(),
-        "time": time.time(),
-    }))
-    atexit.register(lambda: lock_path.unlink(missing_ok=True))
+    try:
+        lock_path.write_text(json.dumps({
+            "machine": socket.gethostname(),
+            "pid": os.getpid(),
+            "time": time.time(),
+        }))
+        atexit.register(lambda: lock_path.unlink(missing_ok=True))
+    except OSError:
+        pass  # Can't write lock — proceed anyway
     return True
 
 
 def _release_lock(base_dir):
     """Release the lockfile."""
-    lock_path = Path(base_dir) / ".gyrus.lock"
-    lock_path.unlink(missing_ok=True)
+    try:
+        _lock_path().unlink(missing_ok=True)
+    except OSError:
+        pass
 
 from storage import MarkdownStorage
 
