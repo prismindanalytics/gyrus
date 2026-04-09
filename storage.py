@@ -7,9 +7,58 @@ Optional: NotionStorage — Notion API (add later).
 import json
 import os
 import re
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from difflib import SequenceMatcher
+
+
+def _ensure_downloaded(path):
+    """Force iCloud to download a file if it's evicted (placeholder only).
+    On macOS, iCloud can evict files to save space. This forces a download."""
+    import subprocess, platform
+    p = Path(path)
+    if platform.system() != "Darwin" or not p.exists():
+        return
+    # Check if file is evicted (iCloud placeholder) — has .icloud prefix in parent
+    icloud_placeholder = p.parent / f".{p.name}.icloud"
+    if icloud_placeholder.exists():
+        try:
+            subprocess.run(["brctl", "download", str(p)], timeout=30,
+                          capture_output=True)
+            # Wait for download
+            for _ in range(60):  # up to 30 seconds
+                if not icloud_placeholder.exists():
+                    break
+                time.sleep(0.5)
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            pass  # brctl not available or timed out
+
+
+def _safe_write(path, content, retries=3):
+    """Write to a file with retry for cloud sync lock conflicts (iCloud/Dropbox)."""
+    for attempt in range(retries):
+        try:
+            Path(path).write_text(content)
+            return
+        except OSError as e:
+            if e.errno == 11 and attempt < retries - 1:  # Resource deadlock avoided
+                time.sleep(0.5 * (attempt + 1))
+                continue
+            raise
+
+
+def _safe_read(path, retries=3):
+    """Read a file with retry for cloud sync lock conflicts."""
+    _ensure_downloaded(path)
+    for attempt in range(retries):
+        try:
+            return Path(path).read_text()
+        except OSError as e:
+            if e.errno == 11 and attempt < retries - 1:
+                time.sleep(0.5 * (attempt + 1))
+                continue
+            raise
 
 
 class MarkdownStorage:
@@ -60,8 +109,16 @@ class MarkdownStorage:
             thought["id"] = f"{date_str}-{content_hash}-{uuid.uuid4().hex[:6]}"
 
         filepath = self.thoughts_dir / f"{date_str}.jsonl"
-        with open(filepath, "a") as f:
-            f.write(json.dumps(thought, default=str) + "\n")
+        for _attempt in range(3):
+            try:
+                with open(filepath, "a") as f:
+                    f.write(json.dumps(thought, default=str) + "\n")
+                break
+            except OSError as e:
+                if e.errno == 11 and _attempt < 2:
+                    time.sleep(0.5 * (_attempt + 1))
+                else:
+                    raise
 
         return thought["id"]
 
@@ -181,7 +238,7 @@ class MarkdownStorage:
         """Read a knowledge page. Returns (content, version) or (None, 0)."""
         filepath = self.projects_dir / f"{slug}.md"
         if filepath.exists():
-            content = filepath.read_text()
+            content = _safe_read(filepath)
             # Extract version from a hidden comment at the end
             version = 1
             version_match = re.search(r'<!-- version: (\d+) -->', content)
@@ -199,7 +256,7 @@ class MarkdownStorage:
         # Add new version comment
         content = content.rstrip() + f"\n<!-- version: {version} -->\n"
 
-        filepath.write_text(content)
+        _safe_write(filepath, content)
         return True
 
     def get_all_pages(self):
@@ -209,7 +266,7 @@ class MarkdownStorage:
             slug = filepath.stem
             if slug in ("status", "cross-cutting", "me", "ideas"):
                 continue
-            content = filepath.read_text()
+            content = _safe_read(filepath)
             version = 1
             version_match = re.search(r'<!-- version: (\d+) -->', content)
             if version_match:
