@@ -53,6 +53,7 @@ from ingest import (
     run_merge,
     run_merge_suggest,
     _detect_slug_clusters,
+    _llm_suggest_merges,
 )
 
 
@@ -1005,6 +1006,24 @@ class TestSlugClustering(unittest.TestCase):
         clusters = _detect_slug_clusters(["nerve", "caremap", "chartlite"])
         self.assertEqual(clusters, {})
 
+    def test_workspace_parents_supplement_prefix_heuristic(self):
+        """When a slug has no text prefix match but its workspace maps to a
+        real repo, the filesystem signal fills the gap."""
+        # slug `homepage-redesign` shares no prefix with `calledthird`, but
+        # filesystem says it was a subfolder of calledthird.
+        slugs = ["calledthird", "homepage-redesign", "nerve"]
+        ws_parents = {"homepage-redesign": "calledthird"}
+        clusters = _detect_slug_clusters(slugs, workspace_parents=ws_parents)
+        self.assertIn("homepage-redesign", clusters.get("calledthird", []))
+
+    def test_prefix_wins_over_workspace_when_conflict(self):
+        """If prefix says A → B but workspace says A → C, prefix wins."""
+        slugs = ["beacon", "beacon-web", "calledthird"]
+        ws_parents = {"beacon-web": "calledthird"}  # conflicting signal
+        clusters = _detect_slug_clusters(slugs, workspace_parents=ws_parents)
+        self.assertIn("beacon-web", clusters.get("beacon", []))
+        self.assertNotIn("beacon-web", clusters.get("calledthird", []))
+
     def test_real_world_calledthird_cluster(self):
         # Exact slugs the user actually had pre-fix
         slugs = [
@@ -1087,6 +1106,65 @@ class TestMergeSuggest(unittest.TestCase):
         self.assertTrue((projects_dir / "calledthird.md").exists())
         self.assertFalse((projects_dir / "calledthird-website.md").exists())
         self.assertFalse((projects_dir / "calledthird-research.md").exists())
+
+
+class TestLLMMergeSuggest(unittest.TestCase):
+    """_llm_suggest_merges parses and filters Claude's response correctly."""
+
+    def test_returns_empty_when_too_few_pages(self):
+        self.assertEqual(_llm_suggest_merges([]), [])
+        self.assertEqual(_llm_suggest_merges([{"slug": "a", "content": "x"}]), [])
+
+    def test_parses_valid_response(self):
+        pages = [
+            {"slug": "beacon",     "content": "realtime analytics for startups"},
+            {"slug": "atlas",      "content": "realtime analytics dashboard"},
+            {"slug": "pulse",      "content": "realtime analytics startups"},
+            {"slug": "caremap",    "content": "clinical workflow tool"},
+        ]
+        with patch("ingest.call_llm") as mock_llm:
+            mock_llm.return_value = json.dumps([
+                {"canonical": "beacon",
+                 "fragments": ["atlas", "pulse"],
+                 "reason": "all three describe the same realtime analytics product"}
+            ])
+            result = _llm_suggest_merges(pages)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["canonical"], "beacon")
+        self.assertEqual(sorted(result[0]["fragments"]), ["atlas", "pulse"])
+
+    def test_drops_phantom_fragment_slugs(self):
+        """LLM hallucinated a slug that doesn't exist — drop it."""
+        pages = [
+            {"slug": "beacon", "content": "x"},
+            {"slug": "atlas",  "content": "y"},
+        ]
+        with patch("ingest.call_llm") as mock_llm:
+            mock_llm.return_value = json.dumps([
+                {"canonical": "beacon",
+                 "fragments": ["atlas", "pulse-never-existed"]}
+            ])
+            result = _llm_suggest_merges(pages)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["fragments"], ["atlas"])
+
+    def test_skips_existing_cluster_slugs(self):
+        """Don't ask the LLM about slugs already handled by heuristics."""
+        pages = [
+            {"slug": "beacon", "content": "x"},
+            {"slug": "atlas",  "content": "y"},
+        ]
+        with patch("ingest.call_llm") as mock_llm:
+            _llm_suggest_merges(pages, existing_cluster_slugs={"beacon", "atlas"})
+            # With no eligible pages the LLM should not be called at all
+            mock_llm.assert_not_called()
+
+    def test_handles_malformed_json(self):
+        pages = [{"slug": "a", "content": "x"}, {"slug": "b", "content": "y"}]
+        with patch("ingest.call_llm") as mock_llm:
+            mock_llm.return_value = "not valid json at all"
+            result = _llm_suggest_merges(pages)
+        self.assertEqual(result, [])
 
 
 if __name__ == "__main__":

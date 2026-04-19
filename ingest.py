@@ -2874,16 +2874,24 @@ def _init_cron():
     print(f"       {cron_line}")
 
 
-def _detect_slug_clusters(slugs):
+def _detect_slug_clusters(slugs, workspace_parents=None):
     """Group slugs by likely-canonical parent.
 
-    Slug X is a fragment of parent Y if:
-      - X starts with Y + "-" or Y + "_"  (e.g. calledthird-website → calledthird)
-      - X starts with Y AND len(Y) >= 8    (e.g. calledthirdcoaching → calledthird)
+    Two signals combine:
+      1. Text prefix: slug X is a fragment of parent Y if
+           - X starts with Y + "-" or Y + "_"  (calledthird-website → calledthird)
+           - OR X starts with Y and len(Y) >= 8 (calledthirdcoaching → calledthird)
+         The 8-char floor avoids false positives from short shared prefixes
+         like "kid" (not a parent of "kidworthy").
+      2. Filesystem (optional, via `workspace_parents`): slug X is a fragment
+         of Y if X matches a Claude Code workspace whose path descends from
+         a real repo Y on disk — even if X's name shares no prefix with Y.
+         Used when the LLM tagged a subfolder with a distinct project name
+         that we want to roll back up to its repo root.
 
-    The 8-char floor avoids false positives from short shared prefixes like
-    "kid" (not a fragment of "kidworthy"), while still catching real cases
-    like "calledthird" swallowing "calledthirdresearchcoaching-gap".
+    Prefix signal wins when both disagree (it's typically more trustworthy
+    since it's purely name-based). Workspace only adds NEW clusters for
+    slugs that prefix matching missed.
 
     Transitively flattens nested hierarchies so every fragment rolls up to
     its TOPMOST parent — merging `ct-web-results → ct-web → ct` in one
@@ -2891,7 +2899,7 @@ def _detect_slug_clusters(slugs):
 
     Returns: dict mapping canonical → sorted list of fragment slugs.
     """
-    # Step 1: find each slug's nearest parent (longest matching prefix)
+    # Step 1: prefix-based parent for each slug
     parent_of = {}
     for slug in slugs:
         best_parent = None
@@ -2910,7 +2918,15 @@ def _detect_slug_clusters(slugs):
         if best_parent is not None:
             parent_of[slug] = best_parent
 
-    # Step 2: walk each slug up to its root (topmost parent), group by root
+    # Step 2: layer in workspace-based parents (filesystem signal) for
+    # slugs that prefix matching missed.
+    if workspace_parents:
+        for slug, parent in workspace_parents.items():
+            if slug in parent_of or slug == parent:
+                continue
+            parent_of[slug] = parent
+
+    # Step 3: walk each slug up to its root, group by root
     def root_of(s):
         seen = {s}
         while s in parent_of and parent_of[s] not in seen:
@@ -2921,11 +2937,117 @@ def _detect_slug_clusters(slugs):
     clusters = {}
     for slug in parent_of:
         r = root_of(slug)
-        if r != slug:  # slug is a fragment, r is its top-level parent
+        if r != slug:
             clusters.setdefault(r, []).append(slug)
     for k in clusters:
         clusters[k] = sorted(clusters[k])
     return clusters
+
+
+def _enumerate_workspace_parents(slugs, real_repos):
+    """Cross-reference existing slugs against Claude Code workspace folders.
+
+    For each slug that matches a Claude Code folder whose decoded path is a
+    SUBDIRECTORY of a real repo on disk, return slug → real-repo-name.
+
+    Example: slug `calledthird-website-results-2026-04-08-exploration-1-claude`
+    came from a session in `~/Documents/GitHub/calledthird/website/results/...`.
+    If `calledthird` is a real repo directory, map the slug → `calledthird`.
+    This catches cases where a deeply-nested session produced a slug whose
+    name doesn't obviously share a prefix with the parent repo.
+    """
+    cc_base = Path(CLAUDE_CODE_BASE)
+    if not cc_base.exists() or not real_repos:
+        return {}
+    slug_set = set(slugs)
+    mapping = {}
+    try:
+        folders = list(cc_base.iterdir())
+    except OSError:
+        return {}
+    for folder in folders:
+        if not folder.is_dir():
+            continue
+        ws = _extract_repo_name(folder.name)
+        if not ws or ws in real_repos or ws not in slug_set:
+            continue
+        # Find the shortest prefix of ws that's a real repo — that's the root
+        parts = ws.split("-")
+        for i in range(1, len(parts) + 1):
+            candidate = "-".join(parts[:i])
+            if candidate in real_repos:
+                mapping[ws] = candidate
+                break
+    return mapping
+
+
+_LLM_MERGE_PROMPT = """Analyze these project wiki pages and find groups where multiple slugs represent the same underlying project and should be merged into one.
+
+Look beyond shared name prefixes — consider content, technical stack, goals, and context. Some legitimately distinct projects share keywords; don't merge those.
+
+PROJECTS ({n}):
+{summaries}
+
+Output a JSON array. Each element:
+  {{"canonical": "the-winning-slug", "fragments": ["slug-to-merge-1", "slug-to-merge-2"], "reason": "brief explanation"}}
+
+Only suggest HIGH-CONFIDENCE merges. When unsure, omit. Return [] if nothing is obviously mergeable.
+Do not include projects that are clearly distinct even if they share domain keywords."""
+
+
+def _llm_suggest_merges(pages, existing_cluster_slugs=None):
+    """Ask the LLM for merge suggestions the heuristic couldn't find.
+
+    Returns list of {canonical, fragments, reason}. Skips slugs already
+    handled by the prefix/workspace heuristics so the LLM doesn't waste its
+    context re-suggesting what we already know.
+
+    One call. Uses the configured extract model.
+    """
+    existing = set(existing_cluster_slugs or [])
+    eligible = [p for p in pages
+                if p["slug"] not in existing
+                and p["slug"] not in ("ideas", "me", "cross-cutting")]
+    if len(eligible) < 2:
+        return []
+
+    summaries = []
+    for p in eligible:
+        excerpt = (p.get("content") or "").strip()[:300].replace("\n", " ")
+        summaries.append(f"- {p['slug']}: {excerpt}")
+
+    prompt = _LLM_MERGE_PROMPT.format(
+        n=len(eligible),
+        summaries="\n".join(summaries),
+    )
+    try:
+        raw = call_llm(prompt, role="extract", max_tokens=2048)
+        raw = _strip_json_fences(raw)
+        suggestions = json.loads(raw)
+    except (HTTPError, json.JSONDecodeError, KeyError, ValueError) as e:
+        print(f"  ⚠️  LLM suggestion call failed: {e}")
+        return []
+
+    # Defensive filtering: drop malformed entries
+    valid = []
+    eligible_slugs = {p["slug"] for p in eligible}
+    for s in suggestions:
+        if not isinstance(s, dict):
+            continue
+        canonical = s.get("canonical")
+        fragments = s.get("fragments", [])
+        if not canonical or not fragments:
+            continue
+        # Only accept fragments that actually exist as project slugs
+        frags_ok = [f for f in fragments
+                    if f in eligible_slugs and f != canonical]
+        if frags_ok:
+            valid.append({
+                "canonical": canonical,
+                "fragments": sorted(set(frags_ok)),
+                "reason": s.get("reason", ""),
+            })
+    return valid
 
 
 def _real_repo_names():
@@ -2955,24 +3077,44 @@ def _real_repo_names():
     return names
 
 
-def run_merge_suggest(store, yes=False):
-    """Walk the user through heuristic-detected slug clusters.
-    Each cluster becomes a Y/n prompt that, if confirmed, runs run_merge()."""
+def run_merge_suggest(store, yes=False, llm=False):
+    """Walk the user through suggested slug clusters.
+
+    Combines three signals in order:
+      1. Text prefix heuristic        (fast, always on)
+      2. Filesystem workspace lookup  (fast, always on)
+      3. LLM semantic analysis        (one API call, only with --llm)
+
+    Each cluster becomes a Y/n prompt that, if confirmed, runs run_merge().
+    """
     pages = store.get_all_pages()
     if not pages:
         print("  no project pages yet — nothing to suggest")
         return 0
 
     slugs = sorted({p["slug"] for p in pages})
-    clusters = _detect_slug_clusters(slugs)
-    if not clusters:
+    real_repos = _real_repo_names()
+    ws_parents = _enumerate_workspace_parents(slugs, real_repos)
+    clusters = _detect_slug_clusters(slugs, workspace_parents=ws_parents)
+
+    # LLM-backed suggestions (only when asked; one API call)
+    llm_suggestions = []
+    if llm:
+        already = set(clusters.keys()) | {
+            f for frags in clusters.values() for f in frags
+        }
+        print("  🤖 asking the LLM for additional suggestions…")
+        llm_suggestions = _llm_suggest_merges(pages, existing_cluster_slugs=already)
+
+    if not clusters and not llm_suggestions:
         print("  ✨ no fragmented slug clusters detected")
+        if not llm:
+            print("     try `gyrus merge --llm` for LLM-backed semantic suggestions")
         return 0
 
-    real_repos = _real_repo_names()
-
-    n_clusters = len(clusters)
-    n_fragments = sum(len(f) for f in clusters.values())
+    n_clusters = len(clusters) + len(llm_suggestions)
+    n_fragments = (sum(len(f) for f in clusters.values()) +
+                   sum(len(s["fragments"]) for s in llm_suggestions))
     print()
     print(f"  🔍 Found {n_clusters} cluster(s), {n_fragments} fragment(s). "
           f"Review each:")
@@ -2980,24 +3122,46 @@ def run_merge_suggest(store, yes=False):
 
     total_merged = 0
     skipped_clusters = 0
+
+    # Phase 1: heuristic-found clusters
     for canonical in sorted(clusters.keys()):
         fragments = clusters[canonical]
-        confidence = " ✓ matches a real repo on disk" if canonical in real_repos else ""
-        print(f"  📎 canonical candidate: '{canonical}'{confidence}")
+        fs_match = canonical in real_repos
+        ws_only = canonical in ws_parents.values() and not any(
+            f.startswith(canonical + "-") or f.startswith(canonical + "_")
+            for f in fragments
+        )
+        source_tag = " ✓ real repo on disk" if fs_match else ""
+        if ws_only:
+            source_tag += " (via subfolder → parent repo)"
+        print(f"  📎 canonical: '{canonical}'{source_tag}")
         for f in fragments:
             print(f"      ← {f}")
-
-        if yes:
-            ans = "y"
-        else:
-            try:
-                ans = input(f"     Merge into '{canonical}'? [Y/n]: ").strip().lower()
-            except EOFError:
-                ans = "n"
-
+        ans = "y" if yes else _prompt(
+            f"     Merge into '{canonical}'? [Y/n]: ", "y"
+        ).lower()
         if ans in ("", "y", "yes"):
-            # Delegate to run_merge (last arg is target). yes=True to skip its
-            # own prompt since we already asked here.
+            rc = run_merge(store, fragments + [canonical], yes=True)
+            if rc == 0:
+                total_merged += len(fragments)
+        else:
+            print("     skipped")
+            skipped_clusters += 1
+        print()
+
+    # Phase 2: LLM-found clusters
+    for s in llm_suggestions:
+        canonical = s["canonical"]
+        fragments = s["fragments"]
+        print(f"  🤖 canonical (LLM): '{canonical}'")
+        if s.get("reason"):
+            print(f"     reasoning: {s['reason']}")
+        for f in fragments:
+            print(f"      ← {f}")
+        ans = "y" if yes else _prompt(
+            f"     Merge into '{canonical}'? [y/N]: ", "n"  # LLM defaults to NO
+        ).lower()
+        if ans in ("y", "yes"):
             rc = run_merge(store, fragments + [canonical], yes=True)
             if rc == 0:
                 total_merged += len(fragments)
@@ -4341,6 +4505,9 @@ def main():
                              "likely-fragment clusters and walk through them "
                              "interactively. With 2+ args: last SLUG is target, "
                              "others are sources.")
+    parser.add_argument("--llm", action="store_true",
+                        help="With bare --merge: also ask the LLM for semantic "
+                             "merge suggestions beyond the prefix/filesystem heuristics.")
     parser.add_argument("--yes", "-y", action="store_true",
                         help="Skip interactive confirmation (e.g. for --merge in scripts)")
     parser.add_argument("--no-autosync", action="store_true",
@@ -4433,12 +4600,41 @@ def main():
     if args.sync:
         sys.exit(run_sync(env_base))
 
-    # Handle --merge early — rewrites aliases + thoughts, no LLM calls.
+    # Handle --merge early — rewrites aliases + thoughts.
     # Bare --merge (no slugs) triggers auto-suggest mode.
+    # Add --llm to also query the LLM for semantic suggestions (one API call).
     if args.merge is not None:
         store = MarkdownStorage(base_dir=str(env_base))
         if len(args.merge) == 0:
-            sys.exit(run_merge_suggest(store, yes=args.yes))
+            if args.llm:
+                # Need API keys + model config for the LLM call
+                file_config = _load_config(store)
+                keys = {
+                    "anthropic": args.anthropic_key
+                        or os.environ.get("ANTHROPIC_API_KEY")
+                        or file_config.get("anthropic_key"),
+                    "openai": args.openai_key
+                        or os.environ.get("OPENAI_API_KEY")
+                        or file_config.get("openai_key"),
+                    "google": (args.google_key
+                        or os.environ.get("GOOGLE_API_KEY")
+                        or os.environ.get("GEMINI_API_KEY")
+                        or file_config.get("google_key")),
+                }
+                _config["keys"] = {k: v for k, v in keys.items() if v}
+                _config["extract_model"] = (
+                    args.extract_model or file_config.get("extract_model")
+                    or DEFAULT_EXTRACT_MODEL
+                )
+                _config["merge_model"] = (
+                    args.merge_model or file_config.get("merge_model")
+                    or DEFAULT_MERGE_MODEL
+                )
+                if not _config["keys"]:
+                    print("  ⚠️  --llm requires an API key "
+                          "(ANTHROPIC_API_KEY, OPENAI_API_KEY, or GEMINI_API_KEY)")
+                    sys.exit(1)
+            sys.exit(run_merge_suggest(store, yes=args.yes, llm=args.llm))
         sys.exit(run_merge(store, args.merge, yes=args.yes))
 
     # Handle --compare-models early

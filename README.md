@@ -234,7 +234,9 @@ GEMINI_API_KEY=AI...
 | `gyrus doctor` | Diagnose ingest health (storage, sync, backlog, API keys) |
 | `gyrus doctor --fix` | Same, plus auto-patch safe things: stale locks, missing cron, dataless files, git init/sync |
 | `gyrus sync` | Manually pull + push the GitHub remote |
-| `gyrus merge <from>... <into>` | Consolidate fragmented project slugs. Rewrites aliases.json, all thought records, removes orphan pages. Example: `gyrus merge calledthird-website calledthird-research calledthird` |
+| `gyrus merge` | Auto-detect likely-fragmented slug clusters and walk through each Y/n. Uses prefix heuristic + filesystem (Claude Code subfolder → parent repo). |
+| `gyrus merge --llm` | Same, plus one Claude API call for semantic merge suggestions beyond name-based heuristics. |
+| `gyrus merge <from>... <into>` | Manual merge — last arg is target. Rewrites aliases.json, thought records, removes orphan pages. Example: `gyrus merge calledthird-website calledthird-research calledthird` |
 | `gyrus compare` | Benchmark models on your sessions, pick extraction + merge models |
 | `gyrus status` | Interactively review and set project statuses |
 | `gyrus digest` | Generate a digest of recent activity |
