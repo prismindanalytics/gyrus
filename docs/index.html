@@ -794,7 +794,7 @@ gyrus init --clone &lt;your-repo-url&gt;</pre>
             <svg class="faq-chevron w-5 h-5 text-surface-700 shrink-0 transition-transform duration-200" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"></polyline></svg>
           </button>
           <div class="faq-answer px-6">
-            <p class="text-sm text-surface-800 pb-4 leading-relaxed">Run <code class="font-mono text-xs bg-surface-300 px-1.5 py-0.5 rounded">gyrus doctor</code>. It checks storage location, ingest freshness, scheduled-job status, GitHub sync, API keys, session sources, backlog, and lockfile in one pass &mdash; then tells you the single most likely root cause. Every <code class="font-mono text-xs">gyrus</code> run also prints a heartbeat line so silent-failure modes are impossible to miss.</p>
+            <p class="text-sm text-surface-800 pb-4 leading-relaxed">Run <code class="font-mono text-xs bg-surface-300 px-1.5 py-0.5 rounded">gyrus doctor</code>. It checks storage location, ingest freshness, scheduled-job status, GitHub sync, API keys, session sources, backlog, and lockfile in one pass &mdash; then tells you the single most likely root cause. Add <code class="font-mono text-xs bg-surface-300 px-1.5 py-0.5 rounded">--fix</code> to auto-patch the safe ones (removes stale locks, installs cron, runs <code class="font-mono text-xs">brctl download</code>, initializes git, syncs). Every <code class="font-mono text-xs">gyrus</code> run also prints a heartbeat line so silent-failure modes are impossible to miss.</p>
           </div>
         </div>
 

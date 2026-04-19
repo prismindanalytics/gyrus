@@ -232,6 +232,7 @@ GEMINI_API_KEY=AI...
 | `gyrus init` | First-time setup wizard (storage, API key, GitHub, cron) |
 | `gyrus init --clone <url>` | Second-machine setup — pulls an existing knowledge base |
 | `gyrus doctor` | Diagnose ingest health (storage, sync, backlog, API keys) |
+| `gyrus doctor --fix` | Same, plus auto-patch safe things: stale locks, missing cron, dataless files, git init/sync |
 | `gyrus sync` | Manually pull + push the GitHub remote |
 | `gyrus compare` | Benchmark models on your sessions, pick extraction + merge models |
 | `gyrus status` | Interactively review and set project statuses |

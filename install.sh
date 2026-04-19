@@ -229,7 +229,7 @@ Commands:
   init         First-time setup (storage, API key, GitHub sync, cron)
   sync         Manually pull + push the GitHub remote
   status       Review and set project statuses
-  doctor       Diagnose ingest health
+  doctor       Diagnose ingest health (use --fix to auto-patch)
   digest       Generate activity digest
   compare      Benchmark models on your sessions
   update       Update Gyrus code to latest version
@@ -240,6 +240,7 @@ Options:
   --backfill      Rebuild pages from existing thoughts
   --no-autosync   Skip the automatic git pull/push this run
   --clone URL     (with init) clone an existing knowledge-base repo
+  --fix           (with doctor) attempt safe auto-fixes inline
 
 Setup:
   gyrus init                      # new machine

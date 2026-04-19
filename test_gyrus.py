@@ -46,6 +46,10 @@ from ingest import (
     _doctor_check_freshness,
     _doctor_check_lockfile,
     run_doctor,
+    # --fix helpers
+    _doctor_fix_lockfile,
+    _doctor_fix_git_sync,
+    _lock_path,
 )
 
 
@@ -760,6 +764,78 @@ class TestDoctorChecks(unittest.TestCase):
         self.assertIsInstance(rc, int)
         self.assertIn(rc, (0, 1))
         self.assertIn("gyrus doctor", buf.getvalue())
+
+
+# ─── v0.2: Doctor auto-fixes (--fix) ────────────────────────────────────────
+
+class TestDoctorFixes(unittest.TestCase):
+    """Auto-fix helpers are safe, idempotent, and never raise."""
+
+    def setUp(self):
+        self.tmpdir = Path(tempfile.mkdtemp())
+        # Keep any existing real lockfile safe — we back it up and restore later
+        self._real_lock = _lock_path()
+        self._real_lock_backup = None
+        if self._real_lock.exists():
+            self._real_lock_backup = self._real_lock.read_bytes()
+            self._real_lock.unlink()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+        # Clean up any lockfile we created
+        if self._real_lock.exists():
+            self._real_lock.unlink()
+        # Restore the user's real lockfile if we displaced one
+        if self._real_lock_backup is not None:
+            self._real_lock.write_bytes(self._real_lock_backup)
+
+    def test_fix_lockfile_removes_file(self):
+        self._real_lock.parent.mkdir(parents=True, exist_ok=True)
+        self._real_lock.write_text(json.dumps(
+            {"machine": "x", "pid": 1, "time": 0}
+        ))
+        ok, msg = _doctor_fix_lockfile()
+        self.assertTrue(ok)
+        self.assertFalse(self._real_lock.exists())
+
+    def test_fix_lockfile_noop_when_missing(self):
+        ok, msg = _doctor_fix_lockfile()
+        self.assertTrue(ok)
+        self.assertIn("no lockfile", msg)
+
+    def test_fix_git_sync_initializes_empty_dir(self):
+        self.assertFalse((self.tmpdir / ".git").exists())
+        ok, msg = _doctor_fix_git_sync(self.tmpdir)
+        self.assertTrue(ok)
+        self.assertTrue((self.tmpdir / ".git").exists())
+        self.assertTrue((self.tmpdir / ".gitignore").exists())
+        # Should have at least one commit
+        import subprocess
+        r = subprocess.run(
+            ["git", "-C", str(self.tmpdir), "log", "--oneline"],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(r.returncode, 0)
+        self.assertTrue(r.stdout.strip())
+
+    def test_fix_git_sync_no_remote_returns_actionable_message(self):
+        import subprocess
+        subprocess.run(["git", "init", "--quiet"], cwd=self.tmpdir, check=True)
+        subprocess.run(["git", "-C", str(self.tmpdir), "commit", "--allow-empty",
+                        "-m", "x", "--quiet"], check=True)
+        ok, msg = _doctor_fix_git_sync(self.tmpdir)
+        self.assertFalse(ok)
+        self.assertIn("no remote", msg)
+
+    def test_run_doctor_with_fix_flag_does_not_raise(self):
+        import io
+        import contextlib
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = run_doctor(self.tmpdir, fix=True)
+        self.assertIsInstance(rc, int)
+        output = buf.getvalue()
+        self.assertIn("--fix enabled", output)
 
 
 if __name__ == "__main__":

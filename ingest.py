@@ -2353,11 +2353,119 @@ def _doctor_check_freshness(base_dir):
             "check recent ingest.log output for errors")
 
 
-def run_doctor(base_dir):
-    """Run all diagnostic checks and print a summary."""
+# ─── Doctor fixes (invoked by --fix) ──────────────────────────────────────
+# Each fixer returns (ok: bool, message: str). We deliberately keep the set
+# small and safe: no data migrations, no LLM-costing operations, no global
+# state changes beyond what the installer would also do.
+
+def _doctor_fix_lockfile():
+    """Remove the stale lockfile — the check only flags this when it's >30m old."""
+    lock = _lock_path()
+    if not lock.exists():
+        return True, "no lockfile to remove"
+    try:
+        lock.unlink()
+        return True, "removed stale lockfile"
+    except OSError as e:
+        return False, f"couldn't remove: {e}"
+
+
+def _doctor_fix_schedule():
+    """Install an hourly cron entry if none exists. Mirrors `gyrus init`."""
+    import subprocess
+    if _has_gyrus_cron():
+        return True, "cron already configured"
+    gyrus_bin = _which("gyrus") or str(Path.home() / ".local" / "bin" / "gyrus")
+    cron_line = f"0 * * * * {gyrus_bin} >/dev/null 2>&1"
+    try:
+        r = subprocess.run(["crontab", "-l"], capture_output=True,
+                           text=True, timeout=5)
+        existing = r.stdout if r.returncode == 0 else ""
+    except (subprocess.SubprocessError, FileNotFoundError):
+        return False, "crontab not available on this system"
+    new_cron = (existing.rstrip() + "\n" + cron_line + "\n").lstrip("\n")
+    try:
+        p = subprocess.run(["crontab", "-"], input=new_cron,
+                           text=True, timeout=10)
+        if p.returncode == 0:
+            return True, "installed hourly cron"
+    except subprocess.SubprocessError:
+        pass
+    return False, "crontab install failed"
+
+
+def _doctor_fix_dataless(base_dir):
+    """Ask iCloud to materialize dataless files. macOS-only, no daemon kill."""
+    import subprocess
+    if sys.platform != "darwin":
+        return True, "not macOS — no-op"
+    if not _which("brctl"):
+        return False, "brctl not available"
+    try:
+        subprocess.run(["brctl", "download", str(base_dir)],
+                       timeout=60, check=False, capture_output=True)
+    except subprocess.SubprocessError as e:
+        return False, f"brctl failed: {e}"
+    # Give iCloud a moment, then re-scan
+    time.sleep(3)
+    remaining = []
+    for sub in ("", "thoughts", "projects"):
+        d = base_dir / sub if sub else base_dir
+        if not d.exists() or not d.is_dir():
+            continue
+        for p in d.iterdir():
+            if p.is_file() and _is_dataless(p):
+                remaining.append(p.name)
+    if not remaining:
+        return True, "all files materialized"
+    return False, (f"{len(remaining)} still dataless "
+                   f"(try: killall bird fileproviderd)")
+
+
+def _doctor_fix_git_sync(base_dir):
+    """Initialize a local repo if missing, or pull+push if configured."""
+    if not _git_is_repo(base_dir):
+        rc, _, err = _git_run(
+            ["init", "--initial-branch=main", "--quiet"],
+            base_dir, timeout=10,
+        )
+        if rc != 0:
+            return False, f"git init failed: {err[:60]}"
+        gitignore = base_dir / ".gitignore"
+        if not gitignore.exists():
+            gitignore.write_text(_DEFAULT_GITIGNORE)
+        _git_run(["add", "-A"], base_dir, timeout=15)
+        _git_run(["commit", "-m", "gyrus: initial", "--quiet"],
+                 base_dir, timeout=15)
+        return True, "initialized local repo (add remote via `gyrus init`)"
+    if not _git_remote_url(base_dir):
+        return False, "no remote — run `gyrus init` to configure GitHub sync"
+    ok_pull, pull_msg = _git_pull(base_dir)
+    if not ok_pull:
+        return False, f"pull failed: {pull_msg}"
+    ok_push, push_msg = _git_commit_push(
+        base_dir,
+        f"gyrus doctor --fix · {datetime.now():%Y-%m-%d %H:%M}",
+    )
+    return ok_push, (f"pull: {pull_msg}; push: {push_msg}"
+                     if ok_push else f"push failed: {push_msg}")
+
+
+# Labels (from _doctor_check_*) that have a corresponding auto-fix.
+_DOCTOR_FIXERS = {
+    "lockfile":       lambda base: _doctor_fix_lockfile(),
+    "schedule":       lambda base: _doctor_fix_schedule(),
+    "dataless files": lambda base: _doctor_fix_dataless(base),
+    "git sync":       lambda base: _doctor_fix_git_sync(base),
+}
+
+
+def run_doctor(base_dir, fix=False):
+    """Run all diagnostic checks. If fix=True, attempt safe auto-fixes inline."""
     print()
     print("─" * 64)
-    print(f"  🩺 gyrus doctor  —  {base_dir}")
+    title = "🩺 gyrus doctor" + ("  (--fix enabled)" if fix else "")
+    print(f"  {title}  —  {base_dir}")
     print("─" * 64)
 
     checks = [
@@ -2373,11 +2481,22 @@ def run_doctor(base_dir):
     ]
 
     icons = {"ok": "✅", "warn": "⚠️ ", "fail": "❌"}
+    fixes_applied = 0
+    fixes_failed = 0
     for status, label, msg, hint in checks:
         print(f"  {icons[status]} {label:18s}  {msg}")
         if hint:
             for line in hint.splitlines():
                 print(f"       {line}")
+        if fix and status != "ok" and label in _DOCTOR_FIXERS:
+            print(f"       [--fix] attempting…")
+            ok, result = _DOCTOR_FIXERS[label](base_dir)
+            mark = "✓" if ok else "✗"
+            print(f"       [--fix] {mark} {result}")
+            if ok:
+                fixes_applied += 1
+            else:
+                fixes_failed += 1
 
     print()
     fails = sum(1 for c in checks if c[0] == "fail")
@@ -2386,13 +2505,18 @@ def run_doctor(base_dir):
         print("  ✨ all checks passed")
     else:
         print(f"  summary: {fails} critical, {warns} warnings")
-        # Most-likely-cause heuristic
-        if any(c[1] == "dataless files" and c[0] == "fail" for c in checks):
-            print("  → dataless files are the most common cause of silent failures.")
-            print("    Every cron run that reads or appends to a dataless file hangs")
-            print("    until macOS kills it. Run the suggested brctl download above.")
-        elif any(c[1] == "schedule" and c[0] != "ok" for c in checks):
-            print("  → no scheduled job means gyrus isn't being run automatically.")
+        if fix:
+            print(f"  fixes:   {fixes_applied} applied, {fixes_failed} couldn't run")
+            print(f"  → re-run `gyrus doctor` to verify")
+        else:
+            # Most-likely-cause heuristic
+            if any(c[1] == "dataless files" and c[0] == "fail" for c in checks):
+                print("  → dataless files are the most common cause of silent failures.")
+                print("    Every cron run that reads or appends to a dataless file hangs")
+                print("    until macOS kills it. Run the suggested brctl download above.")
+            elif any(c[1] == "schedule" and c[0] != "ok" for c in checks):
+                print("  → no scheduled job means gyrus isn't being run automatically.")
+            print("  → try `gyrus doctor --fix` to auto-patch what's safe.")
     print()
     return 0 if fails == 0 else 1
 
@@ -3877,6 +4001,8 @@ def main():
                         help="Interactively review and set project statuses")
     parser.add_argument("--doctor", action="store_true",
                         help="Run diagnostic health checks")
+    parser.add_argument("--fix", action="store_true",
+                        help="With --doctor: attempt safe auto-fixes inline")
     parser.add_argument("--init", action="store_true",
                         help="First-time setup wizard (storage, key, GitHub, cron)")
     parser.add_argument("--clone", metavar="URL",
@@ -4000,8 +4126,10 @@ def main():
         sys.exit(0)
 
     # Handle --doctor early — never touches the network or API keys
+    # (unless --fix is also set, in which case we may run `git pull`/`git push`
+    # and `brctl download`, still no LLM calls / no $ cost)
     if args.doctor:
-        sys.exit(run_doctor(env_base))
+        sys.exit(run_doctor(env_base, fix=args.fix))
 
     # Handle --digest early
     if args.digest:
