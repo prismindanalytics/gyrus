@@ -468,42 +468,64 @@ GITIGNORE
 
     # gh repo create is best-effort here. GitHub's repo-creation API returns
     # before the git endpoint is reachable, so --push frequently race-loses
-    # on "Repository not found" even though the repo was created fine. We
-    # try gh, then retry the push manually with backoff if the remote got
-    # set up but the push failed.
-    gh repo create "$GH_REPO_NAME" --private --source "$GYRUS_DIR" --remote origin --push 2>/tmp/gh-out
-    GH_RC=$?
-    if [ "$GH_RC" -eq 0 ]; then
+    # on "Repository not found" even though the repo was created fine.
+    # IMPORTANT: wrap in `if … then … else` so a non-zero return doesn't trip
+    # `set -e` and silently kill the installer mid-run.
+    if gh repo create "$GH_REPO_NAME" --private --source "$GYRUS_DIR" --remote origin --push 2>/tmp/gh-out; then
       print_ok "Created private repo and pushed initial state"
       print_ok "Auto-sync enabled (every run pulls & pushes)"
       rm -f /tmp/gh-out
-    else
-      # Did gh at least get as far as adding the remote? Then only the push
-      # failed — usually a timing race we can retry our way out of.
-      if (cd "$GYRUS_DIR" && git remote get-url origin >/dev/null 2>&1); then
-        print_warn "Initial push lost a race with GitHub — retrying..."
-        PUSH_OK=false
-        for delay in 3 6 12; do
-          sleep "$delay"
-          if (cd "$GYRUS_DIR" && git push -u origin HEAD --quiet 2>/tmp/gh-out); then
-            PUSH_OK=true; break
-          fi
-        done
-        if [ "$PUSH_OK" = true ]; then
-          print_ok "Push completed on retry"
+
+    # The three common failure modes, in order of likelihood:
+    # 1) "already exists" — repo from a previous attempt. Link to it and sync.
+    elif grep -qiE 'already exists|name already exists on this account' /tmp/gh-out 2>/dev/null; then
+      GH_USER=$(gh api user --jq .login 2>/dev/null || echo "")
+      EXISTING_URL="https://github.com/${GH_USER}/${GH_REPO_NAME}.git"
+      print_warn "Repo \"$GH_REPO_NAME\" already exists on your account."
+      echo -e "  ${DIM}URL: $EXISTING_URL${NC}"
+      read -r -p "  Link to it and sync? [Y/n]: " USE_EXISTING < /dev/tty
+      if [[ "${USE_EXISTING:-y}" =~ ^[Yy] ]]; then
+        (cd "$GYRUS_DIR" && git remote remove origin 2>/dev/null || true)
+        (cd "$GYRUS_DIR" && git remote add origin "$EXISTING_URL")
+        # The existing repo may already have commits — rebase-pull before push
+        (cd "$GYRUS_DIR" && git pull --rebase --autostash origin HEAD 2>/dev/null) || true
+        if (cd "$GYRUS_DIR" && git push -u origin HEAD --quiet 2>/tmp/gh-out); then
+          print_ok "Linked to existing repo and synced"
           print_ok "Auto-sync enabled (every run pulls & pushes)"
           rm -f /tmp/gh-out
         else
-          print_warn "Push still failing. The repo + remote are set up —"
-          print_warn "finish the initial push later with:"
-          echo -e "    ${DIM}cd \"$GYRUS_DIR\" && git push -u origin HEAD${NC}"
-          echo -e "    ${DIM}or simply:  gyrus sync${NC}"
+          print_warn "Linked to repo but push failed — finish with: gyrus sync"
         fi
       else
-        print_warn "gh repo create failed:"
-        sed 's/^/    /' /tmp/gh-out 2>/dev/null | tail -3
-        echo -e "  ${DIM}Run \`gyrus init\` later to retry.${NC}"
+        echo -e "  ${DIM}Skipped. Re-run \`gyrus init\` with a different name later.${NC}"
       fi
+
+    # 2) Push lost the race — repo + remote set up, just need to retry push
+    elif (cd "$GYRUS_DIR" && git remote get-url origin >/dev/null 2>&1); then
+      print_warn "Initial push lost a race with GitHub — retrying..."
+      PUSH_OK=false
+      for delay in 3 6 12; do
+        sleep "$delay"
+        if (cd "$GYRUS_DIR" && git push -u origin HEAD --quiet 2>/tmp/gh-out); then
+          PUSH_OK=true; break
+        fi
+      done
+      if [ "$PUSH_OK" = true ]; then
+        print_ok "Push completed on retry"
+        print_ok "Auto-sync enabled (every run pulls & pushes)"
+        rm -f /tmp/gh-out
+      else
+        print_warn "Push still failing. The repo + remote are set up —"
+        print_warn "finish the initial push later with:"
+        echo -e "    ${DIM}cd \"$GYRUS_DIR\" && git push -u origin HEAD${NC}"
+        echo -e "    ${DIM}or simply:  gyrus sync${NC}"
+      fi
+
+    # 3) Unknown failure — show gh's message and keep going
+    else
+      print_warn "gh repo create failed:"
+      sed 's/^/    /' /tmp/gh-out 2>/dev/null | tail -3
+      echo -e "  ${DIM}Run \`gyrus init\` later to retry.${NC}"
     fi
 
   elif [ "$GH_ACTION" = "clone" ] && [ -n "$CLONE_URL" ]; then
