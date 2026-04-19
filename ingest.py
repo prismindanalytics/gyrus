@@ -1983,9 +1983,17 @@ def _git_remote_url(base_dir):
 
 
 def _git_pull(base_dir, quiet=True):
-    """Rebase-pull from origin. Non-fatal. Returns (ok, short_message)."""
+    """Rebase-pull from origin. Non-fatal. Returns (ok, short_message).
+    No-ops silently if there's no upstream yet (first run after init)."""
     if not _git_remote_url(base_dir):
         return True, "no remote"
+    # If there's no upstream configured yet, nothing to pull
+    rc_up, _, _ = _git_run(
+        ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
+        base_dir, timeout=5,
+    )
+    if rc_up != 0:
+        return True, "no upstream yet"
     rc, _, err = _git_run(
         ["pull", "--rebase", "--autostash", "--quiet"],
         base_dir, timeout=30,
@@ -1999,6 +2007,9 @@ def _git_pull(base_dir, quiet=True):
 
 def _git_commit_push(base_dir, message, quiet=True):
     """Stage, commit, and push any changes. Non-fatal. Returns (ok, summary).
+    Uses `push -u origin HEAD` so upstream is set on the first successful
+    push — handles the post-`gh repo create` case where the remote exists
+    but the initial push lost a race against GitHub backend propagation.
     Retries once on non-fast-forward (auto-pull then re-push)."""
     if not _git_remote_url(base_dir):
         return True, "no remote"
@@ -2007,6 +2018,21 @@ def _git_commit_push(base_dir, message, quiet=True):
         ["diff", "--cached", "--name-only"], base_dir, timeout=10,
     )
     if not staged:
+        # No new work — but check for local commits that haven't been pushed
+        # (e.g. the initial commit from `gh repo create --push` that lost the
+        # GitHub-propagation race). Skip the network call in the normal case.
+        rc_ahead, ahead, _ = _git_run(
+            ["rev-list", "--count", "HEAD", "--not", "--remotes=origin"],
+            base_dir, timeout=5,
+        )
+        if rc_ahead == 0 and ahead and ahead != "0":
+            rc, _, err = _git_run(
+                ["push", "-u", "origin", "HEAD", "--quiet"],
+                base_dir, timeout=30,
+            )
+            if rc == 0:
+                return True, f"pushed {ahead} pending commit(s)"
+            return False, f"push failed: {err[:60]}"
         return True, "nothing to commit"
     n_files = len(staged.splitlines())
     rc, _, err = _git_run(
@@ -2014,12 +2040,16 @@ def _git_commit_push(base_dir, message, quiet=True):
     )
     if rc != 0:
         return False, f"commit failed: {err[:60]}"
-    rc, _, err = _git_run(["push", "--quiet"], base_dir, timeout=30)
+    rc, _, err = _git_run(
+        ["push", "-u", "origin", "HEAD", "--quiet"], base_dir, timeout=30,
+    )
     if rc != 0:
         # Remote moved — pull-rebase then retry once
         _git_run(["pull", "--rebase", "--autostash", "--quiet"],
                  base_dir, timeout=30)
-        rc, _, err = _git_run(["push", "--quiet"], base_dir, timeout=30)
+        rc, _, err = _git_run(
+            ["push", "-u", "origin", "HEAD", "--quiet"], base_dir, timeout=30,
+        )
     if rc != 0:
         return False, f"push failed: {err[:60]}"
     return True, f"pushed {n_files} file(s)"
