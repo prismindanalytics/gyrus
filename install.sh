@@ -64,27 +64,11 @@ print_ok "Python $UV_PYTHON ready (managed by uv — your system Python is untou
 print_step "Step 2: Where should Gyrus store your knowledge base?"
 
 echo ""
-echo -e "  ${BOLD}[1]${NC} Default: ${BOLD}~/.gyrus${NC} ${DIM}(local only)${NC}"
-OPTION_NUM=2
-if [ "$(uname)" = "Darwin" ]; then
-  ICLOUD_DIR="$HOME/Library/Mobile Documents/com~apple~CloudDocs/gyrus"
-  ICLOUD_OPTION=$OPTION_NUM
-  echo -e "  ${BOLD}[$OPTION_NUM]${NC} iCloud ${DIM}(syncs across Apple devices)${NC}"
-  OPTION_NUM=$((OPTION_NUM + 1))
-fi
-DROPBOX_OPTION=$OPTION_NUM
-echo -e "  ${BOLD}[$OPTION_NUM]${NC} Dropbox ${DIM}(syncs across all platforms)${NC}"
-OPTION_NUM=$((OPTION_NUM + 1))
-GDRIVE_OPTION=$OPTION_NUM
-echo -e "  ${BOLD}[$OPTION_NUM]${NC} Google Drive ${DIM}(syncs via Google Drive desktop app)${NC}"
-OPTION_NUM=$((OPTION_NUM + 1))
-OBSIDIAN_OPTION=$OPTION_NUM
-echo -e "  ${BOLD}[$OPTION_NUM]${NC} Obsidian vault ${DIM}(opens in Obsidian as linked notes)${NC}"
-OPTION_NUM=$((OPTION_NUM + 1))
-CUSTOM_OPTION=$OPTION_NUM
-echo -e "  ${BOLD}[$OPTION_NUM]${NC} Custom path"
+echo -e "  ${BOLD}[1]${NC} Default: ${BOLD}~/gyrus-local${NC} ${DIM}(recommended)${NC}"
+echo -e "  ${BOLD}[2]${NC} Custom path"
 echo ""
-echo -e "  ${DIM}To sync across machines, choose a cloud folder. Same knowledge base everywhere.${NC}"
+echo -e "  ${DIM}Cross-machine sync happens via GitHub (set up in step 3).${NC}"
+echo -e "  ${DIM}Don't use iCloud / Dropbox / Google Drive — they cause silent hangs.${NC}"
 echo ""
 read -r -p "  Choice [1]: " SYNC_CHOICE < /dev/tty
 SYNC_CHOICE="${SYNC_CHOICE:-1}"
@@ -92,28 +76,43 @@ SYNC_CHOICE="${SYNC_CHOICE:-1}"
 CUSTOM_DIR=""
 STORAGE_MODE="markdown"
 case "$SYNC_CHOICE" in
-  "${ICLOUD_OPTION:-99}") CUSTOM_DIR="${ICLOUD_DIR:-}" ;;
-  "$DROPBOX_OPTION") CUSTOM_DIR="$HOME/Dropbox/gyrus" ;;
-  "$GDRIVE_OPTION")
-    # Google Drive path varies by platform
-    if [ "$(uname)" = "Darwin" ]; then
-      CUSTOM_DIR="$HOME/Library/CloudStorage/GoogleDrive/My Drive/gyrus"
-    else
-      CUSTOM_DIR="$HOME/Google Drive/gyrus"
-    fi
-    ;;
-  "$OBSIDIAN_OPTION")
-    echo -e "  ${DIM}Enter your Obsidian vault path (e.g., ~/Documents/MyVault/gyrus):${NC}"
-    read -r -p "  Vault path: " CUSTOM_DIR < /dev/tty
-    ;;
-  "$CUSTOM_OPTION")
+  "2")
     read -r -p "  Custom path: " CUSTOM_DIR < /dev/tty
+    ;;
+  *)
+    CUSTOM_DIR="$HOME/gyrus-local"
     ;;
 esac
 
 if [ -n "$CUSTOM_DIR" ]; then
   # Expand ~ if present
   CUSTOM_DIR="${CUSTOM_DIR/#\~/$HOME}"
+
+  # Guard against cloud-sync paths — they cause silent hangs via eviction / locks
+  CLOUD_PROVIDER=""
+  case "$CUSTOM_DIR" in
+    *"Mobile Documents/com~apple~CloudDocs"*) CLOUD_PROVIDER="iCloud Drive" ;;
+    *"Library/CloudStorage/GoogleDrive"*) CLOUD_PROVIDER="Google Drive" ;;
+    *"Library/CloudStorage/Dropbox"*) CLOUD_PROVIDER="Dropbox" ;;
+    *"Library/CloudStorage/OneDrive"*) CLOUD_PROVIDER="OneDrive" ;;
+    *"Library/CloudStorage/Box"*) CLOUD_PROVIDER="Box" ;;
+    *"Library/CloudStorage/"*) CLOUD_PROVIDER="macOS cloud sync" ;;
+    *"/Dropbox/"*|*"/Dropbox") CLOUD_PROVIDER="Dropbox" ;;
+    *"/Google Drive/"*|*"/Google Drive"|*"/GoogleDrive/"*|*"/GoogleDrive") CLOUD_PROVIDER="Google Drive" ;;
+    *"/OneDrive/"*|*"/OneDrive") CLOUD_PROVIDER="OneDrive" ;;
+    *"/Box Sync/"*|*"/Box/"*|*"/Box Sync"|*"/Box") CLOUD_PROVIDER="Box" ;;
+  esac
+  if [ -n "$CLOUD_PROVIDER" ]; then
+    print_warn "That path is inside $CLOUD_PROVIDER."
+    echo -e "  ${DIM}$CLOUD_PROVIDER can lock/evict files and hang reads.${NC}"
+    echo -e "  ${DIM}Cross-machine sync is handled by GitHub (next step) — you don't need $CLOUD_PROVIDER for that.${NC}"
+    read -r -p "  Use it anyway? [y/N]: " CLOUD_CONFIRM < /dev/tty
+    if [[ ! "${CLOUD_CONFIRM:-n}" =~ ^[Yy] ]]; then
+      print_warn "Falling back to ~/gyrus-local"
+      CUSTOM_DIR="$HOME/gyrus-local"
+    fi
+  fi
+
   GYRUS_DIR="$CUSTOM_DIR"
   INGEST_SCRIPT="$GYRUS_DIR/ingest.py"
   STORAGE_SCRIPT="$GYRUS_DIR/storage.py"
@@ -197,42 +196,68 @@ UV_BIN="${UV_BIN:-$(command -v uv 2>/dev/null || echo "$HOME/.local/bin/uv")}"
 
 # Translate subcommands to flags
 case "${1:-}" in
+  init)         shift; set -- --init "$@" ;;
+  sync)         shift; set -- --sync "$@" ;;
   update)       shift; set -- --update "$@" ;;
   compare)      shift; set -- --compare-models "$@" ;;
   digest)       shift; set -- --digest "$@" ;;
   status)       shift; set -- --review-status "$@" ;;
+  doctor)       shift; set -- --doctor "$@" ;;
   context)      shift; set -- --sync-context "$@" ;;
   log)          shift; set -- --show-log "$@" ;;
   eval)         shift; set -- --eval "$@" ;;
   curate)       shift; set -- --eval-curate "$@" ;;
   run)          shift ;;  # explicit run, strip the word
   help|-h|--help)
-    echo "Usage: gyrus [command] [options]"
-    echo ""
-    echo "Commands:"
-    echo "  (none)       Run ingestion (extract + merge)"
-    echo "  compare      Benchmark models on your sessions"
-    echo "  status       Review and set project statuses"
-    echo "  digest       Generate activity digest"
-    echo "  eval         Run prompt quality evaluation"
-    echo "  curate       Create golden test fixtures"
-    echo "  log          Show recent run history"
-    echo "  update       Update Gyrus to latest version"
-    echo ""
-    echo "Options:"
-    echo "  --dry-run    Run without saving"
-    echo "  --backfill   Rebuild pages from existing thoughts"
-    echo ""
-    echo "Config: $GYRUS_HOME/config.json"
-    echo "Docs:   https://gyrus.sh"
+    cat <<HELP
+Usage: gyrus [command] [options]
+
+Commands:
+  (none)       Run ingestion (extract + merge)
+  init         First-time setup (storage, API key, GitHub sync, cron)
+  sync         Manually pull + push the GitHub remote
+  status       Review and set project statuses
+  doctor       Diagnose ingest health
+  digest       Generate activity digest
+  compare      Benchmark models on your sessions
+  update       Update Gyrus code to latest version
+  log          Show recent run history
+
+Options:
+  --dry-run       Run without saving
+  --backfill      Rebuild pages from existing thoughts
+  --no-autosync   Skip the automatic git pull/push this run
+  --clone URL     (with init) clone an existing knowledge-base repo
+
+Setup:
+  gyrus init                      # new machine
+  gyrus init --clone <repo-url>   # second machine (pulls existing data)
+
+Config: $GYRUS_HOME/config.json
+Docs:   https://gyrus.sh
+HELP
     exit 0
     ;;
 esac
 
-# Copy scripts to local temp to avoid iCloud/Dropbox sync lock conflicts
-mkdir -p /tmp/gyrus_run
-cp "$GYRUS_HOME"/*.py /tmp/gyrus_run/ 2>/dev/null
-cd "$GYRUS_HOME" && "$UV_BIN" run --python 3.12 /tmp/gyrus_run/ingest.py "$@"
+# Locate ingest.py — $GYRUS_HOME first, then common fallbacks
+INGEST_PY=""
+for CAND in "$GYRUS_HOME/ingest.py" "$HOME/gyrus-local/ingest.py" \
+            "$(dirname "$0")/ingest.py" "$(dirname "$0")/../gyrus/ingest.py"; do
+  if [ -f "$CAND" ]; then
+    INGEST_PY="$CAND"
+    break
+  fi
+done
+
+if [ -z "$INGEST_PY" ]; then
+  echo "gyrus: can't find ingest.py" >&2
+  echo "       looked in: \$GYRUS_HOME ($GYRUS_HOME), ~/gyrus-local, script dir" >&2
+  echo "       reinstall from https://gyrus.sh" >&2
+  exit 1
+fi
+
+cd "$(dirname "$INGEST_PY")" && "$UV_BIN" run --python 3.12 "$(basename "$INGEST_PY")" "$@"
 WRAPPER
 chmod +x "$GYRUS_BIN"
 print_ok "Installed 'gyrus' command to $GYRUS_BIN"
@@ -355,6 +380,77 @@ CEOF
 fi
 
 fi  # end of JOINING_EXISTING API keys check
+
+# ─── Step 4.5: GitHub sync (optional, recommended) ───
+if [ "$JOINING_EXISTING" != true ]; then
+print_step "Step 4.5: Cross-machine sync via GitHub (recommended)"
+
+echo ""
+echo -e "  ${DIM}A private GitHub repo keeps your knowledge base in sync${NC}"
+echo -e "  ${DIM}across all your machines. Every \`gyrus\` run pulls + pushes.${NC}"
+echo ""
+
+GH_OK=false
+if command -v gh &>/dev/null; then
+  if gh auth status &>/dev/null; then
+    GH_OK=true
+  else
+    print_warn "gh CLI is installed but not logged in. Run: gh auth login"
+    echo -e "  ${DIM}Then: gyrus init  (to set up GitHub sync later)${NC}"
+  fi
+else
+  print_warn "gh CLI not installed — skipping GitHub sync."
+  echo -e "  ${DIM}To enable later: brew install gh && gh auth login && gyrus init${NC}"
+fi
+
+if [ "$GH_OK" = true ]; then
+  read -r -p "  Set up GitHub sync now? [Y/n]: " DO_GH < /dev/tty
+  DO_GH="${DO_GH:-Y}"
+  if [[ "$DO_GH" =~ ^[Yy] ]]; then
+    read -r -p "  Repo name [gyrus-knowledge]: " GH_REPO_NAME < /dev/tty
+    GH_REPO_NAME="${GH_REPO_NAME:-gyrus-knowledge}"
+
+    # Init local repo if not already
+    if [ ! -d "$GYRUS_DIR/.git" ]; then
+      (cd "$GYRUS_DIR" && git init --initial-branch=main --quiet)
+      # .gitignore excludes secrets, code, and per-machine state
+      cat > "$GYRUS_DIR/.gitignore" <<'GITIGNORE'
+# secrets
+.env
+
+# python
+__pycache__/
+*.pyc
+
+# gyrus code (managed by `gyrus update`, not sync)
+ingest.py
+storage.py
+storage_notion.py
+eval_prompts.py
+model-comparison.html
+
+# per-machine state
+.ingest-state.json
+ingest.log
+latest-digest.md
+GITIGNORE
+      (cd "$GYRUS_DIR" && git add -A && git commit -m "gyrus: initial" --quiet 2>/dev/null) || true
+    fi
+
+    if gh repo create "$GH_REPO_NAME" --private --source "$GYRUS_DIR" --remote origin --push 2>/tmp/gh-out; then
+      print_ok "Created private repo and pushed initial state"
+      print_ok "Auto-sync enabled (every run pulls & pushes)"
+      rm -f /tmp/gh-out
+    else
+      print_warn "gh repo create failed:"
+      sed 's/^/    /' /tmp/gh-out 2>/dev/null | tail -3
+      echo -e "  ${DIM}Run \`gyrus init\` later to retry.${NC}"
+    fi
+  else
+    echo -e "  ${DIM}Skipped. Run \`gyrus init\` later to enable GitHub sync.${NC}"
+  fi
+fi
+fi  # end of JOINING_EXISTING sync check
 
 # ─── Step 5: Install skills for AI tools ───
 print_step "Step 5: Installing skills for your AI tools..."
@@ -520,8 +616,7 @@ esac
 # Use uv to run Python — self-contained, no system Python dependency
 UV_PATH=$(command -v uv)
 # ingest.py auto-loads .env, so no need to embed the API key in the cron entry
-# Copy scripts to local temp before running to avoid iCloud/Dropbox sync lock conflicts
-CRON_CMD="$CRON_SCHEDULE mkdir -p /tmp/gyrus_run && cp \"$GYRUS_DIR\"/*.py /tmp/gyrus_run/ 2>/dev/null && cd \"$GYRUS_DIR\" && \"$UV_PATH\" run --python \"$UV_PYTHON\" /tmp/gyrus_run/ingest.py >> \"$LOG_FILE\" 2>&1"
+CRON_CMD="$CRON_SCHEDULE cd \"$GYRUS_DIR\" && \"$UV_PATH\" run --python \"$UV_PYTHON\" ingest.py >> \"$LOG_FILE\" 2>&1"
 
 EXISTING_CRON=$(crontab -l 2>/dev/null || true)
 if echo "$EXISTING_CRON" | grep -q "ingest.py"; then
@@ -798,9 +893,15 @@ echo "  Logs:                $LOG_FILE"
 echo ""
 echo "  Commands:"
 echo "    gyrus                # run ingestion"
-echo "    gyrus compare        # benchmark and choose models"
+echo "    gyrus doctor         # diagnose health (always run this first if stuck)"
+echo "    gyrus sync           # manually pull + push GitHub remote"
 echo "    gyrus status         # review project statuses"
 echo "    gyrus digest         # generate activity digest"
+echo "    gyrus compare        # benchmark and choose models"
 echo "    gyrus update         # update to latest version"
 echo "    gyrus help           # show all commands"
+echo ""
+echo "  Set up sync on another Mac:"
+echo "    curl -fsSL https://gyrus.sh/install | bash   # installs gyrus"
+echo "    gyrus init --clone <your-github-repo-url>    # clones your data"
 echo ""

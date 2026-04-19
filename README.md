@@ -170,8 +170,9 @@ cd gyrus; .\install.ps1
 ### What the installer does
 
 1. Asks for API keys (Anthropic, OpenAI, Google — Enter to skip any; at least one required)
-2. Lets you choose a storage location (default `~/.gyrus/`, or a cloud-synced folder)
-3. Lets you choose sync frequency (hourly by default, or 30 min / 4h / 12h / daily)
+2. Lets you choose a storage location (default `~/gyrus-local/`, symlinked to `~/.gyrus`)
+3. Offers GitHub sync — creates a private repo via `gh` for cross-machine sync
+4. Lets you choose ingest frequency (hourly by default, or 30 min / 4h / 12h / daily)
 4. Installs skills for your AI tools (`/gyrus` command for Claude Code)
 5. **Immediately scans all existing sessions and builds your knowledge base**
 
@@ -228,14 +229,20 @@ GEMINI_API_KEY=AI...
 
 | Command | Description |
 |---------|-------------|
+| `gyrus init` | First-time setup wizard (storage, API key, GitHub, cron) |
+| `gyrus init --clone <url>` | Second-machine setup — pulls an existing knowledge base |
+| `gyrus doctor` | Diagnose ingest health (storage, sync, backlog, API keys) |
+| `gyrus sync` | Manually pull + push the GitHub remote |
 | `gyrus compare` | Benchmark models on your sessions, pick extraction + merge models |
 | `gyrus status` | Interactively review and set project statuses |
 | `gyrus digest` | Generate a digest of recent activity |
+| `gyrus log` | Show recent run history |
 | `gyrus eval` | Run prompt quality eval against golden fixtures |
 | `gyrus curate` | Create golden test fixtures from real sessions |
-| `gyrus update` | Update Gyrus to the latest version from GitHub |
+| `gyrus update` | Update Gyrus code to the latest version from GitHub |
 | `--dry-run` | Run extraction without saving (for testing) |
 | `--backfill` | Rebuild knowledge pages from existing thoughts |
+| `--no-autosync` | Skip the automatic git pull/push this run |
 | `--base-dir PATH` | Use a custom base directory (default: `~/.gyrus`) |
 
 ---
@@ -313,14 +320,37 @@ Each page has a hidden version comment at the bottom (`<!-- version: N -->`). Yo
 
 ## Cross-Machine Sync
 
-Gyrus stores everything as plain markdown files. Sync them however you want:
+Gyrus uses a **private GitHub repo** for cross-machine sync. Every run pulls from origin before ingesting and pushes after. Sync is non-fatal: a network failure never blocks local work.
 
-- **iCloud / Dropbox / Google Drive** — point `~/.gyrus/` to a synced folder
-- **Git** — `cd ~/.gyrus && git init && git remote add origin ...`
-- **Obsidian** — set your vault path to `~/.gyrus/`
+**Why git instead of iCloud/Dropbox/Google Drive?**
+- Cloud-sync folders can evict files (macOS "Optimize Storage") or lock them during sync, causing silent hangs that kill cron runs without warning.
+- Git gives you versioned history — you can see how your understanding of each project evolved.
+- Merge conflicts become visible, not silent data loss.
+- Works identically on every OS.
+
+**First machine:**
+```bash
+curl -fsSL https://gyrus.sh/install | bash
+# The installer offers GitHub setup automatically.
+# If you skipped it, run:  gyrus init
+```
+
+**Second machine — clone the existing knowledge base:**
+```bash
+curl -fsSL https://gyrus.sh/install | bash
+gyrus init --clone github.com/you/gyrus-knowledge
+```
+
+**What's synced:** `projects/`, `thoughts/`, `aliases.json`, `status.md`, `config.json`, `skills/`.
+**What's not:** `.env` (secrets), `ingest.py` and other code (managed by `gyrus update`), `.ingest-state.json` and `ingest.log` (per-machine state).
+
+**Prefer not to use git?** Gyrus still works fully local — just skip step 3 of the installer. You can enable GitHub sync any time with `gyrus init`.
+
+**Alternatives:**
+- **Obsidian** — set your vault path to `~/.gyrus/` (gyrus pages are plain markdown that open natively)
 - **Notion** — optional adapter (`--storage=notion`) for browsable UI
 
-Run `./install.sh` on each machine. Same knowledge base, everywhere.
+> **⚠️ Don't use iCloud / Dropbox / Google Drive / OneDrive / Box as your `~/.gyrus/` storage.** Their sync daemons can evict or lock files mid-write, which causes `gyrus` to hang silently until cron kills it. `gyrus doctor` detects this and warns you.
 
 ---
 
@@ -335,14 +365,18 @@ Once installed, Gyrus runs in the background. No new sessions = no API calls = *
 ### Verifying your sync is running
 
 ```bash
+# One-shot health check — the best single command
+gyrus doctor
+
 # Check the cron job exists (macOS/Linux)
 crontab -l | grep gyrus
 
 # Check recent runs
-tail -20 ~/.gyrus/ingest.log
+gyrus log
+# or:  tail -20 ~/.gyrus/ingest.log
 
 # Run manually to test
-cd ~/.gyrus && uv run --python 3.12 ingest.py --anthropic-key $ANTHROPIC_API_KEY
+gyrus
 ```
 
 On Windows:
@@ -442,7 +476,7 @@ Those are static instruction files you write manually. Gyrus automatically extra
 Currently supports Claude Code, Claude Cowork, OpenAI Codex, and Google Antigravity. More tools added on request — if a tool writes session files to disk, adding support is ~30 lines of Python.
 
 **Will it read my private conversations?**
-Gyrus runs locally on your machine by default. Session data is sent to your chosen LLM API for extraction/merging (same as using any AI tool), but your knowledge base stays as local markdown files. Nothing is stored in any cloud unless you opt in — you can choose to sync via iCloud, Dropbox, Notion, or Git for cross-machine access.
+Gyrus runs locally on your machine by default. Session data is sent to your chosen LLM API for extraction/merging (same as using any AI tool), but your knowledge base stays as local markdown files. Nothing leaves your machine unless you opt in — cross-machine sync is handled by a **private GitHub repo** you own (recommended), or via Notion (optional adapter).
 
 **Can I edit the wiki pages manually?**
 Yes. Gyrus reads the existing page before each merge, so your manual edits are preserved and built upon.
