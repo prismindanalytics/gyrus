@@ -9,6 +9,18 @@
 
 set -euo pipefail
 
+# CLI args (for second-machine bootstrap)
+#   --clone URL    clone an existing knowledge-base repo instead of creating one
+#   GYRUS_CLONE=URL environment var equivalent
+CLONE_URL="${GYRUS_CLONE:-}"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --clone) CLONE_URL="$2"; shift 2 ;;
+    --clone=*) CLONE_URL="${1#--clone=}"; shift ;;
+    *) shift ;;
+  esac
+done
+
 GYRUS_DIR="$HOME/.gyrus"
 INGEST_SCRIPT="$GYRUS_DIR/ingest.py"
 STORAGE_SCRIPT="$GYRUS_DIR/storage.py"
@@ -404,16 +416,33 @@ else
 fi
 
 if [ "$GH_OK" = true ]; then
-  read -r -p "  Set up GitHub sync now? [Y/n]: " DO_GH < /dev/tty
-  DO_GH="${DO_GH:-Y}"
-  if [[ "$DO_GH" =~ ^[Yy] ]]; then
+  GH_ACTION="skip"
+  if [ -n "$CLONE_URL" ]; then
+    GH_ACTION="clone"
+    echo -e "  ${DIM}Will clone from: $CLONE_URL${NC}"
+  else
+    echo ""
+    echo -e "  ${BOLD}[1]${NC} Create new private repo ${DIM}(first machine)${NC}"
+    echo -e "  ${BOLD}[2]${NC} Clone existing repo ${DIM}(second machine — already set up elsewhere)${NC}"
+    echo -e "  ${BOLD}[3]${NC} Skip ${DIM}(local-only; add later with \`gyrus init\`)${NC}"
+    echo ""
+    read -r -p "  Choice [1]: " GH_CHOICE < /dev/tty
+    case "${GH_CHOICE:-1}" in
+      2) GH_ACTION="clone"
+         read -r -p "  Repo URL (e.g. github.com/you/gyrus-knowledge): " CLONE_URL < /dev/tty
+         ;;
+      3) GH_ACTION="skip" ;;
+      *) GH_ACTION="create" ;;
+    esac
+  fi
+
+  if [ "$GH_ACTION" = "create" ]; then
     read -r -p "  Repo name [gyrus-knowledge]: " GH_REPO_NAME < /dev/tty
     GH_REPO_NAME="${GH_REPO_NAME:-gyrus-knowledge}"
 
     # Init local repo if not already
     if [ ! -d "$GYRUS_DIR/.git" ]; then
       (cd "$GYRUS_DIR" && git init --initial-branch=main --quiet)
-      # .gitignore excludes secrets, code, and per-machine state
       cat > "$GYRUS_DIR/.gitignore" <<'GITIGNORE'
 # secrets
 .env
@@ -445,6 +474,38 @@ GITIGNORE
       print_warn "gh repo create failed:"
       sed 's/^/    /' /tmp/gh-out 2>/dev/null | tail -3
       echo -e "  ${DIM}Run \`gyrus init\` later to retry.${NC}"
+    fi
+
+  elif [ "$GH_ACTION" = "clone" ] && [ -n "$CLONE_URL" ]; then
+    # Normalize URL
+    if [[ ! "$CLONE_URL" =~ ^(https?://|git@|ssh://) ]]; then
+      CLONE_URL="https://${CLONE_URL#github.com/}"
+      [[ "$CLONE_URL" == https://* ]] || CLONE_URL="https://github.com/$CLONE_URL"
+    fi
+
+    # If GYRUS_DIR already has non-code contents, bail — safer than overwriting
+    NON_CODE_FILES=$(find "$GYRUS_DIR" -maxdepth 1 -type f ! -name '*.py' ! -name '.env' 2>/dev/null | wc -l | tr -d ' ')
+    if [ "${NON_CODE_FILES:-0}" -gt 0 ]; then
+      print_warn "Can't clone into $GYRUS_DIR — it already has data. Run from a fresh setup."
+    else
+      # Stash code files to preserve ingest.py/storage.py that we just installed
+      STASH=$(mktemp -d)
+      cp "$GYRUS_DIR"/*.py "$STASH/" 2>/dev/null || true
+      # Clone into a temp location then move contents
+      TMPCLONE=$(mktemp -d)
+      if git clone "$CLONE_URL" "$TMPCLONE/repo" 2>/tmp/gh-clone-out; then
+        # Merge: copy clone contents into GYRUS_DIR
+        cp -R "$TMPCLONE/repo/." "$GYRUS_DIR/"
+        # Restore code files (gitignored in the repo, shouldn't come from clone)
+        cp "$STASH"/*.py "$GYRUS_DIR/" 2>/dev/null || true
+        rm -rf "$TMPCLONE" "$STASH"
+        print_ok "Cloned existing knowledge base"
+        print_ok "Auto-sync enabled (every run pulls & pushes)"
+      else
+        print_warn "git clone failed:"
+        sed 's/^/    /' /tmp/gh-clone-out 2>/dev/null | tail -3
+        rm -rf "$TMPCLONE" "$STASH"
+      fi
     fi
   else
     echo -e "  ${DIM}Skipped. Run \`gyrus init\` later to enable GitHub sync.${NC}"

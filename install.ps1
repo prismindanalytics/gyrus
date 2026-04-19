@@ -2,7 +2,12 @@
 # One command, one API key, done.
 #
 # Usage:
-#   .\install.ps1
+#   .\install.ps1                                    # first machine
+#   .\install.ps1 -Clone github.com/you/gyrus-repo   # second machine (clone existing data)
+
+param(
+    [string]$Clone = $env:GYRUS_CLONE
+)
 
 $ErrorActionPreference = "Stop"
 
@@ -60,18 +65,48 @@ Write-Ok "Python $UvPython ready (managed by uv - your system Python is untouche
 # --- Step 2: Storage location ---
 Write-Step "Step 2: Where should Gyrus store your knowledge base?"
 
+$DefaultLoc = "$env:USERPROFILE\gyrus-local"
 Write-Host ""
-Write-Host "  Default: " -NoNewline
-Write-Host $GyrusDir -ForegroundColor White
-Write-Dim "To sync across machines, point to a cloud folder:"
-Write-Dim "  OneDrive:  ~\OneDrive\gyrus"
-Write-Dim "  Dropbox:   ~\Dropbox\gyrus"
-Write-Dim "  Obsidian:  ~\your-vault\gyrus"
+Write-Host "  [1] Default: " -NoNewline
+Write-Host $DefaultLoc -ForegroundColor White -NoNewline
+Write-Host " (recommended)"
+Write-Host "  [2] Custom path"
 Write-Host ""
-$CustomDir = Read-Host "  Path (Enter for default)"
+Write-Dim "Cross-machine sync happens via GitHub (set up in step 3)."
+Write-Dim "Don't use OneDrive / Dropbox / Google Drive — they cause silent hangs."
+Write-Host ""
+$StorageChoice = Read-Host "  Choice [1]"
+if ([string]::IsNullOrWhiteSpace($StorageChoice)) { $StorageChoice = "1" }
+
+$CustomDir = ""
+if ($StorageChoice -eq "2") {
+    $CustomDir = Read-Host "  Custom path"
+} else {
+    $CustomDir = $DefaultLoc
+}
 
 if (-not [string]::IsNullOrWhiteSpace($CustomDir)) {
     $CustomDir = $CustomDir -replace "^~", $env:USERPROFILE
+
+    # Guard against cloud-sync paths
+    $CloudProvider = ""
+    if ($CustomDir -match "OneDrive") { $CloudProvider = "OneDrive" }
+    elseif ($CustomDir -match "\\Dropbox(\\|$)") { $CloudProvider = "Dropbox" }
+    elseif ($CustomDir -match "Google Drive|GoogleDrive") { $CloudProvider = "Google Drive" }
+    elseif ($CustomDir -match "\\Box(\\|$)|Box Sync") { $CloudProvider = "Box" }
+    elseif ($CustomDir -match "iCloudDrive|iCloud Drive") { $CloudProvider = "iCloud Drive" }
+
+    if ($CloudProvider -ne "") {
+        Write-Warn "That path is inside $CloudProvider."
+        Write-Dim "$CloudProvider can lock/evict files and hang reads."
+        Write-Dim "Cross-machine sync is handled by GitHub (next step) — you don't need $CloudProvider for that."
+        $CloudConfirm = Read-Host "  Use it anyway? [y/N]"
+        if ($CloudConfirm -notmatch "^[Yy]") {
+            Write-Warn "Falling back to $DefaultLoc"
+            $CustomDir = $DefaultLoc
+        }
+    }
+
     $GyrusDir = $CustomDir
     $IngestScript = "$GyrusDir\ingest.py"
     $StorageScript = "$GyrusDir\storage.py"
@@ -79,7 +114,7 @@ if (-not [string]::IsNullOrWhiteSpace($CustomDir)) {
     $EnvFile = "$GyrusDir\.env"
     $LogFile = "$GyrusDir\ingest.log"
 
-    # Create junction from default location if using custom path
+    # Create junction from ~/.gyrus if we're using a different location
     $DefaultDir = "$env:USERPROFILE\.gyrus"
     if ($GyrusDir -ne $DefaultDir) {
         if (Test-Path $DefaultDir) {
@@ -89,6 +124,7 @@ if (-not [string]::IsNullOrWhiteSpace($CustomDir)) {
             }
         }
         if (-not (Test-Path $DefaultDir)) {
+            New-Item -ItemType Directory -Path $GyrusDir -Force | Out-Null
             cmd /c mklink /J "$DefaultDir" "$GyrusDir" | Out-Null
             Write-Ok "Junction created: ~/.gyrus -> $GyrusDir"
         }
@@ -115,8 +151,74 @@ if (Test-Path (Join-Path $ScriptDir "ingest.py")) {
     Invoke-WebRequest -Uri "$RepoUrl/ingest.py" -OutFile $IngestScript -UseBasicParsing
     Invoke-WebRequest -Uri "$RepoUrl/storage.py" -OutFile $StorageScript -UseBasicParsing
     Invoke-WebRequest -Uri "$RepoUrl/storage_notion.py" -OutFile $StorageNotionScript -UseBasicParsing
+    try {
+        Invoke-WebRequest -Uri "$RepoUrl/eval_prompts.py" -OutFile "$GyrusDir\eval_prompts.py" -UseBasicParsing
+    } catch { }
     Write-Ok "Downloaded to $GyrusDir"
 }
+
+# Install gyrus.cmd wrapper so users have a `gyrus` command
+$GyrusBinDir = "$env:USERPROFILE\.local\bin"
+New-Item -ItemType Directory -Path $GyrusBinDir -Force | Out-Null
+$GyrusBin = "$GyrusBinDir\gyrus.cmd"
+@"
+@echo off
+REM Gyrus CLI wrapper — https://gyrus.sh
+setlocal
+if "%GYRUS_HOME%"=="" set "GYRUS_HOME=%USERPROFILE%\.gyrus"
+if "%UV_BIN%"=="" set "UV_BIN=uv"
+
+set "SUBCMD=%~1"
+if "%SUBCMD%"==""         goto :run
+if /I "%SUBCMD%"=="init"   (shift & set "FLAG=--init" & goto :flag)
+if /I "%SUBCMD%"=="sync"   (shift & set "FLAG=--sync" & goto :flag)
+if /I "%SUBCMD%"=="update" (shift & set "FLAG=--update" & goto :flag)
+if /I "%SUBCMD%"=="compare" (shift & set "FLAG=--compare-models" & goto :flag)
+if /I "%SUBCMD%"=="digest" (shift & set "FLAG=--digest" & goto :flag)
+if /I "%SUBCMD%"=="status" (shift & set "FLAG=--review-status" & goto :flag)
+if /I "%SUBCMD%"=="doctor" (shift & set "FLAG=--doctor" & goto :flag)
+if /I "%SUBCMD%"=="log"    (shift & set "FLAG=--show-log" & goto :flag)
+if /I "%SUBCMD%"=="help"   goto :help
+if /I "%SUBCMD%"=="-h"     goto :help
+if /I "%SUBCMD%"=="--help" goto :help
+goto :run
+
+:flag
+cd /d "%GYRUS_HOME%" && "%UV_BIN%" run --python 3.12 ingest.py %FLAG% %*
+goto :end
+
+:run
+cd /d "%GYRUS_HOME%" && "%UV_BIN%" run --python 3.12 ingest.py %*
+goto :end
+
+:help
+echo Usage: gyrus [command] [options]
+echo.
+echo Commands:
+echo   (none)    Run ingestion
+echo   init      First-time setup (storage, API key, GitHub, schedule)
+echo   sync      Manually pull + push GitHub remote
+echo   status    Review and set project statuses
+echo   doctor    Diagnose ingest health
+echo   digest    Generate activity digest
+echo   compare   Benchmark models
+echo   update    Update Gyrus code
+echo   log       Show recent run history
+echo.
+echo Docs: https://gyrus.sh
+
+:end
+endlocal
+"@ | Set-Content $GyrusBin -Encoding ASCII
+Write-Ok "Installed 'gyrus' command to $GyrusBin"
+
+# Ensure ~\.local\bin is in PATH
+$UserPath = [Environment]::GetEnvironmentVariable("PATH", "User")
+if ($UserPath -notlike "*$GyrusBinDir*") {
+    [Environment]::SetEnvironmentVariable("PATH", "$UserPath;$GyrusBinDir", "User")
+    Write-Ok "Added $GyrusBinDir to your user PATH (restart terminal to use 'gyrus')"
+}
+$env:PATH = "$env:PATH;$GyrusBinDir"
 
 # --- Step 4: API key ---
 Write-Step "Step 4: Anthropic API key"
@@ -170,6 +272,118 @@ if (-not (Test-Path $ConfigFile)) {
     Write-Ok "Default config created (Haiku for extraction, Sonnet for merging)"
     Write-Dim "Change models anytime in $ConfigFile"
     Write-Dim "Options: haiku, sonnet, opus, gpt-5.4, gpt-5.4-mini, gpt-5.4-nano, gemini-flash, gemini-pro"
+}
+
+# --- Step 4.5: GitHub sync ---
+Write-Step "Step 4.5: Cross-machine sync via GitHub (recommended)"
+
+Write-Host ""
+Write-Dim "A private GitHub repo keeps your knowledge base in sync across all"
+Write-Dim "your machines. Every ``gyrus`` run pulls + pushes automatically."
+Write-Host ""
+
+$GhCmd = Get-Command gh -ErrorAction SilentlyContinue
+$GhOk = $false
+if ($GhCmd) {
+    $null = & gh auth status 2>&1
+    if ($LASTEXITCODE -eq 0) { $GhOk = $true } else {
+        Write-Warn "gh CLI is installed but not logged in. Run: gh auth login"
+        Write-Dim "Then: gyrus init  (to set up GitHub sync later)"
+    }
+} else {
+    Write-Warn "gh CLI not installed — skipping GitHub sync."
+    Write-Dim "To enable later: winget install GitHub.cli ; gh auth login ; gyrus init"
+}
+
+if ($GhOk) {
+    $GhAction = "skip"
+    if (-not [string]::IsNullOrWhiteSpace($Clone)) {
+        $GhAction = "clone"
+        Write-Dim "Will clone from: $Clone"
+    } else {
+        Write-Host "  [1] Create new private repo (first machine)"
+        Write-Host "  [2] Clone existing repo (second machine)"
+        Write-Host "  [3] Skip"
+        Write-Host ""
+        $GhChoice = Read-Host "  Choice [1]"
+        switch ($GhChoice) {
+            "2" {
+                $GhAction = "clone"
+                $Clone = Read-Host "  Repo URL (e.g. github.com/you/gyrus-knowledge)"
+            }
+            "3" { $GhAction = "skip" }
+            default { $GhAction = "create" }
+        }
+    }
+
+    if ($GhAction -eq "create") {
+        $RepoName = Read-Host "  Repo name [gyrus-knowledge]"
+        if ([string]::IsNullOrWhiteSpace($RepoName)) { $RepoName = "gyrus-knowledge" }
+
+        if (-not (Test-Path "$GyrusDir\.git")) {
+            & git -C $GyrusDir init --initial-branch=main --quiet
+            @"
+# secrets
+.env
+
+# python
+__pycache__/
+*.pyc
+
+# gyrus code (managed by ``gyrus update``, not sync)
+ingest.py
+storage.py
+storage_notion.py
+eval_prompts.py
+model-comparison.html
+
+# per-machine state
+.ingest-state.json
+ingest.log
+latest-digest.md
+"@ | Set-Content "$GyrusDir\.gitignore" -Encoding ASCII
+            & git -C $GyrusDir add -A
+            & git -C $GyrusDir commit -m "gyrus: initial" --quiet
+        }
+
+        & gh repo create $RepoName --private --source $GyrusDir --remote origin --push 2>&1 | Out-Null
+        if ($LASTEXITCODE -eq 0) {
+            Write-Ok "Created private repo and pushed initial state"
+            Write-Ok "Auto-sync enabled (every run pulls & pushes)"
+        } else {
+            Write-Warn "gh repo create failed — run ``gyrus init`` later to retry."
+        }
+
+    } elseif ($GhAction -eq "clone" -and -not [string]::IsNullOrWhiteSpace($Clone)) {
+        # Normalize URL
+        if ($Clone -notmatch "^(https?://|git@|ssh://)") {
+            if ($Clone -match "^github\.com/") { $Clone = "https://$Clone" }
+            else { $Clone = "https://github.com/$Clone" }
+        }
+
+        # Back up code files (they're gitignored so clone won't bring them)
+        $Stash = "$env:TEMP\gyrus-install-stash-$([guid]::NewGuid().Guid.Substring(0,8))"
+        New-Item -ItemType Directory -Path $Stash -Force | Out-Null
+        Copy-Item "$GyrusDir\*.py" $Stash -ErrorAction SilentlyContinue
+
+        # Clone into temp then overlay
+        $TmpClone = "$env:TEMP\gyrus-install-clone-$([guid]::NewGuid().Guid.Substring(0,8))"
+        & git clone $Clone $TmpClone 2>&1 | Out-Null
+        if ($LASTEXITCODE -eq 0) {
+            Copy-Item "$TmpClone\*" $GyrusDir -Recurse -Force
+            Copy-Item "$TmpClone\.git" $GyrusDir -Recurse -Force
+            Copy-Item "$TmpClone\.gitignore" $GyrusDir -Force -ErrorAction SilentlyContinue
+            Copy-Item "$Stash\*.py" $GyrusDir -Force -ErrorAction SilentlyContinue
+            Remove-Item $TmpClone, $Stash -Recurse -Force -ErrorAction SilentlyContinue
+            Write-Ok "Cloned existing knowledge base"
+            Write-Ok "Auto-sync enabled (every run pulls & pushes)"
+        } else {
+            Write-Warn "git clone failed — run ``gyrus init --clone $Clone`` later to retry."
+            Remove-Item $TmpClone, $Stash -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    } else {
+        Write-Dim "Skipped. Run ``gyrus init`` later to enable GitHub sync."
+    }
 }
 
 # --- Step 5: Install skills ---

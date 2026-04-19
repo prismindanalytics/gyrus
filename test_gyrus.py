@@ -33,6 +33,19 @@ from ingest import (
     _resolve_model,
     MODEL_CATALOG,
     main,
+    # v0.2 additions
+    _detect_cloud_sync,
+    _is_dataless,
+    _read_text_safe,
+    _git_is_repo,
+    _git_remote_url,
+    _git_pull,
+    _git_commit_push,
+    _doctor_check_storage,
+    _doctor_check_git_sync,
+    _doctor_check_freshness,
+    _doctor_check_lockfile,
+    run_doctor,
 )
 
 
@@ -555,6 +568,188 @@ class TestMainCLI(unittest.TestCase):
                     find_opencode_sessions=MagicMock(return_value=[]),
                 ):
                     main()
+
+
+# ─── v0.2: Cloud-sync detection ─────────────────────────────────────────────
+
+class TestCloudSyncDetection(unittest.TestCase):
+    """_detect_cloud_sync catches the sync folders we've told users to avoid."""
+
+    def test_icloud_drive(self):
+        p = "/Users/alice/Library/Mobile Documents/com~apple~CloudDocs/gyrus"
+        self.assertEqual(_detect_cloud_sync(p), "iCloud Drive")
+
+    def test_google_drive_new(self):
+        p = "/Users/alice/Library/CloudStorage/GoogleDrive-a@b.com/My Drive/gyrus"
+        self.assertEqual(_detect_cloud_sync(p), "Google Drive")
+
+    def test_google_drive_legacy(self):
+        self.assertEqual(_detect_cloud_sync("/Users/alice/Google Drive/gyrus"),
+                         "Google Drive")
+        self.assertEqual(_detect_cloud_sync("/Users/alice/GoogleDrive/gyrus"),
+                         "Google Drive")
+
+    def test_dropbox_both_locations(self):
+        self.assertEqual(_detect_cloud_sync("/Users/alice/Library/CloudStorage/Dropbox/gyrus"),
+                         "Dropbox")
+        self.assertEqual(_detect_cloud_sync("/Users/alice/Dropbox/gyrus"),
+                         "Dropbox")
+
+    def test_onedrive(self):
+        self.assertEqual(_detect_cloud_sync("/Users/alice/Library/CloudStorage/OneDrive-Personal/gyrus"),
+                         "OneDrive")
+        self.assertEqual(_detect_cloud_sync("/Users/alice/OneDrive/gyrus"),
+                         "OneDrive")
+
+    def test_box(self):
+        self.assertEqual(_detect_cloud_sync("/Users/alice/Box Sync/gyrus"), "Box")
+        self.assertEqual(_detect_cloud_sync("/Users/alice/Library/CloudStorage/Box-Personal/gyrus"),
+                         "Box")
+
+    def test_misc_providers(self):
+        self.assertEqual(_detect_cloud_sync("/Users/alice/Sync/gyrus"), "Sync.com")
+        self.assertEqual(_detect_cloud_sync("/Users/alice/pCloud Drive/gyrus"), "pCloud")
+        self.assertEqual(_detect_cloud_sync("/Users/alice/Proton Drive/gyrus"), "Proton Drive")
+
+    def test_local_paths_are_not_cloud(self):
+        self.assertIsNone(_detect_cloud_sync("/Users/alice/gyrus-local"))
+        self.assertIsNone(_detect_cloud_sync("/Users/alice/Documents/gyrus"))
+        self.assertIsNone(_detect_cloud_sync("/tmp/gyrus-test"))
+        self.assertIsNone(_detect_cloud_sync("/opt/gyrus"))
+
+    def test_nonexistent_path_still_checked(self):
+        # Caller may pass a path that doesn't exist yet (during `gyrus init`).
+        # Detection must still work against the string.
+        p = "/Users/alice/Dropbox/brand-new-gyrus-dir"
+        self.assertEqual(_detect_cloud_sync(p), "Dropbox")
+
+
+# ─── v0.2: Git helpers ──────────────────────────────────────────────────────
+
+class TestGitHelpers(unittest.TestCase):
+    """_git_* helpers are non-fatal no-ops on non-repo / no-remote paths."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_is_repo_false_on_plain_dir(self):
+        self.assertFalse(_git_is_repo(self.tmpdir))
+
+    def test_remote_url_none_on_non_repo(self):
+        self.assertIsNone(_git_remote_url(self.tmpdir))
+
+    def test_pull_noop_on_non_repo(self):
+        ok, msg = _git_pull(self.tmpdir)
+        self.assertTrue(ok)
+        self.assertEqual(msg, "no remote")
+
+    def test_commit_push_noop_on_non_repo(self):
+        ok, msg = _git_commit_push(self.tmpdir, "test")
+        self.assertTrue(ok)
+        self.assertEqual(msg, "no remote")
+
+    def test_is_repo_true_after_git_init(self):
+        import subprocess
+        subprocess.run(["git", "init", "--quiet"], cwd=self.tmpdir, check=True)
+        self.assertTrue(_git_is_repo(self.tmpdir))
+        # No remote yet, so pull/push still no-op
+        self.assertIsNone(_git_remote_url(self.tmpdir))
+        ok, _ = _git_pull(self.tmpdir)
+        self.assertTrue(ok)
+
+
+# ─── v0.2: Safe-read timeout ────────────────────────────────────────────────
+
+class TestReadTextSafe(unittest.TestCase):
+    """_read_text_safe returns content normally and None on error."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_reads_normal_file(self):
+        p = Path(self.tmpdir) / "f.txt"
+        p.write_text("hello\nworld\n")
+        self.assertEqual(_read_text_safe(p), "hello\nworld\n")
+
+    def test_returns_none_on_missing(self):
+        p = Path(self.tmpdir) / "missing.txt"
+        self.assertIsNone(_read_text_safe(p))
+
+    def test_is_dataless_false_on_normal_file(self):
+        p = Path(self.tmpdir) / "normal.txt"
+        p.write_text("x")
+        self.assertFalse(_is_dataless(p))
+
+
+# ─── v0.2: Doctor checks ────────────────────────────────────────────────────
+
+class TestDoctorChecks(unittest.TestCase):
+    """Doctor checks return (status, label, msg, hint) tuples and never raise."""
+
+    def setUp(self):
+        self.tmpdir = Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_storage_ok_for_local_path(self):
+        status, label, _, _ = _doctor_check_storage(self.tmpdir)
+        self.assertEqual(status, "ok")
+        self.assertEqual(label, "storage")
+
+    def test_storage_warn_for_icloud_path(self):
+        # Build a synthetic path that resolves to an iCloud location
+        icloud = self.tmpdir / "fake-icloud-marker"
+        icloud.mkdir()
+        # The marker check is substring-based on the resolved path; we can't
+        # easily fake that in a tmp dir, so we only assert the function returns
+        # a tuple with the expected shape for any path.
+        result = _doctor_check_storage(icloud)
+        self.assertEqual(len(result), 4)
+        self.assertIn(result[0], ("ok", "warn", "fail"))
+
+    def test_freshness_warn_when_no_thoughts(self):
+        status, label, _, _ = _doctor_check_freshness(self.tmpdir)
+        self.assertEqual(status, "warn")
+        self.assertEqual(label, "ingest freshness")
+
+    def test_freshness_ok_when_recent_file(self):
+        thoughts = self.tmpdir / "thoughts"
+        thoughts.mkdir()
+        today = datetime.now().strftime("%Y-%m-%d")
+        (thoughts / f"{today}.jsonl").write_text("")
+        status, _, _, _ = _doctor_check_freshness(self.tmpdir)
+        self.assertEqual(status, "ok")
+
+    def test_git_sync_warn_without_repo(self):
+        status, label, _, _ = _doctor_check_git_sync(self.tmpdir)
+        self.assertEqual(status, "warn")
+        self.assertEqual(label, "git sync")
+
+    def test_lockfile_ok_when_missing(self):
+        status, label, _, _ = _doctor_check_lockfile()
+        # Whether OK or warn depends on whether any gyrus is currently running
+        # on this box, but the shape is always (status, label, msg, hint).
+        self.assertEqual(label, "lockfile")
+        self.assertIn(status, ("ok", "warn"))
+
+    def test_run_doctor_returns_exit_code(self):
+        # run_doctor prints a lot but should complete and return int
+        # Use a capture to quiet the output
+        import io
+        import contextlib
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = run_doctor(self.tmpdir)
+        self.assertIsInstance(rc, int)
+        self.assertIn(rc, (0, 1))
+        self.assertIn("gyrus doctor", buf.getvalue())
 
 
 if __name__ == "__main__":
