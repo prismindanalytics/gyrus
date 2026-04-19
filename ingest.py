@@ -2346,6 +2346,26 @@ def _doctor_check_git_sync(base_dir):
     return ("ok", "git sync", f"{remote} ({summary})", None)
 
 
+def _doctor_check_fragmentation(base_dir):
+    """Flag when project slugs look fragmented (e.g. calledthird + calledthird-website)."""
+    projects_dir = base_dir / "projects"
+    if not projects_dir.is_dir():
+        return ("ok", "fragmentation", "no projects yet", None)
+    slugs = sorted({p.stem for p in projects_dir.glob("*.md")})
+    if not slugs:
+        return ("ok", "fragmentation", "no projects yet", None)
+    clusters = _detect_slug_clusters(slugs)
+    if not clusters:
+        return ("ok", "fragmentation", "no obvious clusters", None)
+    n_frags = sum(len(f) for f in clusters.values())
+    sample = ", ".join(list(clusters.keys())[:2])
+    if len(clusters) > 2:
+        sample += f", +{len(clusters) - 2} more"
+    return ("warn", "fragmentation",
+            f"{len(clusters)} cluster(s), {n_frags} fragment(s) (e.g. {sample})",
+            "run `gyrus merge` to review and consolidate")
+
+
 def _doctor_check_freshness(base_dir):
     """Re-use heartbeat logic: how old is the newest thought?"""
     thoughts_dir = base_dir / "thoughts"
@@ -2493,6 +2513,7 @@ def run_doctor(base_dir, fix=False):
         _doctor_check_storage(base_dir),
         _doctor_check_dataless(base_dir),
         _doctor_check_freshness(base_dir),
+        _doctor_check_fragmentation(base_dir),
         _doctor_check_schedule(),
         _doctor_check_git_sync(base_dir),
         _doctor_check_env(base_dir),
@@ -2851,6 +2872,146 @@ def _init_cron():
         pass
     print(f"    ⚠️  crontab install failed — add manually:")
     print(f"       {cron_line}")
+
+
+def _detect_slug_clusters(slugs):
+    """Group slugs by likely-canonical parent.
+
+    Slug X is a fragment of parent Y if:
+      - X starts with Y + "-" or Y + "_"  (e.g. calledthird-website → calledthird)
+      - X starts with Y AND len(Y) >= 8    (e.g. calledthirdcoaching → calledthird)
+
+    The 8-char floor avoids false positives from short shared prefixes like
+    "kid" (not a fragment of "kidworthy"), while still catching real cases
+    like "calledthird" swallowing "calledthirdresearchcoaching-gap".
+
+    Transitively flattens nested hierarchies so every fragment rolls up to
+    its TOPMOST parent — merging `ct-web-results → ct-web → ct` in one
+    user prompt instead of two.
+
+    Returns: dict mapping canonical → sorted list of fragment slugs.
+    """
+    # Step 1: find each slug's nearest parent (longest matching prefix)
+    parent_of = {}
+    for slug in slugs:
+        best_parent = None
+        best_len = 0
+        for other in slugs:
+            if other == slug or len(other) >= len(slug):
+                continue
+            is_fragment = (
+                slug.startswith(other + "-") or
+                slug.startswith(other + "_") or
+                (slug.startswith(other) and len(other) >= 8)
+            )
+            if is_fragment and len(other) > best_len:
+                best_parent = other
+                best_len = len(other)
+        if best_parent is not None:
+            parent_of[slug] = best_parent
+
+    # Step 2: walk each slug up to its root (topmost parent), group by root
+    def root_of(s):
+        seen = {s}
+        while s in parent_of and parent_of[s] not in seen:
+            s = parent_of[s]
+            seen.add(s)
+        return s
+
+    clusters = {}
+    for slug in parent_of:
+        r = root_of(slug)
+        if r != slug:  # slug is a fragment, r is its top-level parent
+            clusters.setdefault(r, []).append(slug)
+    for k in clusters:
+        clusters[k] = sorted(clusters[k])
+    return clusters
+
+
+def _real_repo_names():
+    """Set of directory names under common source-code roots, used to boost
+    confidence when suggesting a canonical slug."""
+    home = Path.home()
+    roots = [
+        home / "Documents" / "GitHub",
+        home / "Documents" / "iOS",
+        home / "Documents",
+        home / "Projects",
+        home / "repos",
+        home / "code",
+        home / "dev",
+        home / "src",
+        home / "work",
+    ]
+    names = set()
+    for root in roots:
+        if not root.is_dir():
+            continue
+        try:
+            names.update(d.name for d in root.iterdir()
+                         if d.is_dir() and not d.name.startswith("."))
+        except OSError:
+            continue
+    return names
+
+
+def run_merge_suggest(store, yes=False):
+    """Walk the user through heuristic-detected slug clusters.
+    Each cluster becomes a Y/n prompt that, if confirmed, runs run_merge()."""
+    pages = store.get_all_pages()
+    if not pages:
+        print("  no project pages yet — nothing to suggest")
+        return 0
+
+    slugs = sorted({p["slug"] for p in pages})
+    clusters = _detect_slug_clusters(slugs)
+    if not clusters:
+        print("  ✨ no fragmented slug clusters detected")
+        return 0
+
+    real_repos = _real_repo_names()
+
+    n_clusters = len(clusters)
+    n_fragments = sum(len(f) for f in clusters.values())
+    print()
+    print(f"  🔍 Found {n_clusters} cluster(s), {n_fragments} fragment(s). "
+          f"Review each:")
+    print()
+
+    total_merged = 0
+    skipped_clusters = 0
+    for canonical in sorted(clusters.keys()):
+        fragments = clusters[canonical]
+        confidence = " ✓ matches a real repo on disk" if canonical in real_repos else ""
+        print(f"  📎 canonical candidate: '{canonical}'{confidence}")
+        for f in fragments:
+            print(f"      ← {f}")
+
+        if yes:
+            ans = "y"
+        else:
+            try:
+                ans = input(f"     Merge into '{canonical}'? [Y/n]: ").strip().lower()
+            except EOFError:
+                ans = "n"
+
+        if ans in ("", "y", "yes"):
+            # Delegate to run_merge (last arg is target). yes=True to skip its
+            # own prompt since we already asked here.
+            rc = run_merge(store, fragments + [canonical], yes=True)
+            if rc == 0:
+                total_merged += len(fragments)
+        else:
+            print("     skipped")
+            skipped_clusters += 1
+        print()
+
+    print(f"  Done. Merged {total_merged} fragment(s); "
+          f"skipped {skipped_clusters} cluster(s).")
+    if total_merged:
+        print(f"  → run `gyrus --backfill` to regenerate pages, "
+              f"or wait for the next `gyrus` run.")
+    return 0
 
 
 def run_merge(store, slugs, yes=False):
@@ -4175,9 +4336,11 @@ def main():
                         help="With --init: override default storage path")
     parser.add_argument("--sync", action="store_true",
                         help="Manually pull and push the git remote")
-    parser.add_argument("--merge", nargs="+", metavar="SLUG",
-                        help="Merge slugs: last SLUG is the target, others are sources. "
-                             "Example: --merge calledthird-website calledthird")
+    parser.add_argument("--merge", nargs="*", metavar="SLUG",
+                        help="Consolidate project slugs. With no args: auto-detect "
+                             "likely-fragment clusters and walk through them "
+                             "interactively. With 2+ args: last SLUG is target, "
+                             "others are sources.")
     parser.add_argument("--yes", "-y", action="store_true",
                         help="Skip interactive confirmation (e.g. for --merge in scripts)")
     parser.add_argument("--no-autosync", action="store_true",
@@ -4270,9 +4433,12 @@ def main():
     if args.sync:
         sys.exit(run_sync(env_base))
 
-    # Handle --merge early — rewrites aliases + thoughts, no LLM calls
-    if args.merge:
+    # Handle --merge early — rewrites aliases + thoughts, no LLM calls.
+    # Bare --merge (no slugs) triggers auto-suggest mode.
+    if args.merge is not None:
         store = MarkdownStorage(base_dir=str(env_base))
+        if len(args.merge) == 0:
+            sys.exit(run_merge_suggest(store, yes=args.yes))
         sys.exit(run_merge(store, args.merge, yes=args.yes))
 
     # Handle --compare-models early

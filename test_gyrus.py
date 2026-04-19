@@ -51,6 +51,8 @@ from ingest import (
     _doctor_fix_git_sync,
     _lock_path,
     run_merge,
+    run_merge_suggest,
+    _detect_slug_clusters,
 )
 
 
@@ -959,6 +961,132 @@ class TestMerge(unittest.TestCase):
     def test_merge_usage_error_on_too_few_args(self):
         rc = run_merge(self.store, ["calledthird"], yes=True)
         self.assertEqual(rc, 2)
+
+
+class TestSlugClustering(unittest.TestCase):
+    """Heuristic used by `gyrus merge` (no-arg mode) and `gyrus doctor`."""
+
+    def test_dash_separated_fragments(self):
+        # Classic case: calledthird + several dash-delimited children
+        clusters = _detect_slug_clusters([
+            "calledthird", "calledthird-website", "calledthird-research",
+        ])
+        self.assertEqual(clusters,
+                         {"calledthird": ["calledthird-research",
+                                          "calledthird-website"]})
+
+    def test_no_dash_but_long_prefix(self):
+        # Smashed name that shares a long prefix — covers real-world bug
+        # where a garbage slug like 'calledthirdresearchcoaching-gap'
+        # wasn't caught by the dash heuristic alone.
+        clusters = _detect_slug_clusters([
+            "calledthird", "calledthirdresearchcoaching-gap",
+        ])
+        self.assertIn("calledthird", clusters)
+        self.assertIn("calledthirdresearchcoaching-gap",
+                      clusters["calledthird"])
+
+    def test_short_shared_prefix_is_not_cluster(self):
+        # "kid" and "kidworthy" share a prefix but "kid" is short (<8);
+        # don't cluster — avoids false positives.
+        clusters = _detect_slug_clusters(["kid", "kidworthy"])
+        self.assertEqual(clusters, {})
+
+    def test_nested_cluster_flattens_to_root(self):
+        # ct-web-results → ct-web → ct all roll up to ct in one cluster
+        # (avoids leaving 'ct-web' hanging after sequential merges)
+        clusters = _detect_slug_clusters([
+            "ct", "ct-web", "ct-web-results",
+        ])
+        self.assertEqual(set(clusters.keys()), {"ct"})
+        self.assertEqual(clusters["ct"], ["ct-web", "ct-web-results"])
+
+    def test_unrelated_slugs_empty(self):
+        clusters = _detect_slug_clusters(["nerve", "caremap", "chartlite"])
+        self.assertEqual(clusters, {})
+
+    def test_real_world_calledthird_cluster(self):
+        # Exact slugs the user actually had pre-fix
+        slugs = [
+            "calledthird",
+            "calledthird-website",
+            "calledthird-website-results-2026-04-08-exploration-1-claude",
+            "calledthird-website-results-2026-04-09-exploration-2-claude",
+            "calledthirdresearchcoaching-gap",
+            "kidworthy",  # separate, should not cluster in
+            "nerve",      # unrelated
+        ]
+        clusters = _detect_slug_clusters(slugs)
+        # All calledthird-* variants should cluster under some calledthird parent
+        flattened = [f for fs in clusters.values() for f in fs]
+        self.assertIn("calledthird-website", flattened)
+        self.assertIn("calledthirdresearchcoaching-gap", flattened)
+        self.assertIn(
+            "calledthird-website-results-2026-04-08-exploration-1-claude",
+            flattened,
+        )
+        # kidworthy must not have been clustered with anything
+        self.assertNotIn("kidworthy", flattened)
+        self.assertNotIn("kidworthy", clusters)
+        # nerve likewise
+        self.assertNotIn("nerve", flattened)
+
+
+class TestMergeSuggest(unittest.TestCase):
+    """`gyrus merge` (no-args) interactive flow."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.store = MarkdownStorage(base_dir=self.tmpdir)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_no_projects_returns_early(self):
+        import io
+        import contextlib
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = run_merge_suggest(self.store, yes=True)
+        self.assertEqual(rc, 0)
+        self.assertIn("nothing to suggest", buf.getvalue())
+
+    def test_no_clusters_reports_clean(self):
+        # Two unrelated project pages
+        (Path(self.tmpdir) / "projects" / "nerve.md").write_text("# nerve\n")
+        (Path(self.tmpdir) / "projects" / "caremap.md").write_text("# caremap\n")
+        import io
+        import contextlib
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = run_merge_suggest(self.store, yes=True)
+        self.assertEqual(rc, 0)
+        self.assertIn("no fragmented slug clusters", buf.getvalue())
+
+    def test_yes_auto_merges_all_clusters(self):
+        # Seed a real cluster: target + two fragments with aliases + thoughts
+        for slug in ("calledthird", "calledthird-website",
+                     "calledthird-research"):
+            (Path(self.tmpdir) / "projects" / f"{slug}.md").write_text(
+                f"# {slug}\n"
+            )
+            self.store.save_alias(slug, slug)
+            (Path(self.tmpdir) / "thoughts" / "2026-04-01.jsonl").write_text(
+                json.dumps({"content": "t", "canonical_project": slug,
+                            "created_at": "2026-04-01T00:00:00Z"}) + "\n",
+            )
+
+        import io
+        import contextlib
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = run_merge_suggest(self.store, yes=True)
+        self.assertEqual(rc, 0)
+        # The two fragment pages should now be gone
+        projects_dir = Path(self.tmpdir) / "projects"
+        self.assertTrue((projects_dir / "calledthird.md").exists())
+        self.assertFalse((projects_dir / "calledthird-website.md").exists())
+        self.assertFalse((projects_dir / "calledthird-research.md").exists())
 
 
 if __name__ == "__main__":
