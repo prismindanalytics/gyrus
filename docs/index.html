@@ -665,20 +665,24 @@ Done. 269 sessions, 1226 thoughts, 31 project pages.
   <section class="py-24 sm:py-32 fade-section">
     <div class="max-w-3xl mx-auto px-6 text-center">
       <h2 class="text-3xl sm:text-4xl font-bold text-white mb-4">Sync across machines</h2>
-      <p class="text-surface-800 mb-12">Gyrus stores everything as plain markdown in <code class="font-mono text-purple-400 text-sm">~/.gyrus/</code>. Sync however you want:</p>
+      <p class="text-surface-800 mb-4">Gyrus syncs via a <strong class="text-white">private GitHub repo</strong> you own. Every run pulls the latest, ingests new sessions, and pushes. Zero config once set up.</p>
+      <p class="text-surface-700 text-sm mb-12">iCloud / Dropbox / Google Drive are actively <em>not</em> recommended &mdash; they evict and lock files, silently breaking ingest.</p>
 
-      <div class="grid sm:grid-cols-2 gap-4 text-left max-w-xl mx-auto">
-        <div class="rounded-xl border border-white/5 bg-surface-200 p-5">
-          <p class="text-white font-medium text-sm mb-1">iCloud / Dropbox / Google Drive</p>
-          <p class="text-surface-700 text-xs">Point <code class="font-mono">~/.gyrus/</code> to a synced folder</p>
+      <div class="grid sm:grid-cols-2 gap-4 text-left max-w-2xl mx-auto">
+        <div class="rounded-xl border border-green-500/20 bg-green-500/[0.03] p-5">
+          <p class="text-white font-medium text-sm mb-2"><span class="text-green-400">&#10003;</span> First machine</p>
+          <pre class="text-surface-700 text-xs font-mono whitespace-pre-wrap leading-relaxed">curl -fsSL https://gyrus.sh/install | bash
+# Installer offers GitHub setup
+# or run: gyrus init</pre>
         </div>
-        <div class="rounded-xl border border-white/5 bg-surface-200 p-5">
-          <p class="text-white font-medium text-sm mb-1">Git</p>
-          <p class="text-surface-700 text-xs"><code class="font-mono">cd ~/.gyrus && git init</code></p>
+        <div class="rounded-xl border border-green-500/20 bg-green-500/[0.03] p-5">
+          <p class="text-white font-medium text-sm mb-2"><span class="text-green-400">&#10003;</span> Second machine</p>
+          <pre class="text-surface-700 text-xs font-mono whitespace-pre-wrap leading-relaxed">curl -fsSL https://gyrus.sh/install | bash
+gyrus init --clone &lt;your-repo-url&gt;</pre>
         </div>
         <div class="rounded-xl border border-white/5 bg-surface-200 p-5">
           <p class="text-white font-medium text-sm mb-1">Obsidian</p>
-          <p class="text-surface-700 text-xs">Set your vault path to <code class="font-mono">~/.gyrus/</code></p>
+          <p class="text-surface-700 text-xs">Set your vault path to <code class="font-mono">~/.gyrus/</code> &mdash; pages are plain markdown</p>
         </div>
         <div class="rounded-xl border border-white/5 bg-surface-200 p-5">
           <p class="text-white font-medium text-sm mb-1">Notion</p>
@@ -686,7 +690,7 @@ Done. 269 sessions, 1226 thoughts, 31 project pages.
         </div>
       </div>
 
-      <p class="text-surface-700 text-sm mt-8">Run the installer on each machine. Same knowledge base, everywhere.</p>
+      <p class="text-surface-700 text-sm mt-8">Auto-sync is non-fatal &mdash; network hiccups never block local work.</p>
     </div>
   </section>
 
@@ -769,7 +773,7 @@ Done. 269 sessions, 1226 thoughts, 31 project pages.
             <svg class="faq-chevron w-5 h-5 text-surface-700 shrink-0 transition-transform duration-200" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"></polyline></svg>
           </button>
           <div class="faq-answer px-6">
-            <p class="text-sm text-surface-800 pb-4 leading-relaxed">Gyrus runs entirely on your machine by default. Sessions are sent to your chosen LLM API for extraction (same as using any AI tool), but your knowledge base stays local as plain markdown files. Nothing is stored in any cloud unless you opt in&thinsp;&mdash;&thinsp;you can choose to sync via iCloud, Dropbox, Notion, or Git if you want cross-machine access.</p>
+            <p class="text-sm text-surface-800 pb-4 leading-relaxed">Gyrus runs entirely on your machine by default. Sessions are sent to your chosen LLM API for extraction (same as using any AI tool), but your knowledge base stays local as plain markdown files. Cross-machine sync is handled by a <strong class="text-white">private GitHub repo you own</strong>&thinsp;&mdash;&thinsp;your data never touches any third-party cloud.</p>
           </div>
         </div>
 

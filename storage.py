@@ -1,7 +1,8 @@
 """
 Storage adapters for Gyrus.
-Default: MarkdownStorage — pure local files, zero signup.
-Optional: NotionStorage — Notion API (add later).
+Default: MarkdownStorage — pure local files on a plain filesystem.
+Cross-machine sync is handled by git (see `gyrus init`).
+Optional: NotionStorage — Notion API (storage_notion.py).
 """
 
 import json
@@ -13,83 +14,14 @@ from pathlib import Path
 from difflib import SequenceMatcher
 
 
-def _ensure_downloaded(path):
-    """Force cloud services to download a file if it's a placeholder.
-
-    Handles:
-    - iCloud: .icloud placeholder files, uses brctl to force download
-    - Dropbox: smart sync (online-only), reading the file triggers download
-    - Google Drive: file stream, reading the file triggers download
-
-    For Dropbox and Google Drive, simply opening the file is enough to
-    trigger a download. The retry loop in _safe_read handles the wait.
-    """
-    import subprocess, platform
-    p = Path(path)
-    if not p.exists():
-        return
-
-    # iCloud: check for .icloud placeholder
-    if platform.system() == "Darwin":
-        icloud_placeholder = p.parent / f".{p.name}.icloud"
-        if icloud_placeholder.exists():
-            try:
-                subprocess.run(["brctl", "download", str(p)], timeout=30,
-                              capture_output=True)
-                for _ in range(60):  # up to 30 seconds
-                    if not icloud_placeholder.exists():
-                        break
-                    time.sleep(0.5)
-            except (subprocess.TimeoutExpired, FileNotFoundError):
-                pass
-
-    # Dropbox: check file status if dropbox CLI available
-    if "Dropbox" in str(p):
-        try:
-            result = subprocess.run(["dropbox", "filestatus", str(p)],
-                                   capture_output=True, text=True, timeout=5)
-            if "online" in result.stdout.lower():
-                # Touch the file to trigger download
-                p.stat()
-                time.sleep(1)
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            pass  # dropbox CLI not available
-
-    # Google Drive: accessing file triggers download automatically
-    # The retry in _safe_read handles the brief delay
+def _safe_write(path, content):
+    """Write text to a file. Thin wrapper kept for call-site stability."""
+    Path(path).write_text(content)
 
 
-_RETRIABLE_ERRNOS = {
-    11,  # Resource deadlock avoided (iCloud)
-    35,  # Resource temporarily unavailable (Dropbox/EAGAIN)
-    16,  # Resource busy (Google Drive file stream)
-}
-
-
-def _safe_write(path, content, retries=5):
-    """Write to a file with retry for cloud sync lock conflicts."""
-    for attempt in range(retries):
-        try:
-            Path(path).write_text(content)
-            return
-        except OSError as e:
-            if e.errno in _RETRIABLE_ERRNOS and attempt < retries - 1:
-                time.sleep(0.5 * (attempt + 1))
-                continue
-            raise
-
-
-def _safe_read(path, retries=5):
-    """Read a file with retry for cloud sync lock conflicts."""
-    _ensure_downloaded(path)
-    for attempt in range(retries):
-        try:
-            return Path(path).read_text()
-        except OSError as e:
-            if e.errno in _RETRIABLE_ERRNOS and attempt < retries - 1:
-                time.sleep(0.5 * (attempt + 1))
-                continue
-            raise
+def _safe_read(path):
+    """Read text from a file. Thin wrapper kept for call-site stability."""
+    return Path(path).read_text()
 
 
 class MarkdownStorage:

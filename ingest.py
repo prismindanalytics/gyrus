@@ -10,7 +10,7 @@ Knowledge pages are local markdown files by default.
 https://gyrus.sh
 """
 
-__version__ = "2026.04.08.8"
+__version__ = "2026.04.19.0"
 
 import argparse
 import atexit
@@ -31,7 +31,7 @@ import platform
 import socket
 
 
-# ─── Lockfile (prevents conflicts on cloud-synced folders) ───
+# ─── Lockfile (prevents concurrent ingest runs) ───
 
 def _lock_path():
     """Get lock file path — always local, never in synced folder."""
@@ -42,8 +42,9 @@ def _lock_path():
 
 
 def _acquire_lock(base_dir):
-    """Acquire a lockfile to prevent concurrent ingestion runs.
-    Lock is stored locally (not in synced folder) to avoid iCloud/Dropbox conflicts.
+    """Acquire a lockfile to prevent concurrent ingestion runs (e.g. cron
+    firing while an interactive run is still going). Stored in /tmp so it
+    never travels with git sync.
     Returns True if acquired, False if another instance is running."""
     lock_path = _lock_path()
     if lock_path.exists():
@@ -1831,24 +1832,856 @@ def _parse_status_overrides(store):
     return overrides
 
 
+# ─── Dataless / iCloud safety ──────────────────────────────────────────────
+# macOS "Optimize Mac Storage" can evict iCloud Drive file contents while
+# keeping their metadata (flag SF_DATALESS, 0x40000000). Opening such a file
+# normally triggers on-demand materialization — but if the file provider is
+# stuck/offline, open() blocks forever with no output. We defend against that
+# by (a) detecting the flag via stat() and (b) time-boxing every read.
+
+_SF_DATALESS = 0x40000000
+
+
+def _is_dataless(path):
+    """True if macOS has evicted this file's data (cheap metadata-only check)."""
+    try:
+        return bool(getattr(path.stat(), "st_flags", 0) & _SF_DATALESS)
+    except OSError:
+        return False
+
+
+class _ReadTimeout(Exception):
+    pass
+
+
+def _read_text_safe(path, timeout_s=5):
+    """Read a file's text with hard timeout + dataless skip.
+    Returns the text, or None if dataless / timed out / unreadable."""
+    if _is_dataless(path):
+        return None
+    try:
+        import signal as _sig
+        has_alarm = hasattr(_sig, "SIGALRM")
+    except ImportError:
+        has_alarm = False
+    if not has_alarm:
+        try:
+            return path.read_text()
+        except (OSError, UnicodeDecodeError):
+            return None
+
+    def _handler(signum, frame):
+        raise _ReadTimeout()
+
+    prev = _sig.signal(_sig.SIGALRM, _handler)
+    _sig.alarm(timeout_s)
+    try:
+        return path.read_text()
+    except (_ReadTimeout, OSError, UnicodeDecodeError):
+        return None
+    finally:
+        _sig.alarm(0)
+        _sig.signal(_sig.SIGALRM, prev)
+
+
 def _get_project_recency(store):
-    """Get the most recent thought date per project."""
+    """Get the most recent thought date per project.
+
+    Streams thoughts files with per-file timeout + dataless-skip so a stuck
+    iCloud sync can't freeze `gyrus status`. Prints live progress so the user
+    always sees forward motion.
+    """
     recency = {}
     thoughts_dir = store.base_dir / "thoughts" if hasattr(store, "base_dir") else Path.home() / ".gyrus" / "thoughts"
     if not thoughts_dir.exists():
         return recency
-    for jsonl_file in sorted(thoughts_dir.glob("*.jsonl"), reverse=True):
-        try:
-            for line in jsonl_file.read_text().splitlines():
-                t = json.loads(line)
-                cp = t.get("canonical_project") or t.get("merged_into_page")
-                if cp and cp not in recency:
-                    created = t.get("created_at", "")[:10]
-                    if created:
-                        recency[cp] = created
-        except (json.JSONDecodeError, IOError):
+    files = sorted(thoughts_dir.glob("*.jsonl"), reverse=True)
+    total = len(files)
+    if total == 0:
+        return recency
+    skipped = []
+    for i, jsonl_file in enumerate(files, 1):
+        sys.stdout.write(f"\r  scanning thoughts {i}/{total} {jsonl_file.stem}   ")
+        sys.stdout.flush()
+        text = _read_text_safe(jsonl_file, timeout_s=5)
+        if text is None:
+            skipped.append(jsonl_file.name)
             continue
+        for line in text.splitlines():
+            try:
+                t = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            cp = t.get("canonical_project") or t.get("merged_into_page")
+            if cp and cp not in recency:
+                created = t.get("created_at", "")[:10]
+                if created:
+                    recency[cp] = created
+    sys.stdout.write("\r" + " " * 72 + "\r")
+    sys.stdout.flush()
+    if skipped:
+        print(f"  ⚠️  skipped {len(skipped)} dataless/stuck thoughts file(s): "
+              f"{', '.join(skipped[:3])}{'…' if len(skipped) > 3 else ''}")
+        print(f"     force download with:  brctl download \"{thoughts_dir}\"")
     return recency
+
+
+def _print_heartbeat(base_dir):
+    """One-line liveness signal printed on every invocation.
+    Uses stat only (filename-based date), never opens files, so it can never
+    hang even if every thought file is dataless.
+    """
+    thoughts_dir = base_dir / "thoughts"
+    if not thoughts_dir.exists():
+        print("  ⚠️  no thoughts/ dir yet — run `gyrus` once to ingest")
+        return
+    # Filenames are YYYY-MM-DD.jsonl so lexicographic sort == chronological
+    files = sorted(thoughts_dir.glob("*.jsonl"))
+    if not files:
+        print("  ⚠️  no thoughts yet — run `gyrus` to ingest")
+        return
+    newest = files[-1]
+    try:
+        last_date = datetime.strptime(newest.stem, "%Y-%m-%d").date()
+    except ValueError:
+        return
+    days_ago = (datetime.now().date() - last_date).days
+    warn = ""
+    if days_ago >= 3:
+        warn = "  ⚠️  ingest looks stale — check launchd/cron (`gyrus --show-log`)"
+    print(f"  gyrus v{__version__} · last thought: {last_date} "
+          f"({days_ago}d ago){warn}")
+
+
+# ─── Git sync ──────────────────────────────────────────────────────────────
+# Gyrus uses a private GitHub repo for cross-machine sync. Every run pulls
+# from origin before ingest and pushes after. All operations are non-fatal:
+# a network failure never blocks local ingest. Set up via `gyrus init`.
+
+def _git_run(args, cwd, timeout=60):
+    """Run a git command. Returns (returncode, stdout, stderr). Never raises."""
+    import subprocess
+    try:
+        r = subprocess.run(
+            ["git"] + args, cwd=str(cwd), timeout=timeout,
+            capture_output=True, text=True,
+        )
+        return r.returncode, (r.stdout or "").strip(), (r.stderr or "").strip()
+    except (subprocess.SubprocessError, FileNotFoundError) as e:
+        return 1, "", str(e)
+
+
+def _git_is_repo(base_dir):
+    return (Path(base_dir) / ".git").exists()
+
+
+def _git_remote_url(base_dir):
+    if not _git_is_repo(base_dir):
+        return None
+    rc, out, _ = _git_run(["remote", "get-url", "origin"], base_dir, timeout=5)
+    return out if rc == 0 and out else None
+
+
+def _git_pull(base_dir, quiet=True):
+    """Rebase-pull from origin. Non-fatal. Returns (ok, short_message)."""
+    if not _git_remote_url(base_dir):
+        return True, "no remote"
+    rc, _, err = _git_run(
+        ["pull", "--rebase", "--autostash", "--quiet"],
+        base_dir, timeout=30,
+    )
+    if rc == 0:
+        return True, "pulled"
+    # Most common failure: no network / auth — keep short
+    msg = (err.splitlines()[-1] if err else "failed")[:80]
+    return False, msg
+
+
+def _git_commit_push(base_dir, message, quiet=True):
+    """Stage, commit, and push any changes. Non-fatal. Returns (ok, summary).
+    Retries once on non-fast-forward (auto-pull then re-push)."""
+    if not _git_remote_url(base_dir):
+        return True, "no remote"
+    _git_run(["add", "-A"], base_dir, timeout=15)
+    rc, staged, _ = _git_run(
+        ["diff", "--cached", "--name-only"], base_dir, timeout=10,
+    )
+    if not staged:
+        return True, "nothing to commit"
+    n_files = len(staged.splitlines())
+    rc, _, err = _git_run(
+        ["commit", "-m", message, "--quiet"], base_dir, timeout=15,
+    )
+    if rc != 0:
+        return False, f"commit failed: {err[:60]}"
+    rc, _, err = _git_run(["push", "--quiet"], base_dir, timeout=30)
+    if rc != 0:
+        # Remote moved — pull-rebase then retry once
+        _git_run(["pull", "--rebase", "--autostash", "--quiet"],
+                 base_dir, timeout=30)
+        rc, _, err = _git_run(["push", "--quiet"], base_dir, timeout=30)
+    if rc != 0:
+        return False, f"push failed: {err[:60]}"
+    return True, f"pushed {n_files} file(s)"
+
+
+def _autosync_pull(base_dir):
+    """Quiet pull on every run. Prints a single line if something happened."""
+    if not _git_remote_url(base_dir):
+        return
+    ok, msg = _git_pull(base_dir)
+    if ok and msg == "pulled":
+        print("  ↻ pulled latest from origin")
+    elif not ok:
+        print(f"  ⚠️  git pull failed ({msg}) — continuing with local state")
+
+
+def _autosync_push(base_dir, message):
+    """Quiet commit+push at the end of a successful command."""
+    if not _git_remote_url(base_dir):
+        return
+    ok, msg = _git_commit_push(base_dir, message)
+    if ok and msg.startswith("pushed"):
+        print(f"  ↑ synced to origin ({msg})")
+    elif not ok:
+        print(f"  ⚠️  git push failed ({msg}) — will retry next run")
+
+
+# ─── Doctor: diagnostic health check ───────────────────────────────────────
+
+# Known cloud-sync path markers. First match wins. Apple's unified
+# Library/CloudStorage dir covers most modern providers on macOS; legacy
+# per-vendor folders in the home dir catch older installs + Linux/Windows.
+_CLOUD_SYNC_MARKERS = [
+    ("Mobile Documents/com~apple~CloudDocs", "iCloud Drive"),
+    ("Library/CloudStorage/GoogleDrive",     "Google Drive"),
+    ("Library/CloudStorage/Dropbox",         "Dropbox"),
+    ("Library/CloudStorage/OneDrive",        "OneDrive"),
+    ("Library/CloudStorage/Box",             "Box"),
+    ("Library/CloudStorage/",                "macOS cloud sync"),
+    ("/Dropbox/",                            "Dropbox"),
+    ("/Google Drive/",                       "Google Drive"),
+    ("/GoogleDrive/",                        "Google Drive"),
+    ("/OneDrive/",                           "OneDrive"),
+    ("/Box Sync/",                           "Box"),
+    ("/Box/",                                "Box"),
+    ("/Sync/",                               "Sync.com"),
+    ("/pCloud Drive/",                       "pCloud"),
+    ("/Proton Drive/",                       "Proton Drive"),
+]
+
+
+def _detect_cloud_sync(path):
+    """Return the provider name if `path` is inside a known cloud-sync folder,
+    else None. Handles symlinks, iCloud Desktop/Documents redirection, and
+    paths that don't exist yet (checks the closest existing ancestor)."""
+    p = Path(path).expanduser()
+    candidates = [str(p)]
+    try:
+        candidates.append(str(p.resolve()))
+    except OSError:
+        pass
+    if not p.exists() and p.parent.exists():
+        try:
+            candidates.append(str(p.parent.resolve() / p.name))
+        except OSError:
+            pass
+    for c in candidates:
+        for marker, name in _CLOUD_SYNC_MARKERS:
+            if marker in c:
+                return name
+    return None
+
+
+def _doctor_check_storage(base_dir):
+    """Warn if gyrus is stored in a cloud-synced folder (eviction / lock risk)."""
+    resolved = base_dir.resolve()
+    provider = _detect_cloud_sync(resolved)
+    if provider:
+        return ("warn", "storage",
+                f"~/.gyrus → {resolved} ({provider})",
+                f"{provider} can lock/evict files and hang reads.\n"
+                "     Use a plain local path (e.g. ~/gyrus-local) + "
+                "`gyrus init` for GitHub sync instead.")
+    return ("ok", "storage", f"local filesystem ({resolved})", None)
+
+
+def _doctor_check_dataless(base_dir):
+    """Scan for iCloud-evicted files that will hang on read."""
+    dataless = []
+    # Check the top-level gyrus files and the thoughts/projects dirs
+    for subdir in ["", "thoughts", "projects"]:
+        d = base_dir / subdir if subdir else base_dir
+        if not d.exists() or not d.is_dir():
+            continue
+        for p in d.iterdir():
+            if p.is_file() and _is_dataless(p):
+                dataless.append(p.relative_to(base_dir))
+    if not dataless:
+        return ("ok", "dataless files", "none", None)
+    names = ", ".join(str(p) for p in dataless[:3])
+    if len(dataless) > 3:
+        names += f", +{len(dataless) - 3} more"
+    return ("fail", "dataless files",
+            f"{len(dataless)} evicted ({names})",
+            f"killall bird fileproviderd; sleep 5; brctl download \"{base_dir}\"")
+
+
+def _doctor_check_schedule():
+    """Detect whether an hourly cron or launchd job is set up for gyrus."""
+    import subprocess
+    try:
+        ct = subprocess.run(["crontab", "-l"], capture_output=True,
+                            text=True, timeout=5)
+        cron_has_gyrus = "gyrus" in (ct.stdout or "") or "ingest.py" in (ct.stdout or "")
+    except (subprocess.SubprocessError, FileNotFoundError):
+        cron_has_gyrus = False
+    launchagents = Path.home() / "Library" / "LaunchAgents"
+    launchd_files = []
+    if launchagents.exists():
+        launchd_files = [f.name for f in launchagents.iterdir()
+                         if "gyrus" in f.name.lower()]
+    if cron_has_gyrus:
+        return ("ok", "schedule", "hourly cron configured", None)
+    if launchd_files:
+        return ("ok", "schedule",
+                f"launchd: {', '.join(launchd_files)}", None)
+    return ("warn", "schedule", "no cron / launchd found",
+            "add to crontab:  0 * * * * ~/.local/bin/gyrus")
+
+
+def _doctor_check_env(base_dir):
+    """Verify .env + at least one model API key."""
+    env_file = base_dir / ".env"
+    if not env_file.exists():
+        return ("fail", "API keys", "no .env file",
+                f"create {env_file} with ANTHROPIC_API_KEY=sk-...")
+    try:
+        text = _read_text_safe(env_file, timeout_s=5)
+    except OSError:
+        text = None
+    if text is None:
+        return ("fail", "API keys", ".env unreadable (dataless?)", None)
+    keys_found = []
+    for k in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_API_KEY", "GEMINI_API_KEY"):
+        for line in text.splitlines():
+            line = line.strip()
+            if line.startswith(k + "=") and len(line) > len(k) + 5:
+                keys_found.append(k)
+                break
+    if not keys_found:
+        return ("fail", "API keys", ".env has no model keys",
+                "add ANTHROPIC_API_KEY=sk-... to " + str(env_file))
+    return ("ok", "API keys", ", ".join(keys_found), None)
+
+
+def _doctor_check_sources():
+    """Check that at least one AI-tool session source is reachable."""
+    total = 0
+    hits = []
+    for name in ("claude-code", "cowork", "codex", "antigravity", "cursor"):
+        base = PATHS.get(name)
+        if not base or not Path(base).exists():
+            continue
+        # Count *.jsonl files two levels deep (don't recurse into everything)
+        try:
+            cnt = len(list(Path(base).glob("*/*.jsonl")))
+            cnt += len(list(Path(base).glob("*/*/*.jsonl")))
+        except OSError:
+            cnt = 0
+        if cnt:
+            hits.append(f"{name} ({cnt})")
+            total += cnt
+    if total == 0:
+        return ("fail", "session sources",
+                "no AI-tool sessions found on disk",
+                "check that Claude Code / Cowork / Cursor etc are installed")
+    return ("ok", "session sources", ", ".join(hits), None)
+
+
+def _doctor_check_backlog(base_dir):
+    """Count unprocessed Claude Code sessions vs state file."""
+    state_path = base_dir / ".ingest-state.json"
+    if not state_path.exists():
+        return ("warn", "backlog", "no .ingest-state.json yet", None)
+    text = _read_text_safe(state_path, timeout_s=5)
+    if text is None:
+        return ("fail", "backlog", ".ingest-state.json unreadable", None)
+    try:
+        state = json.loads(text)
+    except json.JSONDecodeError:
+        return ("fail", "backlog", "corrupt .ingest-state.json",
+                f"rm {state_path} and re-run (will reprocess)")
+    processed = state.get("processed_sessions", {})
+    # Count sessions newer than their last-processed mtime
+    unprocessed = 0
+    cc_base = PATHS.get("claude-code")
+    if cc_base and Path(cc_base).exists():
+        for jsonl in Path(cc_base).glob("*/*.jsonl"):
+            if "/subagents/" in str(jsonl):
+                continue
+            try:
+                mtime = jsonl.stat().st_mtime
+            except OSError:
+                continue
+            key = f"code:{jsonl.stem}"
+            if mtime > processed.get(key, 0):
+                unprocessed += 1
+    if unprocessed == 0:
+        return ("ok", "backlog", "fully caught up", None)
+    status = "warn" if unprocessed < 20 else "fail"
+    return (status, "backlog",
+            f"{unprocessed} unprocessed sessions since last run",
+            "run `gyrus` to process them")
+
+
+def _doctor_check_lockfile():
+    """Detect a stale gyrus lockfile."""
+    lock = _lock_path()
+    if not lock.exists():
+        return ("ok", "lockfile", "none held", None)
+    try:
+        data = json.loads(lock.read_text())
+        age_min = (time.time() - data.get("time", 0)) / 60
+        machine = data.get("machine", "?")
+    except (OSError, json.JSONDecodeError):
+        return ("warn", "lockfile", "present but unreadable",
+                f"rm {lock}")
+    if age_min > 30:
+        return ("warn", "lockfile",
+                f"stale: {age_min:.0f}m old on {machine}",
+                f"rm {lock}")
+    return ("ok", "lockfile", f"fresh: {age_min:.0f}m old on {machine}", None)
+
+
+def _doctor_check_git_sync(base_dir):
+    """Check whether GitHub sync is configured and reachable."""
+    if not _git_is_repo(base_dir):
+        return ("warn", "git sync", "not a git repo",
+                "run `gyrus init` to set up cross-machine sync")
+    remote = _git_remote_url(base_dir)
+    if not remote:
+        return ("warn", "git sync", "no origin remote",
+                "run `gyrus init` or add remote manually")
+    # Reachability (short timeout — if offline, don't block doctor)
+    rc, _, err = _git_run(["ls-remote", "--heads", "origin"],
+                          base_dir, timeout=5)
+    if rc != 0:
+        return ("warn", "git sync", f"origin unreachable: {err[:40]}", None)
+    # Ahead/behind
+    rc, out, _ = _git_run(
+        ["rev-list", "--count", "--left-right", "HEAD...@{u}"],
+        base_dir, timeout=5,
+    )
+    if rc == 0 and out and "\t" in out:
+        ahead, behind = out.split("\t")
+        tag = (f"ahead {ahead}" if ahead != "0" else "") + \
+              (f", behind {behind}" if behind != "0" else "")
+        summary = tag.strip(", ") or "in sync"
+    else:
+        summary = "ready"
+    return ("ok", "git sync", f"{remote} ({summary})", None)
+
+
+def _doctor_check_freshness(base_dir):
+    """Re-use heartbeat logic: how old is the newest thought?"""
+    thoughts_dir = base_dir / "thoughts"
+    if not thoughts_dir.exists():
+        return ("warn", "ingest freshness", "no thoughts/ dir", None)
+    files = sorted(thoughts_dir.glob("*.jsonl"))
+    if not files:
+        return ("warn", "ingest freshness", "no thoughts yet", None)
+    newest = files[-1]
+    try:
+        last_date = datetime.strptime(newest.stem, "%Y-%m-%d").date()
+    except ValueError:
+        return ("warn", "ingest freshness",
+                f"can't parse date from {newest.name}", None)
+    days = (datetime.now().date() - last_date).days
+    if days == 0:
+        return ("ok", "ingest freshness", f"today ({last_date})", None)
+    if days <= 2:
+        return ("ok", "ingest freshness",
+                f"{days}d ago ({last_date})", None)
+    status = "warn" if days <= 7 else "fail"
+    return (status, "ingest freshness",
+            f"{days}d ago ({last_date}) — stalled",
+            "check recent ingest.log output for errors")
+
+
+def run_doctor(base_dir):
+    """Run all diagnostic checks and print a summary."""
+    print()
+    print("─" * 64)
+    print(f"  🩺 gyrus doctor  —  {base_dir}")
+    print("─" * 64)
+
+    checks = [
+        _doctor_check_storage(base_dir),
+        _doctor_check_dataless(base_dir),
+        _doctor_check_freshness(base_dir),
+        _doctor_check_schedule(),
+        _doctor_check_git_sync(base_dir),
+        _doctor_check_env(base_dir),
+        _doctor_check_sources(),
+        _doctor_check_backlog(base_dir),
+        _doctor_check_lockfile(),
+    ]
+
+    icons = {"ok": "✅", "warn": "⚠️ ", "fail": "❌"}
+    for status, label, msg, hint in checks:
+        print(f"  {icons[status]} {label:18s}  {msg}")
+        if hint:
+            for line in hint.splitlines():
+                print(f"       {line}")
+
+    print()
+    fails = sum(1 for c in checks if c[0] == "fail")
+    warns = sum(1 for c in checks if c[0] == "warn")
+    if fails == 0 and warns == 0:
+        print("  ✨ all checks passed")
+    else:
+        print(f"  summary: {fails} critical, {warns} warnings")
+        # Most-likely-cause heuristic
+        if any(c[1] == "dataless files" and c[0] == "fail" for c in checks):
+            print("  → dataless files are the most common cause of silent failures.")
+            print("    Every cron run that reads or appends to a dataless file hangs")
+            print("    until macOS kills it. Run the suggested brctl download above.")
+        elif any(c[1] == "schedule" and c[0] != "ok" for c in checks):
+            print("  → no scheduled job means gyrus isn't being run automatically.")
+    print()
+    return 0 if fails == 0 else 1
+
+
+# ─── Setup wizard: `gyrus init` ───────────────────────────────────────────
+
+_DEFAULT_GITIGNORE = """\
+# secrets
+.env
+
+# python
+__pycache__/
+*.pyc
+
+# gyrus code (managed by `gyrus update`, not sync)
+ingest.py
+storage.py
+storage_notion.py
+eval_prompts.py
+model-comparison.html
+
+# per-machine
+.ingest-state.json
+ingest.log
+latest-digest.md
+"""
+
+
+def _prompt(msg, default=""):
+    """Read a line with an optional default. EOF-safe for non-tty."""
+    try:
+        resp = input(msg).strip()
+    except EOFError:
+        resp = ""
+    return resp or default
+
+
+def _prompt_yn(msg, default="y"):
+    ans = _prompt(msg, default).lower()
+    return ans.startswith("y")
+
+
+def _which(cmd):
+    import shutil
+    return shutil.which(cmd)
+
+
+def run_init(clone_url=None, location=None):
+    """Interactive setup wizard. Painless by design: every step has a sensible
+    default and is optional. Safe to re-run."""
+    import subprocess
+    import shutil as _shutil
+
+    print()
+    print("  🌱  gyrus setup")
+    print()
+
+    # ─── Step 1: storage location ──────────────────────────────
+    if clone_url:
+        return _init_clone(clone_url, location)
+
+    default_loc = Path.home() / "gyrus-local"
+    loc = Path(location) if location else Path(
+        _prompt(f"  (1/4) Storage location  [{default_loc}]: ",
+                str(default_loc))
+    ).expanduser()
+
+    provider = _detect_cloud_sync(loc)
+    if provider:
+        print(f"  ⚠️  that location is inside {provider} — not recommended.")
+        print(f"      {provider} can lock or evict files and cause silent hangs.")
+        print(f"      For cross-machine sync, gyrus sets up GitHub in step 3 —")
+        print(f"      you don't need {provider} for that.")
+        if not _prompt_yn("      Continue anyway? [y/N]: ", "n"):
+            print("  Aborted.")
+            return 1
+
+    loc.mkdir(parents=True, exist_ok=True)
+    (loc / "thoughts").mkdir(exist_ok=True)
+    (loc / "projects").mkdir(exist_ok=True)
+
+    # Copy code files from current install if we're moving
+    src_dir = Path(__file__).resolve().parent
+    if src_dir != loc:
+        for fname in ("ingest.py", "storage.py", "storage_notion.py",
+                      "eval_prompts.py"):
+            src = src_dir / fname
+            dst = loc / fname
+            if src.exists() and not dst.exists():
+                _shutil.copy2(src, dst)
+        print(f"    ✓ copied gyrus code to {loc}")
+
+    # Symlink ~/.gyrus
+    gyrus_home = Path.home() / ".gyrus"
+    if gyrus_home.is_symlink() or gyrus_home.exists():
+        current_target = gyrus_home.resolve() if gyrus_home.is_symlink() else gyrus_home
+        if current_target != loc:
+            backup = Path.home() / f".gyrus.backup-{int(time.time())}"
+            gyrus_home.rename(backup)
+            print(f"    moved old ~/.gyrus → {backup.name}")
+            gyrus_home.symlink_to(loc)
+    else:
+        gyrus_home.symlink_to(loc)
+    print(f"    ✓ ~/.gyrus → {loc}")
+
+    # ─── Step 2: API key ────────────────────────────────────────
+    print()
+    print("  (2/4) Anthropic API key")
+    env_file = loc / ".env"
+    existing_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if env_file.exists():
+        for line in env_file.read_text().splitlines():
+            if line.startswith("ANTHROPIC_API_KEY="):
+                existing_key = line.split("=", 1)[1].strip().strip("\"'")
+                break
+    if existing_key:
+        print(f"    ✓ found existing key ({existing_key[:10]}…)")
+    else:
+        print("    Get one at: https://console.anthropic.com/settings/keys")
+        key = _prompt("    ANTHROPIC_API_KEY: ")
+        if key:
+            env_file.write_text(f"ANTHROPIC_API_KEY={key}\n")
+            env_file.chmod(0o600)
+            print(f"    ✓ saved to {env_file.name} (0600)")
+        else:
+            print("    ⚠️  skipped — add later to " + str(env_file))
+
+    # ─── Step 3: GitHub sync ───────────────────────────────────
+    print()
+    print("  (3/4) GitHub sync (recommended for cross-machine)")
+    if _git_remote_url(loc):
+        print(f"    ✓ already configured ({_git_remote_url(loc)})")
+    elif _prompt_yn("    Set up now? [Y/n]: ", "y"):
+        _init_github_repo(loc)
+    else:
+        print("    skipped — you can run `gyrus init` again anytime")
+
+    # ─── Step 4: schedule ──────────────────────────────────────
+    print()
+    print("  (4/4) Hourly schedule")
+    if _has_gyrus_cron():
+        print("    ✓ cron already configured")
+    elif _prompt_yn("    Run `gyrus` every hour via cron? [Y/n]: ", "y"):
+        _init_cron()
+
+    # ─── Done ───────────────────────────────────────────────────
+    print()
+    print("  🎉  setup complete")
+    print()
+    print("     next:")
+    print("       gyrus          # run first ingest")
+    print("       gyrus doctor   # confirm health")
+    if _git_remote_url(loc):
+        print("       gyrus init --clone <url>   # on your other Macs")
+    print()
+    return 0
+
+
+def _init_clone(clone_url, location=None):
+    """Clone an existing knowledge-base repo onto a second machine."""
+    import subprocess
+    default_loc = Path.home() / "gyrus-local"
+    loc = Path(location) if location else default_loc
+    loc = loc.expanduser()
+
+    provider = _detect_cloud_sync(loc)
+    if provider:
+        print(f"  ⚠️  target location is inside {provider} — not recommended.")
+        print(f"      {provider} can lock or evict files and hang reads.")
+        if not _prompt_yn("      Continue anyway? [y/N]: ", "n"):
+            print("  Aborted.")
+            return 1
+
+    # Normalize URL
+    if not clone_url.startswith(("http://", "https://", "git@", "ssh://")):
+        if "/" in clone_url and not clone_url.startswith("github.com"):
+            clone_url = "https://github.com/" + clone_url
+        elif clone_url.startswith("github.com"):
+            clone_url = "https://" + clone_url
+
+    print(f"  cloning {clone_url} → {loc}")
+    if loc.exists() and any(loc.iterdir()):
+        print(f"  ⚠️  {loc} already exists and is non-empty")
+        return 1
+    r = subprocess.run(["git", "clone", clone_url, str(loc)], timeout=180)
+    if r.returncode != 0:
+        print("    ✗ clone failed")
+        return 1
+    print(f"    ✓ cloned")
+
+    # Copy code from the current install if the repo doesn't have it
+    src_dir = Path(__file__).resolve().parent
+    import shutil as _shutil
+    for fname in ("ingest.py", "storage.py", "storage_notion.py",
+                  "eval_prompts.py"):
+        src = src_dir / fname
+        dst = loc / fname
+        if src.exists() and not dst.exists():
+            _shutil.copy2(src, dst)
+
+    # Symlink ~/.gyrus
+    gyrus_home = Path.home() / ".gyrus"
+    if gyrus_home.is_symlink() or gyrus_home.exists():
+        backup = Path.home() / f".gyrus.backup-{int(time.time())}"
+        gyrus_home.rename(backup)
+        print(f"    moved old ~/.gyrus → {backup.name}")
+    gyrus_home.symlink_to(loc)
+    print(f"    ✓ ~/.gyrus → {loc}")
+
+    # API key
+    print()
+    env_file = loc / ".env"
+    if not env_file.exists():
+        key = os.environ.get("ANTHROPIC_API_KEY") or _prompt(
+            "  Anthropic API key: ")
+        if key:
+            env_file.write_text(f"ANTHROPIC_API_KEY={key}\n")
+            env_file.chmod(0o600)
+            print("    ✓ saved .env")
+
+    # Cron
+    print()
+    if not _has_gyrus_cron() and _prompt_yn(
+        "  Run `gyrus` every hour via cron? [Y/n]: ", "y"
+    ):
+        _init_cron()
+
+    print()
+    print("  🎉  clone complete — your knowledge base is ready")
+    print()
+    return 0
+
+
+def _init_github_repo(loc):
+    """Create a private GitHub repo and wire up auto-sync."""
+    import subprocess
+    if not _which("gh"):
+        print("    ⚠️  gh CLI not installed. Install: brew install gh")
+        print("       then re-run: gyrus init")
+        return
+    auth = subprocess.run(["gh", "auth", "status"],
+                          capture_output=True, text=True, timeout=10)
+    if auth.returncode != 0:
+        print("    ⚠️  gh not authenticated. Run: gh auth login")
+        print("       then re-run: gyrus init")
+        return
+
+    # Init local repo if needed
+    if not _git_is_repo(loc):
+        _git_run(["init", "--initial-branch=main"], loc, timeout=10)
+        gitignore = loc / ".gitignore"
+        if not gitignore.exists():
+            gitignore.write_text(_DEFAULT_GITIGNORE)
+        _git_run(["add", "-A"], loc, timeout=15)
+        _git_run(["commit", "-m", "gyrus: initial", "--quiet"],
+                 loc, timeout=15)
+
+    default_name = "gyrus-knowledge"
+    name = _prompt(f"    Repo name [{default_name}]: ", default_name)
+    r = subprocess.run(
+        ["gh", "repo", "create", name, "--private",
+         "--source", str(loc), "--remote", "origin", "--push"],
+        capture_output=True, text=True, timeout=120,
+    )
+    if r.returncode == 0:
+        print(f"    ✓ created private repo + initial push")
+        print(f"    ✓ auto-sync enabled (every run pulls & pushes)")
+    else:
+        msg = (r.stderr or "").strip().splitlines()
+        tail = msg[-1] if msg else "unknown error"
+        print(f"    ⚠️  gh repo create failed: {tail}")
+        print(f"       you can set this up manually later")
+
+
+def _has_gyrus_cron():
+    """Check whether crontab already has a gyrus entry."""
+    import subprocess
+    try:
+        r = subprocess.run(["crontab", "-l"], capture_output=True,
+                           text=True, timeout=5)
+    except (subprocess.SubprocessError, FileNotFoundError):
+        return False
+    text = r.stdout or ""
+    return "gyrus" in text or "ingest.py" in text
+
+
+def _init_cron():
+    """Add `0 * * * * gyrus` to the current user's crontab."""
+    import subprocess
+    gyrus_bin = _which("gyrus") or str(Path.home() / ".local" / "bin" / "gyrus")
+    cron_line = f"0 * * * * {gyrus_bin} >/dev/null 2>&1"
+    try:
+        r = subprocess.run(["crontab", "-l"], capture_output=True,
+                           text=True, timeout=5)
+        existing = r.stdout if r.returncode == 0 else ""
+    except (subprocess.SubprocessError, FileNotFoundError):
+        print("    ⚠️  crontab not available")
+        print(f"       add manually: {cron_line}")
+        return
+    new_cron = existing.rstrip() + "\n" + cron_line + "\n"
+    new_cron = new_cron.lstrip("\n")
+    try:
+        p = subprocess.run(["crontab", "-"], input=new_cron,
+                           text=True, timeout=10)
+        if p.returncode == 0:
+            print(f"    ✓ added to crontab (hourly)")
+            return
+    except subprocess.SubprocessError:
+        pass
+    print(f"    ⚠️  crontab install failed — add manually:")
+    print(f"       {cron_line}")
+
+
+def run_sync(base_dir):
+    """Manual sync: pull from origin, then commit+push any local changes."""
+    if not _git_is_repo(base_dir):
+        print("  no git repo — run `gyrus init` to set up GitHub sync")
+        return 1
+    remote = _git_remote_url(base_dir)
+    if not remote:
+        print("  no origin remote — run `gyrus init` to set up GitHub sync")
+        return 1
+    print(f"  remote: {remote}")
+    print("  pulling…")
+    ok, msg = _git_pull(base_dir)
+    print(f"    {'✓' if ok else '✗'} {msg}")
+    print("  pushing…")
+    ok, msg = _git_commit_push(
+        base_dir,
+        f"gyrus sync · {datetime.now():%Y-%m-%d %H:%M} · manual",
+    )
+    print(f"    {'✓' if ok else '✗'} {msg}")
+    return 0 if ok else 1
 
 
 def review_project_status(store):
@@ -2998,6 +3831,18 @@ def main():
                         help="Compare extraction models on your sessions and pick one")
     parser.add_argument("--review-status", action="store_true",
                         help="Interactively review and set project statuses")
+    parser.add_argument("--doctor", action="store_true",
+                        help="Run diagnostic health checks")
+    parser.add_argument("--init", action="store_true",
+                        help="First-time setup wizard (storage, key, GitHub, cron)")
+    parser.add_argument("--clone", metavar="URL",
+                        help="With --init: clone an existing knowledge-base repo")
+    parser.add_argument("--init-location", metavar="PATH",
+                        help="With --init: override default storage path")
+    parser.add_argument("--sync", action="store_true",
+                        help="Manually pull and push the git remote")
+    parser.add_argument("--no-autosync", action="store_true",
+                        help="Skip the automatic git pull/push on this run")
     parser.add_argument("--digest", action="store_true",
                         help="Generate a digest from the latest ingestion run")
     parser.add_argument("--sync-context", action="store_true",
@@ -3058,6 +3903,10 @@ def main():
         success = self_update(base)
         sys.exit(0 if success else 1)
 
+    # Handle --init early — doesn't need an existing gyrus home
+    if args.init:
+        sys.exit(run_init(clone_url=args.clone, location=args.init_location))
+
     # Load .env file early (so Notion keys and other env vars are available)
     env_base = Path(args.base_dir) if args.base_dir else Path.home() / ".gyrus"
     env_file = env_base / ".env"
@@ -3067,6 +3916,20 @@ def main():
             if line and not line.startswith("#") and "=" in line:
                 key, _, value = line.partition("=")
                 os.environ.setdefault(key.strip(), value.strip().strip("\"'"))
+
+    # Heartbeat — always tell the user whether ingest is alive, before any
+    # expensive work. Stat-only, so it can't hang on dataless iCloud files.
+    _print_heartbeat(env_base)
+
+    # Auto-sync: pull latest from origin before any work. Non-fatal, quick,
+    # silent if nothing changed. Skipped on --no-autosync or for --sync itself
+    # (which does its own pull).
+    if not args.no_autosync and not args.sync and not args.doctor:
+        _autosync_pull(env_base)
+
+    # Handle --sync early (manual pull + push, no ingest)
+    if args.sync:
+        sys.exit(run_sync(env_base))
 
     # Handle --compare-models early
     if args.compare_models:
@@ -3087,7 +3950,14 @@ def main():
     if args.review_status:
         store = MarkdownStorage(base_dir=str(env_base))
         review_project_status(store)
+        if not args.no_autosync:
+            _autosync_push(env_base,
+                           f"gyrus status · {datetime.now():%Y-%m-%d %H:%M}")
         sys.exit(0)
+
+    # Handle --doctor early — never touches the network or API keys
+    if args.doctor:
+        sys.exit(run_doctor(env_base))
 
     # Handle --digest early
     if args.digest:
@@ -3111,6 +3981,9 @@ def main():
             digest_config = file_config.get("digest", {})
             if digest_config.get("email"):
                 send_digest_email(digest, digest_config, env_base)
+        if not args.no_autosync:
+            _autosync_push(env_base,
+                           f"gyrus digest · {datetime.now():%Y-%m-%d}")
         sys.exit(0)
 
     # Handle --show-log early
@@ -3179,7 +4052,7 @@ def main():
         store = MarkdownStorage(base_dir=args.base_dir)
         print(f"  Storage: {store.base_dir}")
 
-    # Acquire lock (prevents conflicts on cloud-synced folders)
+    # Acquire lock (prevents concurrent runs: e.g. cron + manual overlap)
     if not args.dry_run and not _acquire_lock(
         store.base_dir if hasattr(store, 'base_dir') else Path.home() / ".gyrus"
     ):
@@ -3610,6 +4483,14 @@ def main():
             review_project_status(store)
 
     _release_lock(store.base_dir if hasattr(store, 'base_dir') else Path.home() / ".gyrus")
+
+    # Auto-sync: push results to origin. Non-fatal, silent if no changes.
+    if not args.no_autosync and not args.dry_run:
+        _autosync_push(
+            store.base_dir if hasattr(store, 'base_dir') else Path.home() / ".gyrus",
+            f"gyrus ingest · {datetime.now():%Y-%m-%d %H:%M} · "
+            f"{len(all_sessions)} sessions, {len(batch_thoughts)} thoughts",
+        )
 
 
 if __name__ == "__main__":

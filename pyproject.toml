@@ -1,6 +1,6 @@
 [project]
 name = "gyrus"
-version = "0.1.0"
+version = "0.2.0"
 description = "Your AI tools don't talk to each other. Gyrus fixes that."
 readme = "README.md"
 license = {text = "MIT"}
