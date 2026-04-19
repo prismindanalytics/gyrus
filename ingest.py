@@ -31,6 +31,16 @@ import platform
 import socket
 
 
+# Windows' default console encoding (cp1252) can't emit the emoji we use in
+# status lines. Reconfigure stdio to UTF-8 with a `replace` fallback so a
+# stray non-ASCII character can never raise UnicodeEncodeError mid-run.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, OSError, ValueError):
+        pass  # older Python or non-reconfigurable stream — tolerated
+
+
 # ─── Lockfile (prevents concurrent ingest runs) ───
 
 def _lock_path():
@@ -2093,6 +2103,7 @@ _CLOUD_SYNC_MARKERS = [
     ("/Google Drive/",                       "Google Drive"),
     ("/GoogleDrive/",                        "Google Drive"),
     ("/OneDrive/",                           "OneDrive"),
+    ("/OneDrive - ",                         "OneDrive"),  # Windows multi-account suffix
     ("/Box Sync/",                           "Box"),
     ("/Box/",                                "Box"),
     ("/Sync/",                               "Sync.com"),
@@ -2104,7 +2115,9 @@ _CLOUD_SYNC_MARKERS = [
 def _detect_cloud_sync(path):
     """Return the provider name if `path` is inside a known cloud-sync folder,
     else None. Handles symlinks, iCloud Desktop/Documents redirection, and
-    paths that don't exist yet (checks the closest existing ancestor)."""
+    paths that don't exist yet (checks the closest existing ancestor).
+    Path-separator-agnostic so Windows backslash paths match our forward-slash
+    markers."""
     p = Path(path).expanduser()
     candidates = [str(p)]
     try:
@@ -2117,8 +2130,9 @@ def _detect_cloud_sync(path):
         except OSError:
             pass
     for c in candidates:
+        c_fwd = c.replace("\\", "/")
         for marker, name in _CLOUD_SYNC_MARKERS:
-            if marker in c:
+            if marker in c_fwd:
                 return name
     return None
 

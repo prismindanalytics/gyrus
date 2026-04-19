@@ -600,6 +600,16 @@ class TestCloudSyncDetection(unittest.TestCase):
                          "OneDrive")
         self.assertEqual(_detect_cloud_sync("/Users/alice/OneDrive/gyrus"),
                          "OneDrive")
+        # Windows multi-account naming
+        self.assertEqual(_detect_cloud_sync("C:\\Users\\Alice\\OneDrive - Personal\\gyrus"),
+                         "OneDrive")
+
+    def test_windows_backslash_paths(self):
+        """Windows Path objects serialize with backslashes; detection must handle both."""
+        self.assertEqual(_detect_cloud_sync("C:\\Users\\Alice\\Dropbox\\gyrus"), "Dropbox")
+        self.assertEqual(_detect_cloud_sync("C:\\Users\\Alice\\Google Drive\\gyrus"), "Google Drive")
+        self.assertEqual(_detect_cloud_sync("C:\\Users\\Alice\\Box Sync\\gyrus"), "Box")
+        self.assertIsNone(_detect_cloud_sync("C:\\Users\\Alice\\gyrus-local"))
 
     def test_box(self):
         self.assertEqual(_detect_cloud_sync("/Users/alice/Box Sync/gyrus"), "Box")
