@@ -50,6 +50,7 @@ from ingest import (
     _doctor_fix_lockfile,
     _doctor_fix_git_sync,
     _lock_path,
+    run_merge,
 )
 
 
@@ -867,6 +868,97 @@ class TestDoctorFixes(unittest.TestCase):
         self.assertIsInstance(rc, int)
         output = buf.getvalue()
         self.assertIn("--fix enabled", output)
+
+
+# ─── v0.2: gyrus merge ──────────────────────────────────────────────────────
+
+class TestMerge(unittest.TestCase):
+    """`gyrus merge` rewrites aliases, thoughts, and orphan pages correctly."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.store = MarkdownStorage(base_dir=self.tmpdir)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _seed(self):
+        """Seed fixture: two slugs (calledthird-website + calledthirdresearchcoaching-gap)
+        that need to merge into 'calledthird'."""
+        self.store.save_alias("calledthird-website", "calledthird-website")
+        self.store.save_alias("calledthird.com", "calledthird-website")
+        self.store.save_alias("Coaching Gap", "calledthirdresearchcoaching-gap")
+        self.store.save_alias("nerve", "nerve")  # unrelated, should not move
+
+        for date, cp in [
+            ("2026-04-01", "calledthird-website"),
+            ("2026-04-02", "calledthird-website"),
+            ("2026-04-03", "calledthirdresearchcoaching-gap"),
+            ("2026-04-04", "nerve"),  # unrelated
+        ]:
+            (Path(self.tmpdir) / "thoughts" / f"{date}.jsonl").write_text(
+                json.dumps({"content": f"{cp} thought",
+                            "canonical_project": cp,
+                            "created_at": f"{date}T00:00:00Z"}) + "\n"
+            )
+
+        # Orphan project pages
+        for slug in ("calledthird-website", "calledthirdresearchcoaching-gap"):
+            (Path(self.tmpdir) / "projects" / f"{slug}.md").write_text(
+                f"# {slug}\n\nstub\n"
+            )
+
+    def test_merge_rewrites_aliases(self):
+        self._seed()
+        rc = run_merge(
+            self.store,
+            ["calledthird-website", "calledthirdresearchcoaching-gap", "calledthird"],
+            yes=True,
+        )
+        self.assertEqual(rc, 0)
+        aliases = {a["alias"]: a["canonical_slug"]
+                   for a in self.store.get_aliases()}
+        # Existing aliases that mapped to either source now map to 'calledthird'
+        self.assertEqual(aliases["calledthird-website"], "calledthird")
+        self.assertEqual(aliases["calledthird.com"], "calledthird")
+        self.assertEqual(aliases["Coaching Gap"], "calledthird")
+        # Unrelated alias is untouched
+        self.assertEqual(aliases["nerve"], "nerve")
+
+    def test_merge_rewrites_thoughts(self):
+        self._seed()
+        run_merge(
+            self.store,
+            ["calledthird-website", "calledthirdresearchcoaching-gap", "calledthird"],
+            yes=True,
+        )
+        # Every thought that pointed at either source now points at target
+        thoughts_dir = Path(self.tmpdir) / "thoughts"
+        cps = []
+        for f in sorted(thoughts_dir.glob("*.jsonl")):
+            for line in f.read_text().strip().splitlines():
+                cps.append(json.loads(line)["canonical_project"])
+        self.assertEqual(cps, ["calledthird", "calledthird", "calledthird", "nerve"])
+
+    def test_merge_removes_orphan_pages(self):
+        self._seed()
+        run_merge(
+            self.store,
+            ["calledthird-website", "calledthirdresearchcoaching-gap", "calledthird"],
+            yes=True,
+        )
+        projects_dir = Path(self.tmpdir) / "projects"
+        self.assertFalse((projects_dir / "calledthird-website.md").exists())
+        self.assertFalse((projects_dir / "calledthirdresearchcoaching-gap.md").exists())
+
+    def test_merge_self_merge_noop(self):
+        self._seed()
+        rc = run_merge(self.store, ["calledthird", "calledthird"], yes=True)
+        self.assertEqual(rc, 0)  # nothing to do, but not an error
+
+    def test_merge_usage_error_on_too_few_args(self):
+        rc = run_merge(self.store, ["calledthird"], yes=True)
+        self.assertEqual(rc, 2)
 
 
 if __name__ == "__main__":

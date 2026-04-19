@@ -234,6 +234,7 @@ GEMINI_API_KEY=AI...
 | `gyrus doctor` | Diagnose ingest health (storage, sync, backlog, API keys) |
 | `gyrus doctor --fix` | Same, plus auto-patch safe things: stale locks, missing cron, dataless files, git init/sync |
 | `gyrus sync` | Manually pull + push the GitHub remote |
+| `gyrus merge <from>... <into>` | Consolidate fragmented project slugs. Rewrites aliases.json, all thought records, removes orphan pages. Example: `gyrus merge calledthird-website calledthird-research calledthird` |
 | `gyrus compare` | Benchmark models on your sessions, pick extraction + merge models |
 | `gyrus status` | Interactively review and set project statuses |
 | `gyrus digest` | Generate a digest of recent activity |

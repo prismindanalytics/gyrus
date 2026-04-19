@@ -2853,6 +2853,147 @@ def _init_cron():
     print(f"       {cron_line}")
 
 
+def run_merge(store, slugs, yes=False):
+    """Merge one or more source slugs into a target slug.
+
+    `slugs` is a list where the LAST element is the target and the rest are
+    sources. Rewrites aliases.json, rewrites canonical_project on every
+    matching thought in the JSONL log, removes orphan project pages, and
+    writes the updated status.md. Leaves regeneration of the target page
+    to the next ingest run (or `gyrus --backfill`).
+
+    Safe to run multiple times: it's idempotent per-source-slug.
+    """
+    if len(slugs) < 2:
+        print("  usage: gyrus merge <from-slug> [<from-slug>...] <into-slug>")
+        return 2
+
+    into = slugs[-1]
+    from_slugs = [s for s in slugs[:-1] if s != into]  # drop self-merges
+    if not from_slugs:
+        print(f"  nothing to merge (all source slugs equal '{into}')")
+        return 0
+
+    print()
+    print(f"  🔀 Merge into '{into}':")
+    for s in from_slugs:
+        print(f"      ← {s}")
+
+    # Count what's affected
+    thoughts_dir = store.base_dir / "thoughts"
+    projects_dir = store.base_dir / "projects"
+    affected_thoughts = 0
+    affected_alias_rows = 0
+    affected_pages = []
+
+    aliases = store.get_aliases()
+    for a in aliases:
+        if a.get("canonical_slug") in from_slugs:
+            affected_alias_rows += 1
+
+    if thoughts_dir.exists():
+        for jsonl_file in thoughts_dir.glob("*.jsonl"):
+            text = _read_text_safe(jsonl_file)
+            if text is None:
+                continue
+            for line in text.splitlines():
+                try:
+                    t = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if t.get("canonical_project") in from_slugs:
+                    affected_thoughts += 1
+
+    for s in from_slugs:
+        p = projects_dir / f"{s}.md"
+        if p.exists():
+            affected_pages.append(p)
+
+    print(f"      {affected_alias_rows} alias row(s), "
+          f"{affected_thoughts} thought(s), "
+          f"{len(affected_pages)} orphan page(s)")
+
+    if not yes and sys.stdin.isatty():
+        ans = _prompt("\n  Proceed? [Y/n]: ", "y").lower()
+        if not ans.startswith("y"):
+            print("  Aborted.")
+            return 1
+
+    # 1. Rewrite aliases.json
+    changed_aliases = 0
+    for a in aliases:
+        if a.get("canonical_slug") in from_slugs:
+            a["canonical_slug"] = into
+            changed_aliases += 1
+    # Also add explicit alias rows so `from_slug` itself routes to `into`
+    # on any future raw lookup (covers projects that never had their own row)
+    existing_alias_names = {a["alias"].lower() for a in aliases}
+    for s in from_slugs:
+        if s.lower() not in existing_alias_names:
+            aliases.append({"alias": s, "canonical_slug": into})
+            changed_aliases += 1
+    store.aliases_file.write_text(json.dumps(aliases, indent=2))
+    print(f"    ✓ rewrote {changed_aliases} alias row(s)")
+
+    # 2. Rewrite thoughts in JSONL files (in-place)
+    rewritten_thoughts = 0
+    if thoughts_dir.exists():
+        for jsonl_file in sorted(thoughts_dir.glob("*.jsonl")):
+            text = _read_text_safe(jsonl_file)
+            if text is None:
+                continue
+            new_lines = []
+            touched = False
+            for line in text.splitlines():
+                try:
+                    t = json.loads(line)
+                except json.JSONDecodeError:
+                    new_lines.append(line)
+                    continue
+                if t.get("canonical_project") in from_slugs:
+                    t["canonical_project"] = into
+                    rewritten_thoughts += 1
+                    touched = True
+                new_lines.append(json.dumps(t))
+            if touched:
+                jsonl_file.write_text("\n".join(new_lines) + "\n")
+    print(f"    ✓ rewrote {rewritten_thoughts} thought record(s)")
+
+    # 3. Remove orphan project pages
+    for p in affected_pages:
+        try:
+            p.unlink()
+            print(f"    ✓ removed orphan page: projects/{p.name}")
+        except OSError as e:
+            print(f"    ⚠️  couldn't remove {p.name}: {e}")
+
+    # 4. Regenerate status.md if possible (best-effort)
+    try:
+        pages = store.get_all_pages()
+        if pages:
+            # Rewrite status.md by dropping merged slugs — cheap approximation
+            status_path = store.base_dir / "status.md"
+            if status_path.exists():
+                lines = status_path.read_text().splitlines()
+                kept = []
+                drops = 0
+                for line in lines:
+                    if any(f"**{s}**:" in line for s in from_slugs):
+                        drops += 1
+                        continue
+                    kept.append(line)
+                if drops:
+                    status_path.write_text("\n".join(kept) + "\n")
+                    print(f"    ✓ removed {drops} row(s) from status.md")
+    except OSError:
+        pass
+
+    print()
+    print(f"  → run `gyrus --backfill` to regenerate projects/{into}.md")
+    print(f"    from the merged thoughts, or just wait for the next `gyrus` run.")
+    return 0
+
+
 def run_sync(base_dir):
     """Manual sync: pull from origin, then commit+push any local changes."""
     if not _git_is_repo(base_dir):
@@ -4034,6 +4175,11 @@ def main():
                         help="With --init: override default storage path")
     parser.add_argument("--sync", action="store_true",
                         help="Manually pull and push the git remote")
+    parser.add_argument("--merge", nargs="+", metavar="SLUG",
+                        help="Merge slugs: last SLUG is the target, others are sources. "
+                             "Example: --merge calledthird-website calledthird")
+    parser.add_argument("--yes", "-y", action="store_true",
+                        help="Skip interactive confirmation (e.g. for --merge in scripts)")
     parser.add_argument("--no-autosync", action="store_true",
                         help="Skip the automatic git pull/push on this run")
     parser.add_argument("--digest", action="store_true",
@@ -4123,6 +4269,11 @@ def main():
     # Handle --sync early (manual pull + push, no ingest)
     if args.sync:
         sys.exit(run_sync(env_base))
+
+    # Handle --merge early — rewrites aliases + thoughts, no LLM calls
+    if args.merge:
+        store = MarkdownStorage(base_dir=str(env_base))
+        sys.exit(run_merge(store, args.merge, yes=args.yes))
 
     # Handle --compare-models early
     if args.compare_models:

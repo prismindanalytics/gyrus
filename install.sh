@@ -210,6 +210,7 @@ UV_BIN="${UV_BIN:-$(command -v uv 2>/dev/null || echo "$HOME/.local/bin/uv")}"
 case "${1:-}" in
   init)         shift; set -- --init "$@" ;;
   sync)         shift; set -- --sync "$@" ;;
+  merge)        shift; set -- --merge "$@" ;;
   update)       shift; set -- --update "$@" ;;
   compare)      shift; set -- --compare-models "$@" ;;
   digest)       shift; set -- --digest "$@" ;;
@@ -228,6 +229,7 @@ Commands:
   (none)       Run ingestion (extract + merge)
   init         First-time setup (storage, API key, GitHub sync, cron)
   sync         Manually pull + push the GitHub remote
+  merge        Consolidate slugs (e.g. gyrus merge from1 from2 into)
   status       Review and set project statuses
   doctor       Diagnose ingest health (use --fix to auto-patch)
   digest       Generate activity digest
