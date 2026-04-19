@@ -315,7 +315,7 @@ Done. 269 sessions, 1226 thoughts, 31 project pages.
   <section class="py-20 sm:py-24 fade-section">
     <div class="max-w-4xl mx-auto px-6">
       <h2 class="text-3xl sm:text-4xl font-bold text-white mb-4 text-center">Runs automatically</h2>
-      <p class="text-surface-800 text-center mb-12 max-w-2xl mx-auto">A cron job checks for new sessions on your schedule. No new sessions&thinsp;=&thinsp;no API calls&thinsp;=&thinsp;<span class="text-white font-medium">zero cost</span>. Review your pages periodically &mdash; they're drafts, not gospel.</p>
+      <p class="text-surface-800 text-center mb-12 max-w-2xl mx-auto">A cron job pulls the latest from your GitHub sync, ingests new sessions, and pushes back. No new sessions&thinsp;=&thinsp;no API calls&thinsp;=&thinsp;<span class="text-white font-medium">zero cost</span>. Review pages periodically &mdash; they're drafts, not gospel.</p>
 
       <div class="grid sm:grid-cols-2 gap-8">
         <!-- Cron -->
@@ -326,7 +326,7 @@ Done. 269 sessions, 1226 thoughts, 31 project pages.
             </div>
             <h3 class="text-base font-semibold text-white">Scheduled sync</h3>
           </div>
-          <p class="text-surface-800 text-sm leading-relaxed">The installer sets up a cron job (or Windows Scheduled Task) at whatever frequency you choose&thinsp;&mdash;&thinsp;every 30 minutes, hourly, every 4 hours, or daily. Each run checks for new sessions since the last one. If nothing changed, it exits immediately. <span class="text-surface-900">No LLM calls, no cost.</span></p>
+          <p class="text-surface-800 text-sm leading-relaxed">The installer sets up a cron job (or Windows Scheduled Task) at your chosen frequency&thinsp;&mdash;&thinsp;every 30 minutes, hourly, every 4 hours, or daily. Each run <code class="text-xs font-mono text-purple-300">git pull</code>s the latest, ingests anything new, and pushes back. If nothing changed, it exits immediately. <span class="text-surface-900">No LLM calls, no cost.</span></p>
         </div>
 
         <!-- Skills -->
@@ -341,7 +341,7 @@ Done. 269 sessions, 1226 thoughts, 31 project pages.
         </div>
       </div>
 
-      <p class="text-surface-700 text-xs text-center mt-8">When there <em>are</em> new sessions: ~$0.01&ndash;0.04 per run &bull; Frequency is configurable during install &bull; Self-updates with <code class="font-mono text-surface-700">python3 ingest.py --update</code></p>
+      <p class="text-surface-700 text-xs text-center mt-8">When there <em>are</em> new sessions: ~$0.01&ndash;0.04 per run &bull; Frequency is configurable during install &bull; Self-updates with <code class="font-mono text-surface-700">gyrus update</code> &bull; Diagnose with <code class="font-mono text-surface-700">gyrus doctor</code></p>
     </div>
   </section>
 
@@ -787,6 +787,17 @@ gyrus init --clone &lt;your-repo-url&gt;</pre>
           </div>
         </div>
 
+        <!-- FAQ 5b -->
+        <div class="faq-item rounded-xl border border-white/5 bg-surface-200 overflow-hidden">
+          <button class="faq-toggle w-full text-left px-6 py-4 flex items-center justify-between" aria-expanded="false">
+            <span class="text-sm font-medium text-white pr-4">Something stopped working. What do I do?</span>
+            <svg class="faq-chevron w-5 h-5 text-surface-700 shrink-0 transition-transform duration-200" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"></polyline></svg>
+          </button>
+          <div class="faq-answer px-6">
+            <p class="text-sm text-surface-800 pb-4 leading-relaxed">Run <code class="font-mono text-xs bg-surface-300 px-1.5 py-0.5 rounded">gyrus doctor</code>. It checks storage location, ingest freshness, scheduled-job status, GitHub sync, API keys, session sources, backlog, and lockfile in one pass &mdash; then tells you the single most likely root cause. Every <code class="font-mono text-xs">gyrus</code> run also prints a heartbeat line so silent-failure modes are impossible to miss.</p>
+          </div>
+        </div>
+
         <!-- FAQ 6 -->
         <div class="faq-item rounded-xl border border-white/5 bg-surface-200 overflow-hidden">
           <button class="faq-toggle w-full text-left px-6 py-4 flex items-center justify-between" aria-expanded="false">
@@ -794,7 +805,7 @@ gyrus init --clone &lt;your-repo-url&gt;</pre>
             <svg class="faq-chevron w-5 h-5 text-surface-700 shrink-0 transition-transform duration-200" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"></polyline></svg>
           </button>
           <div class="faq-answer px-6">
-            <p class="text-sm text-surface-800 pb-4 leading-relaxed"><code class="font-mono text-xs bg-surface-300 px-1.5 py-0.5 rounded">cd ~/.gyrus && uv run ingest.py --update</code>. Downloads the latest scripts from GitHub. Your knowledge base, config, and API keys are preserved.</p>
+            <p class="text-sm text-surface-800 pb-4 leading-relaxed"><code class="font-mono text-xs bg-surface-300 px-1.5 py-0.5 rounded">gyrus update</code>. Downloads the latest code from GitHub. Your knowledge base, config, and API keys are preserved.</p>
           </div>
         </div>
 
