@@ -821,8 +821,11 @@ class TestDoctorFixes(unittest.TestCase):
     def test_fix_git_sync_no_remote_returns_actionable_message(self):
         import subprocess
         subprocess.run(["git", "init", "--quiet"], cwd=self.tmpdir, check=True)
-        subprocess.run(["git", "-C", str(self.tmpdir), "commit", "--allow-empty",
-                        "-m", "x", "--quiet"], check=True)
+        # CI runners may not have a global git identity — set one inline
+        subprocess.run(["git", "-C", str(self.tmpdir),
+                        "-c", "user.email=t@t", "-c", "user.name=t",
+                        "commit", "--allow-empty", "-m", "x", "--quiet"],
+                       check=True)
         ok, msg = _doctor_fix_git_sync(self.tmpdir)
         self.assertFalse(ok)
         self.assertIn("no remote", msg)

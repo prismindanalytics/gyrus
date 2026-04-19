@@ -1992,6 +1992,21 @@ def _git_remote_url(base_dir):
     return out if rc == 0 and out else None
 
 
+def _git_identity_args(base_dir):
+    """Return leading `-c` args for `git commit` that guarantee an author
+    identity exists. Respects existing user.email/user.name — only fills
+    the gap, so a commit on a box without `git config --global user.email`
+    still works and users who've configured git keep their real identity."""
+    args = []
+    rc, out, _ = _git_run(["config", "user.email"], base_dir, timeout=5)
+    if rc != 0 or not out:
+        args.extend(["-c", "user.email=gyrus@localhost"])
+    rc, out, _ = _git_run(["config", "user.name"], base_dir, timeout=5)
+    if rc != 0 or not out:
+        args.extend(["-c", "user.name=gyrus"])
+    return args
+
+
 def _git_pull(base_dir, quiet=True):
     """Rebase-pull from origin. Non-fatal. Returns (ok, short_message).
     No-ops silently if there's no upstream yet (first run after init)."""
@@ -2046,7 +2061,8 @@ def _git_commit_push(base_dir, message, quiet=True):
         return True, "nothing to commit"
     n_files = len(staged.splitlines())
     rc, _, err = _git_run(
-        ["commit", "-m", message, "--quiet"], base_dir, timeout=15,
+        _git_identity_args(base_dir) + ["commit", "-m", message, "--quiet"],
+        base_dir, timeout=15,
     )
     if rc != 0:
         return False, f"commit failed: {err[:60]}"
@@ -2435,8 +2451,10 @@ def _doctor_fix_git_sync(base_dir):
         if not gitignore.exists():
             gitignore.write_text(_DEFAULT_GITIGNORE)
         _git_run(["add", "-A"], base_dir, timeout=15)
-        _git_run(["commit", "-m", "gyrus: initial", "--quiet"],
-                 base_dir, timeout=15)
+        _git_run(
+            _git_identity_args(base_dir) + ["commit", "-m", "gyrus: initial", "--quiet"],
+            base_dir, timeout=15,
+        )
         return True, "initialized local repo (add remote via `gyrus init`)"
     if not _git_remote_url(base_dir):
         return False, "no remote — run `gyrus init` to configure GitHub sync"
@@ -2771,8 +2789,10 @@ def _init_github_repo(loc):
         if not gitignore.exists():
             gitignore.write_text(_DEFAULT_GITIGNORE)
         _git_run(["add", "-A"], loc, timeout=15)
-        _git_run(["commit", "-m", "gyrus: initial", "--quiet"],
-                 loc, timeout=15)
+        _git_run(
+            _git_identity_args(loc) + ["commit", "-m", "gyrus: initial", "--quiet"],
+            loc, timeout=15,
+        )
 
     default_name = "gyrus-knowledge"
     name = _prompt(f"    Repo name [{default_name}]: ", default_name)

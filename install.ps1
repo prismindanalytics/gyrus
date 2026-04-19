@@ -343,7 +343,9 @@ ingest.log
 latest-digest.md
 "@ | Set-Content "$GyrusDir\.gitignore" -Encoding ASCII
             & git -C $GyrusDir add -A
-            & git -C $GyrusDir commit -m "gyrus: initial" --quiet
+            # Fallback identity so `git commit` doesn't fail when user hasn't
+            # configured user.email/user.name. Real config still takes precedence.
+            & git -C $GyrusDir -c user.email=gyrus@localhost -c user.name=gyrus commit -m "gyrus: initial" --quiet
         }
 
         & gh repo create $RepoName --private --source $GyrusDir --remote origin --push 2>&1 | Out-Null

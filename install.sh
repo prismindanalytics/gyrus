@@ -464,7 +464,11 @@ model-comparison.html
 ingest.log
 latest-digest.md
 GITIGNORE
-      (cd "$GYRUS_DIR" && git add -A && git commit -m "gyrus: initial" --quiet 2>/dev/null) || true
+      # Fallback identity so `git commit` doesn't fail on boxes without
+      # user.email/user.name configured; git prefers real config when set.
+      (cd "$GYRUS_DIR" && git add -A && \
+        git -c user.email=gyrus@localhost -c user.name=gyrus \
+        commit -m "gyrus: initial" --quiet 2>/dev/null) || true
     fi
 
     # gh repo create is best-effort here. GitHub's repo-creation API returns
