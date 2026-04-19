@@ -1514,13 +1514,16 @@ def resolve_aliases(thoughts, store, repo_groups=None):
             store.save_alias(project, best_match)
             print(f"    Auto-aliased '{project}' -> '{best_match}' (score: {best_score:.2f})")
         else:
-            # Priority 4: If workspace is set, use it as the canonical slug
-            if workspace:
-                slug = workspace.lower().replace(" ", "-")
-                slug = "".join(c for c in slug if c.isalnum() or c == "-")
-            else:
-                slug = project.lower().replace(" ", "-")
-                slug = "".join(c for c in slug if c.isalnum() or c == "-")
+            # Priority 4: Create a new slug from the project name.
+            # Use `project`, NOT `workspace`. The LLM reads the actual
+            # conversation and names the project semantically; workspace is
+            # just the folder files happen to live in. A thought tagged
+            # `project="kidworthy"` inside a calledthird directory is about
+            # kidworthy — don't overwrite it with the folder name.
+            # (We're guaranteed to have a project here: the `if not project:`
+            # branch at the top of the loop `continue`s before we get here.)
+            slug = project.lower().replace(" ", "-")
+            slug = "".join(c for c in slug if c.isalnum() or c == "-")
             # Never create UUID slugs — skip if the result looks like a UUID
             if _uuid_re.match(slug):
                 continue

@@ -419,6 +419,34 @@ class TestAliasResolution(unittest.TestCase):
         resolved = resolve_aliases(thoughts, self.store)
         self.assertNotIn("canonical_project", resolved[0])
 
+    def test_project_wins_over_workspace_in_new_slug(self):
+        """A thought tagged project="kidworthy" inside a calledthird workspace
+        must become the kidworthy slug, not calledthird. Regression for the
+        bug where workspace overrode the LLM's project tag in Priority 4."""
+        thoughts = [{
+            "content": "Kidworthy travel idea came up during calledthird work",
+            "project": "kidworthy",
+            "workspace": "calledthird",
+        }]
+        resolved = resolve_aliases(thoughts, self.store)
+        self.assertEqual(resolved[0]["canonical_project"], "kidworthy")
+        # And the saved alias should map kidworthy to itself, not to calledthird
+        aliases = {a["alias"]: a["canonical_slug"]
+                   for a in self.store.get_aliases()}
+        self.assertEqual(aliases.get("kidworthy"), "kidworthy")
+
+    def test_workspace_ignored_when_deep_subfolder(self):
+        """Claude Code subfolder paths like
+        calledthird-website-results-2026-04-08-exploration-1-claude should
+        not hijack the slug — the LLM's project tag wins."""
+        thoughts = [{
+            "content": "decided to refactor the homepage",
+            "project": "calledthird",
+            "workspace": "calledthird-website-results-2026-04-08-exploration-1-claude",
+        }]
+        resolved = resolve_aliases(thoughts, self.store)
+        self.assertEqual(resolved[0]["canonical_project"], "calledthird")
+
 
 class TestDeduplication(unittest.TestCase):
     """Test thought deduplication."""
