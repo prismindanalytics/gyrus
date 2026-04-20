@@ -58,6 +58,9 @@ from ingest import (
     _call_local,
     _detect_local_llm,
     _local_base_url,
+    run_models,
+    RECOMMENDED_LOCAL_EXTRACT,
+    RECOMMENDED_LOCAL_MERGE,
 )
 
 
@@ -1257,6 +1260,48 @@ class TestLocalLLM(unittest.TestCase):
             url, name, models = _detect_local_llm(timeout=1)
         self.assertIsNone(url)
         self.assertEqual(models, [])
+
+
+class TestGyrusModelsSubcommand(unittest.TestCase):
+    """`gyrus models` shows current config + switches models via config.json."""
+
+    def setUp(self):
+        self.tmpdir = Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_recommendations_all_resolve_to_local_provider(self):
+        """Every recommended model name must be in the catalog and route
+        to the local provider. Prevents typos in the recommended list."""
+        for name, _desc in RECOMMENDED_LOCAL_EXTRACT + RECOMMENDED_LOCAL_MERGE:
+            self.assertIn(name, MODEL_CATALOG,
+                          f"recommended model '{name}' missing from catalog")
+            self.assertEqual(
+                _resolve_model(name)["provider"], "local",
+                f"recommended model '{name}' should be local",
+            )
+
+    def test_run_models_noninteractive_prints_config(self):
+        """With yes=True, run_models is read-only and prints current config."""
+        (self.tmpdir / "config.json").write_text(json.dumps({
+            "extract_model": "sonnet",
+            "merge_model": "sonnet",
+        }))
+        import io
+        import contextlib
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf), \
+             patch("ingest._detect_local_llm", return_value=(None, None, [])):
+            rc = run_models(self.tmpdir, yes=True)
+        self.assertEqual(rc, 0)
+        out = buf.getvalue()
+        self.assertIn("sonnet", out)
+        self.assertIn("Recommended local models", out)
+        # Must surface the user's own recommendations
+        self.assertIn("gemma4-e2b", out)
+        self.assertIn("qwen3.5-9b", out)
+        self.assertIn("qwen3.6-35b", out)
 
 
 if __name__ == "__main__":

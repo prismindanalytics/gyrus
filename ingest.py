@@ -1185,14 +1185,33 @@ MODEL_CATALOG = {
     "gemini-lite":      {"provider": "google", "model": "gemini-3.1-flash-lite-preview", "display": "Gemini 3.1 Flash Lite"},
     "gemini-pro":       {"provider": "google", "model": "gemini-3.1-pro-preview",        "display": "Gemini 3.1 Pro"},
     # Local (OpenAI-compatible endpoints — Ollama, LM Studio, llama.cpp, etc.)
-    # Any other local model is addressable as `local:<model-id>` (e.g. local:qwen3:32b)
-    "llama3.3":         {"provider": "local",    "model": "llama3.3",    "display": "Llama 3.3 (local)"},
-    "qwen3":            {"provider": "local",    "model": "qwen3",       "display": "Qwen 3 (local)"},
-    "qwen3-coder":      {"provider": "local",    "model": "qwen3-coder", "display": "Qwen 3 Coder (local)"},
-    "deepseek-v3":      {"provider": "local",    "model": "deepseek-v3", "display": "DeepSeek V3 (local)"},
-    "gpt-oss":          {"provider": "local",    "model": "gpt-oss",     "display": "GPT-OSS (local)"},
-    "gemma3":           {"provider": "local",    "model": "gemma3",      "display": "Gemma 3 (local)"},
+    # Any other local model is addressable as `local:<ollama-tag>`.
+    # Recommended tiers — small models fit on 16GB machines, large need 24GB+.
+    "gemma4-e2b":       {"provider": "local", "model": "gemma4:e2b",       "display": "Gemma 4 E2B (local, ~2B params)",   "tier": "small"},
+    "gemma4-e4b":       {"provider": "local", "model": "gemma4:e4b",       "display": "Gemma 4 E4B (local, ~4B params)",   "tier": "small"},
+    "qwen3.5-9b":       {"provider": "local", "model": "qwen3.5:9b",       "display": "Qwen 3.5 9B (local)",               "tier": "small"},
+    "gemma4-26b":       {"provider": "local", "model": "gemma4:26b",       "display": "Gemma 4 26B (local)",               "tier": "large"},
+    "qwen3.6-35b":      {"provider": "local", "model": "qwen3.6:35b-a3b",  "display": "Qwen 3.6 35B-A3B MoE (local)",      "tier": "large"},
+    # Older / alternate local models still callable by name
+    "llama3.3":         {"provider": "local", "model": "llama3.3",         "display": "Llama 3.3 (local)"},
+    "qwen3":            {"provider": "local", "model": "qwen3",            "display": "Qwen 3 (local)"},
+    "qwen3-coder":      {"provider": "local", "model": "qwen3-coder",      "display": "Qwen 3 Coder (local)"},
+    "deepseek-v3":      {"provider": "local", "model": "deepseek-v3",      "display": "DeepSeek V3 (local)"},
+    "gpt-oss":          {"provider": "local", "model": "gpt-oss",          "display": "GPT-OSS (local)"},
+    "gemma3":           {"provider": "local", "model": "gemma3",           "display": "Gemma 3 (local)"},
 }
+
+# Recommended local models for gyrus workloads, tiered by hardware footprint.
+# gyrus init and `gyrus models` surface these as the default picks.
+RECOMMENDED_LOCAL_EXTRACT = [
+    ("gemma4-e2b",  "smallest, fast — good for 16GB machines"),
+    ("gemma4-e4b",  "slightly larger, better quality"),
+    ("qwen3.5-9b",  "strongest <16GB — great JSON compliance"),
+]
+RECOMMENDED_LOCAL_MERGE = [
+    ("gemma4-26b",  "solid reasoning, ~26GB RAM"),
+    ("qwen3.6-35b", "strongest — MoE with ~3B active, ~22GB RAM"),
+]
 
 # Pricing: (input_per_mtok, output_per_mtok)
 MODEL_PRICING = {
@@ -1212,6 +1231,11 @@ MODEL_PRICING = {
     "gemini-lite":  (0.00,  0.00),  # free tier
     "gemini-pro":   (1.25, 10.00),
     # Local models run on your own hardware — no API cost
+    "gemma4-e2b":   (0.00,  0.00),
+    "gemma4-e4b":   (0.00,  0.00),
+    "qwen3.5-9b":   (0.00,  0.00),
+    "gemma4-26b":   (0.00,  0.00),
+    "qwen3.6-35b":  (0.00,  0.00),
     "llama3.3":     (0.00,  0.00),
     "qwen3":        (0.00,  0.00),
     "qwen3-coder":  (0.00,  0.00),
@@ -3492,6 +3516,109 @@ def run_merge(store, slugs, yes=False):
     return 0
 
 
+def run_models(base_dir, yes=False):
+    """Show current extract/merge models and interactively switch."""
+    config_path = base_dir / "config.json"
+    try:
+        cfg = json.loads(config_path.read_text()) if config_path.exists() else {}
+    except (OSError, json.JSONDecodeError):
+        cfg = {}
+
+    current_extract = cfg.get("extract_model", DEFAULT_EXTRACT_MODEL)
+    current_merge = cfg.get("merge_model", DEFAULT_MERGE_MODEL)
+
+    def _label(name):
+        resolved = _resolve_model(name)
+        return f"{name}  ({resolved['provider']})"
+
+    print()
+    print("  Current configuration")
+    print(f"    extract: {_label(current_extract)}")
+    print(f"    merge:   {_label(current_merge)}")
+
+    # What keys does the user have?
+    env_file = base_dir / ".env"
+    env_text = env_file.read_text() if env_file.exists() else ""
+    has_key = {
+        "anthropic": "ANTHROPIC_API_KEY=" in env_text,
+        "openai":    "OPENAI_API_KEY=" in env_text,
+        "google":    "GEMINI_API_KEY=" in env_text or "GOOGLE_API_KEY=" in env_text,
+    }
+
+    # Cloud options
+    print()
+    print("  Cloud models:")
+    for provider, catalog_names in [
+        ("anthropic", ["haiku", "sonnet", "opus"]),
+        ("openai",    ["gpt-5.4-mini", "gpt-5.4", "gpt-5.4-nano", "gpt-4.1-mini"]),
+        ("google",    ["gemini-lite", "gemini-flash", "gemini-pro"]),
+    ]:
+        tag = "" if has_key[provider] else "  (set API key in .env)"
+        names = ", ".join(catalog_names)
+        print(f"    {provider:10s} {names}{tag}")
+
+    # Local options: what's actually loaded on the Ollama server?
+    local_url, local_name, local_models = _detect_local_llm()
+    print()
+    if local_models:
+        print(f"  Local models — {local_name} @ {local_url}")
+        for m in local_models[:12]:
+            print(f"    • {m}")
+        if len(local_models) > 12:
+            print(f"    … +{len(local_models) - 12} more")
+    else:
+        print("  Local LLM: no server detected")
+        print("    Install Ollama: https://ollama.com/download")
+
+    # Recommended picks for gyrus
+    print()
+    print("  Recommended local models for gyrus:")
+    print("    Extract (≤16GB machines):")
+    for name, desc in RECOMMENDED_LOCAL_EXTRACT:
+        print(f"      • {name:14s}  {desc}")
+    print("    Merge (≥24GB machines):")
+    for name, desc in RECOMMENDED_LOCAL_MERGE:
+        print(f"      • {name:14s}  {desc}")
+    print("    Smaller machines: use the same model for both.")
+    print(f"    Pull via Ollama first:  ollama pull <tag>")
+
+    # Hybrid example callout
+    print()
+    print("  Hybrid (recommended if you have an Anthropic key):")
+    print("    extract_model: local:qwen3.5:9b    ← fast + free")
+    print("    merge_model:   sonnet              ← best quality where it matters")
+
+    if yes:
+        print()
+        print("  (non-interactive — run without --yes to change models)")
+        return 0
+
+    print()
+    if not _prompt_yn("  Change models? [y/N]: ", "n"):
+        return 0
+
+    new_extract = _prompt(
+        f"    Extract model [{current_extract}]: ", current_extract
+    )
+    new_merge = _prompt(
+        f"    Merge   model [{current_merge}]: ", current_merge
+    )
+
+    cfg["extract_model"] = new_extract
+    cfg["merge_model"] = new_merge
+    # If user picked a local model and we found a server, remember its URL
+    if ((new_extract.startswith("local:") or new_merge.startswith("local:")
+         or _resolve_model(new_extract)["provider"] == "local"
+         or _resolve_model(new_merge)["provider"] == "local")
+            and local_url and not cfg.get("local_base_url")):
+        cfg["local_base_url"] = local_url
+
+    config_path.write_text(json.dumps(cfg, indent=2))
+    print(f"    ✓ saved to {config_path}")
+    print(f"    → run `gyrus doctor` to verify the new models are reachable")
+    return 0
+
+
 def run_sync(base_dir):
     """Manual sync: pull from origin, then commit+push any local changes."""
     if not _git_is_repo(base_dir):
@@ -4068,8 +4195,19 @@ def compare_models(keys, base_dir, file_config=None):
     if keys.get("google"):
         available += ["gemini-lite", "gemini-flash"]
 
+    # Auto-include currently-loaded local models (up to 4) so the comparison
+    # reflects what's actually available on the user's machine.
+    local_url, local_name, local_models = _detect_local_llm()
+    if local_models:
+        # Keep only "reasonable for gyrus" sizes — skip tiny (<2B) and huge
+        # (>70B that won't fit). Heuristic: trust the user's installed list.
+        picks = [f"local:{m}" for m in local_models[:4]]
+        available += picks
+        print(f"  + including {len(picks)} local model(s) from {local_name}: "
+              f"{', '.join(local_models[:4])}")
+
     if not available:
-        print("  No API keys provided. Cannot compare models.")
+        print("  No API keys or local LLM server detected. Cannot compare models.")
         return None
 
     display_names = [_display_name(m) for m in available]
@@ -4673,6 +4811,9 @@ def main():
                         help="With --init: override default storage path")
     parser.add_argument("--sync", action="store_true",
                         help="Manually pull and push the git remote")
+    parser.add_argument("--models", action="store_true",
+                        help="Show current extract/merge models, list cloud + "
+                             "local options, and optionally switch.")
     parser.add_argument("--merge", nargs="*", metavar="SLUG",
                         help="Consolidate project slugs. With no args: auto-detect "
                              "likely-fragment clusters and walk through them "
@@ -4772,6 +4913,10 @@ def main():
     # Handle --sync early (manual pull + push, no ingest)
     if args.sync:
         sys.exit(run_sync(env_base))
+
+    # Handle --models early (no LLM calls, no ingest)
+    if args.models:
+        sys.exit(run_models(env_base, yes=args.yes))
 
     # Handle --merge early — rewrites aliases + thoughts.
     # Bare --merge (no slugs) triggers auto-suggest mode.

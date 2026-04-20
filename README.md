@@ -232,6 +232,7 @@ GEMINI_API_KEY=AI...
 | `gyrus init` | First-time setup wizard (storage, API key, GitHub, cron) |
 | `gyrus init --clone <url>` | Second-machine setup — pulls an existing knowledge base |
 | `gyrus doctor` | Diagnose ingest health (storage, sync, backlog, API keys) |
+| `gyrus models` | Show current extract/merge models, list cloud + local options, switch interactively |
 | `gyrus doctor --fix` | Same, plus auto-patch safe things: stale locks, missing cron, dataless files, git init/sync |
 | `gyrus sync` | Manually pull + push the GitHub remote |
 | `gyrus merge` | Auto-detect likely-fragmented slug clusters and walk through each Y/n. Uses prefix heuristic + filesystem (Claude Code subfolder → parent repo). |
@@ -430,7 +431,22 @@ gyrus init
 }
 ```
 
-Model can be any catalog name (`qwen3`, `llama3.3`, `deepseek-v3`, `gpt-oss`, `gemma3`) or `local:<any-ollama-tag>` for arbitrary models.
+Model can be any catalog name or `local:<any-ollama-tag>` for arbitrary models.
+
+**Recommended local models for gyrus** (tested for JSON-compliant extraction + multi-doc reasoning):
+
+| Hardware | Extract model | Merge model | Catalog names |
+|---|---|---|---|
+| 8–16 GB RAM | `gemma4-e2b` or `gemma4-e4b` | same | `gemma4-e2b`, `gemma4-e4b` |
+| 16 GB RAM | `qwen3.5-9b` | same | `qwen3.5-9b` |
+| 24+ GB RAM | `qwen3.5-9b` | `gemma4-26b` or `qwen3.6-35b` | `qwen3.6-35b` is MoE with ~3B active — fast inference |
+
+Pull with `ollama pull <tag>` (e.g. `ollama pull gemma4:e2b`), then:
+
+```bash
+gyrus models       # see what's installed + switch interactively
+gyrus compare      # auto-benchmarks your installed local models vs cloud
+```
 
 **Hybrid** (local extract, cloud merge — best quality/cost ratio):
 
