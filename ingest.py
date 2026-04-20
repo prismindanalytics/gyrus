@@ -1184,6 +1184,14 @@ MODEL_CATALOG = {
     "gemini-flash":     {"provider": "google", "model": "gemini-3-flash-preview",        "display": "Gemini 3 Flash"},
     "gemini-lite":      {"provider": "google", "model": "gemini-3.1-flash-lite-preview", "display": "Gemini 3.1 Flash Lite"},
     "gemini-pro":       {"provider": "google", "model": "gemini-3.1-pro-preview",        "display": "Gemini 3.1 Pro"},
+    # Local (OpenAI-compatible endpoints — Ollama, LM Studio, llama.cpp, etc.)
+    # Any other local model is addressable as `local:<model-id>` (e.g. local:qwen3:32b)
+    "llama3.3":         {"provider": "local",    "model": "llama3.3",    "display": "Llama 3.3 (local)"},
+    "qwen3":            {"provider": "local",    "model": "qwen3",       "display": "Qwen 3 (local)"},
+    "qwen3-coder":      {"provider": "local",    "model": "qwen3-coder", "display": "Qwen 3 Coder (local)"},
+    "deepseek-v3":      {"provider": "local",    "model": "deepseek-v3", "display": "DeepSeek V3 (local)"},
+    "gpt-oss":          {"provider": "local",    "model": "gpt-oss",     "display": "GPT-OSS (local)"},
+    "gemma3":           {"provider": "local",    "model": "gemma3",      "display": "Gemma 3 (local)"},
 }
 
 # Pricing: (input_per_mtok, output_per_mtok)
@@ -1203,6 +1211,13 @@ MODEL_PRICING = {
     "gemini-flash": (0.15,  0.60),
     "gemini-lite":  (0.00,  0.00),  # free tier
     "gemini-pro":   (1.25, 10.00),
+    # Local models run on your own hardware — no API cost
+    "llama3.3":     (0.00,  0.00),
+    "qwen3":        (0.00,  0.00),
+    "qwen3-coder":  (0.00,  0.00),
+    "deepseek-v3":  (0.00,  0.00),
+    "gpt-oss":      (0.00,  0.00),
+    "gemma3":       (0.00,  0.00),
 }
 
 # Defaults
@@ -1218,9 +1233,13 @@ def _display_name(name_or_id):
 
 
 def _resolve_model(name_or_id):
-    """Resolve a model name to {provider, model}. Accepts catalog names or raw model IDs."""
+    """Resolve a model name to {provider, model}. Accepts catalog names, raw
+    model IDs, or `local:<name>` for any local OpenAI-compatible endpoint."""
     if name_or_id in MODEL_CATALOG:
         return MODEL_CATALOG[name_or_id]
+    # Explicit local-provider escape hatch: `local:qwen3:32b`, `local:llama3.3:8b`, ...
+    if name_or_id.startswith("local:"):
+        return {"provider": "local", "model": name_or_id[len("local:"):]}
     # Try to infer provider from model ID
     if "claude" in name_or_id or "haiku" in name_or_id or "sonnet" in name_or_id or "opus" in name_or_id:
         return {"provider": "anthropic", "model": name_or_id}
@@ -1279,6 +1298,92 @@ def _call_openai(model, messages, max_tokens, api_key, temperature=0):
         return data["choices"][0]["message"]["content"]
 
 
+_DEFAULT_LOCAL_BASE_URL = "http://localhost:11434/v1"  # Ollama's OpenAI-compatible endpoint
+
+# Common OpenAI-compatible local servers, in priority order.
+_LOCAL_LLM_CANDIDATES = [
+    ("http://localhost:11434/v1", "Ollama"),
+    ("http://localhost:1234/v1",  "LM Studio"),
+    ("http://localhost:8000/v1",  "vLLM / generic"),
+    ("http://localhost:8080/v1",  "llama.cpp server"),
+]
+
+
+def _detect_local_llm(timeout=2):
+    """Probe common local-LLM ports. Returns (base_url, name, [model_ids])
+    for the first server that answers, else (None, None, [])."""
+    for base, name in _LOCAL_LLM_CANDIDATES:
+        req = Request(f"{base}/models",
+                      headers={"Authorization": "Bearer local"})
+        try:
+            with urlopen(req, timeout=timeout) as resp:
+                data = json.loads(resp.read())
+        except (HTTPError, OSError, json.JSONDecodeError, TimeoutError):
+            continue
+        models = [m["id"] for m in data.get("data", []) if isinstance(m, dict)]
+        return base, name, models
+    return None, None, []
+
+
+def _local_base_url():
+    """Resolve the local-LLM base URL. Precedence: env > config > default."""
+    return (os.environ.get("GYRUS_LOCAL_BASE_URL")
+            or _config.get("local_base_url")
+            or _DEFAULT_LOCAL_BASE_URL)
+
+
+def _call_local(model, messages, max_tokens, api_key, temperature=0):
+    """Call any OpenAI-compatible local LLM server.
+
+    Works out of the box with Ollama (localhost:11434), LM Studio (1234),
+    llama.cpp server, MLX-LM's `mlx_lm.server`, and vLLM. Override the
+    endpoint via config.local_base_url or $GYRUS_LOCAL_BASE_URL.
+    """
+    base_url = _local_base_url().rstrip("/")
+    body = json.dumps({
+        "model": model,
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+        "messages": messages,
+    }).encode()
+
+    req = Request(
+        f"{base_url}/chat/completions",
+        data=body,
+        headers={
+            # Most local servers ignore the key; send a placeholder so the
+            # Authorization header exists (some middleware expects it).
+            "Authorization": f"Bearer {api_key or 'local'}",
+            "content-type": "application/json",
+        },
+    )
+
+    # Local inference can be slow (first token generation, large context) —
+    # give it room but cap at 10 minutes so a wedged server doesn't hang
+    # ingest forever.
+    try:
+        with urlopen(req, timeout=600) as resp:
+            data = json.loads(resp.read())
+            return data["choices"][0]["message"]["content"]
+    except HTTPError as e:
+        # Augment the error with a diagnostic pointer
+        raise HTTPError(
+            e.url, e.code,
+            f"{e.reason} — is a local LLM server running at {base_url}? "
+            "Start Ollama (`ollama serve`) or LM Studio, or set "
+            "GYRUS_LOCAL_BASE_URL / config.local_base_url.",
+            e.headers, None,
+        ) from e
+    except (OSError, TimeoutError) as e:
+        raise HTTPError(
+            f"{base_url}/chat/completions", 503,
+            f"couldn't reach local LLM server at {base_url}: {e}. "
+            "Start Ollama (`ollama serve`) or LM Studio, or set "
+            "GYRUS_LOCAL_BASE_URL / config.local_base_url.",
+            {}, None,
+        ) from e
+
+
 def _call_google(model, messages, max_tokens, api_key, temperature=0):
     """Call Google Gemini API."""
     # Convert OpenAI-style messages to Gemini format
@@ -1308,6 +1413,9 @@ _config = {
     "extract_model": DEFAULT_EXTRACT_MODEL,
     "merge_model": DEFAULT_MERGE_MODEL,
     "keys": {},  # {"anthropic": "...", "openai": "...", "google": "..."}
+    # Optional: override the local LLM endpoint (Ollama by default).
+    # Anything OpenAI-compatible works (LM Studio, llama.cpp, MLX, vLLM).
+    "local_base_url": None,
 }
 
 # Cost tracking per run
@@ -1360,7 +1468,9 @@ def call_llm(prompt, role="extract", max_tokens=4096, model_override=None):
     model_id = resolved["model"]
 
     api_key = _config["keys"].get(provider)
-    if not api_key:
+    # Local LLM servers run on your own hardware — no key needed. Everything
+    # else must be configured.
+    if not api_key and provider != "local":
         raise ValueError(
             f"No API key for provider '{provider}'. "
             f"Set --{provider}-key or {provider.upper()}_API_KEY environment variable."
@@ -1370,8 +1480,9 @@ def call_llm(prompt, role="extract", max_tokens=4096, model_override=None):
 
     callers = {
         "anthropic": _call_anthropic,
-        "openai": _call_openai,
-        "google": _call_google,
+        "openai":    _call_openai,
+        "google":    _call_google,
+        "local":     _call_local,
     }
 
     caller = callers.get(provider)
@@ -2214,7 +2325,31 @@ def _doctor_check_schedule():
 
 
 def _doctor_check_env(base_dir):
-    """Verify .env + at least one model API key."""
+    """Verify gyrus can reach at least one model — either a cloud API key
+    in .env or both models configured as local (via config.json)."""
+    # First check: is config.json using local models? If yes, no key needed.
+    config_path = base_dir / "config.json"
+    if config_path.exists():
+        try:
+            cfg = json.loads(config_path.read_text())
+            extract = cfg.get("extract_model", "")
+            merge = cfg.get("merge_model", "")
+            if (_resolve_model(extract)["provider"] == "local"
+                    and _resolve_model(merge)["provider"] == "local"):
+                # All-local setup — probe the server
+                url = cfg.get("local_base_url") or _DEFAULT_LOCAL_BASE_URL
+                _, name, models = _detect_local_llm(timeout=2)
+                if models:
+                    return ("ok", "API keys",
+                            f"local: {name} @ {url} ({len(models)} models)",
+                            None)
+                return ("fail", "API keys",
+                        f"config uses local models but no server at {url}",
+                        "start Ollama (`ollama serve`) or update local_base_url")
+        except (OSError, json.JSONDecodeError):
+            pass
+
+    # Cloud path: check .env
     env_file = base_dir / ".env"
     if not env_file.exists():
         return ("fail", "API keys", "no .env file",
@@ -2234,7 +2369,8 @@ def _doctor_check_env(base_dir):
                 break
     if not keys_found:
         return ("fail", "API keys", ".env has no model keys",
-                "add ANTHROPIC_API_KEY=sk-... to " + str(env_file))
+                "add ANTHROPIC_API_KEY=sk-... to " + str(env_file)
+                + "  (or configure local models: see README)")
     return ("ok", "API keys", ", ".join(keys_found), None)
 
 
@@ -2664,18 +2800,55 @@ def run_init(clone_url=None, location=None):
         gyrus_home.symlink_to(loc)
     print(f"    ✓ ~/.gyrus → {loc}")
 
-    # ─── Step 2: API key ────────────────────────────────────────
+    # ─── Step 2: Model / API key ───────────────────────────────
     print()
-    print("  (2/4) Anthropic API key")
+    print("  (2/4) Pick a model")
     env_file = loc / ".env"
+    config_path = loc / "config.json"
+
+    # Try to detect a local LLM server — offer it as a no-API-cost option
+    local_url, local_name, local_models = _detect_local_llm()
     existing_key = os.environ.get("ANTHROPIC_API_KEY", "")
     if env_file.exists():
         for line in env_file.read_text().splitlines():
             if line.startswith("ANTHROPIC_API_KEY="):
                 existing_key = line.split("=", 1)[1].strip().strip("\"'")
                 break
-    if existing_key:
-        print(f"    ✓ found existing key ({existing_key[:10]}…)")
+
+    if local_models:
+        print(f"    ✓ detected {local_name} at {local_url}")
+        print(f"      {len(local_models)} model(s) available: "
+              f"{', '.join(local_models[:4])}"
+              + (f", +{len(local_models) - 4} more" if len(local_models) > 4 else ""))
+        print()
+        print("    [1] Cloud — Anthropic/OpenAI/Google (needs API key)")
+        print(f"    [2] Local — {local_name} (no API cost, data stays on your machine)")
+        model_choice = _prompt("    Choice [1]: ", "1")
+    else:
+        print("    No local LLM server detected.")
+        print("    (Install Ollama from https://ollama.com to run models locally.)")
+        model_choice = "1"
+
+    if model_choice == "2" and local_models:
+        # Local-LLM setup
+        default_extract = "qwen3" if "qwen3" in local_models else local_models[0]
+        default_merge = default_extract
+        extract = _prompt(f"    Extract model [{default_extract}]: ", default_extract)
+        merge = _prompt(f"    Merge model   [{default_merge}]: ", default_merge)
+        existing = {}
+        if config_path.exists():
+            try:
+                existing = json.loads(config_path.read_text())
+            except (OSError, json.JSONDecodeError):
+                existing = {}
+        existing["extract_model"] = f"local:{extract}"
+        existing["merge_model"] = f"local:{merge}"
+        existing["local_base_url"] = local_url
+        config_path.write_text(json.dumps(existing, indent=2))
+        print(f"    ✓ configured: extract={extract}, merge={merge}")
+        print(f"    ✓ saved to {config_path.name}")
+    elif existing_key:
+        print(f"    ✓ found existing Anthropic key ({existing_key[:10]}…)")
     else:
         print("    Get one at: https://console.anthropic.com/settings/keys")
         key = _prompt("    ANTHROPIC_API_KEY: ")
@@ -4789,9 +4962,14 @@ def main():
                    or file_config.get("merge_model")
                    or DEFAULT_MERGE_MODEL)
 
-    # Validate at least one key is provided
-    if not any([anthropic_key, openai_key, google_key]):
-        parser.error("At least one API key is required. Use --anthropic-key, --openai-key, or --google-key")
+    # Validate: at least one key OR both models are local (no key needed)
+    extract_is_local = _resolve_model(extract_model)["provider"] == "local"
+    merge_is_local = _resolve_model(merge_model)["provider"] == "local"
+    all_local = extract_is_local and merge_is_local
+    if not any([anthropic_key, openai_key, google_key]) and not all_local:
+        parser.error("At least one API key is required, OR configure both "
+                     "extract_model and merge_model as local models in config.json. "
+                     "Use --anthropic-key, --openai-key, or --google-key.")
 
     # Set global config
     _config["extract_model"] = extract_model
@@ -4803,6 +4981,8 @@ def main():
             "google": google_key,
         }.items() if v
     }
+    # Optional: local LLM endpoint override (Ollama / LM Studio / etc.)
+    _config["local_base_url"] = file_config.get("local_base_url")
 
     # Validate that the chosen models have API keys
     for role, model_name in [("extract", extract_model), ("merge", merge_model)]:

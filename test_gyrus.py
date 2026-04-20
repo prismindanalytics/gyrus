@@ -54,6 +54,10 @@ from ingest import (
     run_merge_suggest,
     _detect_slug_clusters,
     _llm_suggest_merges,
+    _resolve_model,
+    _call_local,
+    _detect_local_llm,
+    _local_base_url,
 )
 
 
@@ -554,7 +558,8 @@ class TestModelConfig(unittest.TestCase):
         for name, entry in MODEL_CATALOG.items():
             self.assertIn("provider", entry, f"Missing provider for {name}")
             self.assertIn("model", entry, f"Missing model for {name}")
-            self.assertIn(entry["provider"], ["anthropic", "openai", "google"],
+            self.assertIn(entry["provider"],
+                          ["anthropic", "openai", "google", "local"],
                           f"Invalid provider for {name}")
 
 
@@ -1165,6 +1170,93 @@ class TestLLMMergeSuggest(unittest.TestCase):
             mock_llm.return_value = "not valid json at all"
             result = _llm_suggest_merges(pages)
         self.assertEqual(result, [])
+
+
+class TestLocalLLM(unittest.TestCase):
+    """The local-LLM provider resolves, dispatches, and degrades gracefully."""
+
+    def test_local_prefix_resolves(self):
+        # Any `local:<model>` routes to the local provider
+        self.assertEqual(
+            _resolve_model("local:llama3.3")["provider"], "local",
+        )
+        self.assertEqual(
+            _resolve_model("local:qwen3:32b")["model"], "qwen3:32b",
+        )
+
+    def test_catalog_local_models(self):
+        # Named local models in the catalog route to local
+        for name in ("llama3.3", "qwen3", "deepseek-v3", "gpt-oss"):
+            self.assertEqual(
+                _resolve_model(name)["provider"], "local",
+                f"{name} should be a local model",
+            )
+
+    def test_call_local_hits_configured_base_url(self):
+        """_call_local POSTs to {base_url}/chat/completions with OpenAI shape."""
+        import ingest
+        captured = {}
+
+        class FakeResp:
+            def __init__(self, payload):
+                self._payload = payload
+            def read(self):
+                return self._payload
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                return False
+
+        def fake_urlopen(req, timeout=None):
+            captured["url"] = req.full_url
+            captured["body"] = json.loads(req.data)
+            captured["auth"] = req.get_header("Authorization")
+            return FakeResp(json.dumps({
+                "choices": [{"message": {"content": "hello from local"}}]
+            }).encode())
+
+        with patch.object(ingest, "urlopen", fake_urlopen), \
+             patch.dict(ingest._config, {"local_base_url": "http://localhost:1234/v1"}):
+            out = _call_local("qwen3:7b",
+                              [{"role": "user", "content": "hi"}],
+                              max_tokens=256, api_key=None)
+        self.assertEqual(out, "hello from local")
+        self.assertEqual(captured["url"],
+                         "http://localhost:1234/v1/chat/completions")
+        self.assertEqual(captured["body"]["model"], "qwen3:7b")
+        self.assertEqual(captured["body"]["max_tokens"], 256)
+        self.assertTrue(captured["auth"].startswith("Bearer "))
+
+    def test_call_local_gives_helpful_error_when_server_down(self):
+        import ingest
+        def explode(req, timeout=None):
+            raise ConnectionRefusedError("nope")
+        with patch.object(ingest, "urlopen", explode):
+            with self.assertRaises(Exception) as ctx:
+                _call_local("qwen3", [{"role": "user", "content": "hi"}],
+                            max_tokens=32, api_key=None)
+        msg = str(ctx.exception).lower()
+        # Must mention how to fix it
+        self.assertTrue(
+            "ollama" in msg or "local" in msg or "base_url" in msg,
+            f"error should be actionable, got: {ctx.exception}"
+        )
+
+    def test_base_url_env_overrides_config(self):
+        import ingest
+        with patch.dict(os.environ, {"GYRUS_LOCAL_BASE_URL": "http://x:9/v1"}), \
+             patch.dict(ingest._config, {"local_base_url": "http://y:8/v1"}):
+            self.assertEqual(_local_base_url(), "http://x:9/v1")
+
+    def test_detect_local_llm_returns_none_when_nothing_listening(self):
+        """With no server running the detection function returns (None,None,[]).
+        Uses a bogus host to force connection failure."""
+        import ingest
+        with patch.object(ingest, "_LOCAL_LLM_CANDIDATES",
+                          [("http://127.0.0.1:1/v1", "bogus")]):
+            url, name, models = _detect_local_llm(timeout=1)
+        self.assertIsNone(url)
+        self.assertEqual(models, [])
 
 
 if __name__ == "__main__":

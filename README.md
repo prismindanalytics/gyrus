@@ -144,7 +144,7 @@ After install, Gyrus creates:
 ## Install
 
 ### Requirements
-- At least one LLM API key: [Anthropic](https://console.anthropic.com/settings/keys), [OpenAI](https://platform.openai.com/api-keys), or [Google AI](https://aistudio.google.com/apikey)
+- At least one LLM — either an API key for [Anthropic](https://console.anthropic.com/settings/keys), [OpenAI](https://platform.openai.com/api-keys), or [Google AI](https://aistudio.google.com/apikey), **or** a local model via [Ollama](https://ollama.com) / LM Studio / llama.cpp / MLX / vLLM (see "Local LLMs" below)
 - That's it. The installer handles Python automatically via [uv](https://docs.astral.sh/uv/) — no system Python needed, no version conflicts, nothing to configure.
 
 ### macOS / Linux
@@ -398,14 +398,70 @@ Each run checks session file modification times against `.ingest-state.json`. On
 
 ---
 
+## Local LLMs
+
+Gyrus can run entirely on your own hardware — zero API cost, your session data never leaves the machine. Any OpenAI-compatible local server works: **Ollama, LM Studio, llama.cpp, MLX (Apple Silicon), vLLM**.
+
+**Setup with Ollama** (easiest, ~3 minutes):
+
+```bash
+# 1. Install Ollama
+brew install ollama          # macOS
+# or: curl -fsSL https://ollama.com/install.sh | sh   # Linux
+
+# 2. Pull models (extraction wants fast + JSON-compliant; merge wants reasoning)
+ollama pull qwen3            # 8B general-purpose, ~5 GB, great at JSON
+ollama pull qwen3:32b        # 32B reasoning, ~20 GB — good merge model
+
+# 3. Start the server (or leave it running)
+ollama serve &
+
+# 4. Re-run `gyrus init` — it auto-detects Ollama and offers local as an option
+gyrus init
+```
+
+**Or configure manually.** Edit `~/.gyrus/config.json`:
+
+```json
+{
+  "extract_model": "local:qwen3:7b",
+  "merge_model":   "local:qwen3:32b",
+  "local_base_url": "http://localhost:11434/v1"
+}
+```
+
+Model can be any catalog name (`qwen3`, `llama3.3`, `deepseek-v3`, `gpt-oss`, `gemma3`) or `local:<any-ollama-tag>` for arbitrary models.
+
+**Hybrid** (local extract, cloud merge — best quality/cost ratio):
+
+```json
+{
+  "extract_model": "local:qwen3:7b",
+  "merge_model":   "sonnet"
+}
+```
+
+You still need `ANTHROPIC_API_KEY` in `.env` for the merge model.
+
+**Non-Ollama servers**: set `local_base_url` to the server URL (e.g. `http://localhost:1234/v1` for LM Studio, `http://localhost:8000/v1` for vLLM). Or set `GYRUS_LOCAL_BASE_URL` env var.
+
+**Verify it's working**:
+```bash
+gyrus doctor
+# Should show: ✅ API keys   local: Ollama @ ... (N models)
+```
+
+---
+
 ## Cost
 
 | Component | Cost |
 |-----------|------|
 | Thought extraction (Haiku) | ~$0.01 per session |
 | Knowledge merging (Sonnet) | ~$0.05 per project page update |
-| Typical monthly (active user) | **~$5-15/month** |
+| Typical monthly (active user) | **~$5–15/month** |
 | Cloud accounts needed | **Zero** |
+| **Fully local** (Ollama + qwen3) | **$0/month** — see "Local LLMs" above |
 
 ---
 
