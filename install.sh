@@ -303,99 +303,214 @@ if ! echo "$PATH" | grep -q "$HOME/.local/bin"; then
   export PATH="$HOME/.local/bin:$PATH"
 fi
 
-# ─── Step 4: API keys ───
+# ─── Step 4: Choose your model ───
+CONFIG_FILE="$GYRUS_DIR/config.json"
+
 if [ "$JOINING_EXISTING" = true ] && [ -f "$ENV_FILE" ]; then
-  print_step "Step 4: API keys"
-  print_ok "Using existing keys from synced .env"
+  print_step "Step 4: Model"
+  print_ok "Using existing model config + keys from synced .env"
   # Source them for later steps
   set -a; source "$ENV_FILE" 2>/dev/null; set +a
 else
-print_step "Step 4: API keys"
+print_step "Step 4: Choose your model"
+
+# --- Detect a local LLM server (Ollama, LM Studio, etc.) ---
+LOCAL_URL=""
+LOCAL_NAME=""
+LOCAL_MODELS=""
+for probe in "http://localhost:11434/v1|Ollama" \
+             "http://localhost:1234/v1|LM Studio" \
+             "http://localhost:8000/v1|vLLM" \
+             "http://localhost:8080/v1|llama.cpp"; do
+  probe_url="${probe%|*}"
+  probe_name="${probe##*|}"
+  if resp=$(curl -sf --max-time 2 "$probe_url/models" \
+              -H "Authorization: Bearer local" 2>/dev/null); then
+    LOCAL_URL="$probe_url"
+    LOCAL_NAME="$probe_name"
+    # Extract model ids from OpenAI-style /models response
+    LOCAL_MODELS=$(printf '%s' "$resp" | grep -oE '"id"[[:space:]]*:[[:space:]]*"[^"]+"' \
+                   | sed -E 's/.*"id"[[:space:]]*:[[:space:]]*"([^"]+)"/\1/' | head -20)
+    break
+  fi
+done
 
 echo ""
-echo -e "  ${DIM}Enter keys for the providers you use (Enter to skip):${NC}"
-echo -e "  ${DIM}At least one key is required. More keys = more models to compare.${NC}"
+echo -e "  Gyrus uses an LLM to extract thoughts from sessions and merge them"
+echo -e "  into project pages. Pick one:"
 echo ""
-
-HAS_KEY=false
-ANTHRO_KEY=""
-OPENAI_KEY=""
-GOOGLE_KEY=""
-
-# Check existing keys
-[ -f "$ENV_FILE" ] && grep -q "ANTHROPIC_API_KEY=sk-" "$ENV_FILE" 2>/dev/null && HAS_KEY=true
-[ -f "$ENV_FILE" ] && grep -q "OPENAI_API_KEY=sk-" "$ENV_FILE" 2>/dev/null && HAS_KEY=true
-[ -f "$ENV_FILE" ] && grep -q "GEMINI_API_KEY=AI" "$ENV_FILE" 2>/dev/null && HAS_KEY=true
-
-if [ "$HAS_KEY" = true ]; then
-  print_ok "Keys already configured in .env"
+echo -e "  ${BOLD}[1]${NC} Cloud (Anthropic / OpenAI / Google)"
+echo -e "      ${DIM}• Best quality out of the box${NC}"
+echo -e "      ${DIM}• Requires an API key${NC}"
+echo -e "      ${DIM}• Typical cost: ~\$5–15/month for active use${NC}"
+echo ""
+if [ -n "$LOCAL_MODELS" ]; then
+  COUNT=$(printf '%s' "$LOCAL_MODELS" | grep -c . || echo "0")
+  echo -e "  ${BOLD}[2]${NC} Local ${GREEN}($LOCAL_NAME detected, $COUNT model(s) available)${NC}"
 else
-  # Anthropic
-  echo -e "  ${BOLD}Anthropic${NC} ${DIM}(https://console.anthropic.com/settings/keys)${NC}"
-  read -r -p "    API key: " ANTHRO_KEY < /dev/tty
-  if [ -n "$ANTHRO_KEY" ]; then print_ok "Saved"; else echo -e "    ${DIM}⊘ Skipped${NC}"; fi
-  echo ""
+  echo -e "  ${BOLD}[2]${NC} Local (Ollama — we'll guide setup)"
+fi
+echo -e "      ${DIM}• \$0 per month, your data never leaves the machine${NC}"
+echo -e "      ${DIM}• Recommended: qwen3.5:9b (≤16GB) or qwen3.6:35b-a3b (≥24GB)${NC}"
+echo ""
+read -r -p "  Choice [1]: " MODEL_MODE < /dev/tty
+MODEL_MODE="${MODEL_MODE:-1}"
 
-  # OpenAI
-  echo -e "  ${BOLD}OpenAI${NC} ${DIM}(https://platform.openai.com/api-keys)${NC}"
-  read -r -p "    API key: " OPENAI_KEY < /dev/tty
-  if [ -n "$OPENAI_KEY" ]; then print_ok "Saved"; else echo -e "    ${DIM}⊘ Skipped${NC}"; fi
-  echo ""
+if [ "$MODEL_MODE" = "2" ]; then
+  # ─── Local path ─────────────────────────────────────────────
+  if [ -z "$LOCAL_MODELS" ]; then
+    echo ""
+    print_warn "No local LLM server detected."
+    echo ""
+    echo -e "  ${DIM}Install Ollama, then pull a model:${NC}"
+    if [ "$(uname)" = "Darwin" ]; then
+      echo -e "  ${DIM}  brew install ollama${NC}"
+    else
+      echo -e "  ${DIM}  curl -fsSL https://ollama.com/install.sh | sh${NC}"
+    fi
+    echo -e "  ${DIM}  ollama serve &${NC}"
+    echo -e "  ${DIM}  ollama pull qwen3.5:9b     # 16GB machines${NC}"
+    echo -e "  ${DIM}  ollama pull gemma4:e4b     # smaller machines${NC}"
+    echo -e "  ${DIM}  ollama pull qwen3.6:35b-a3b  # 24GB+ machines${NC}"
+    echo ""
+    read -r -p "  Skip for now (and finish Ollama setup later)? [Y/n]: " SKIP_NOW < /dev/tty
+    SKIP_NOW="${SKIP_NOW:-Y}"
+    if [[ "$SKIP_NOW" =~ ^[Yy] ]]; then
+      # Write a config pointing at Ollama's default — user completes later
+      cat > "$CONFIG_FILE" <<CEOF
+{
+  "extract_model": "local:qwen3.5:9b",
+  "merge_model": "local:qwen3.5:9b",
+  "local_base_url": "http://localhost:11434/v1"
+}
+CEOF
+      print_ok "Saved placeholder config — install Ollama + pull qwen3.5:9b before running gyrus"
+      echo -e "  ${DIM}Then verify with: gyrus doctor${NC}"
+    else
+      # Fall back to cloud
+      print_warn "Falling back to cloud model setup."
+      MODEL_MODE="1"
+    fi
+  else
+    echo ""
+    echo -e "  ${BOLD}Available models${NC}"
+    printf '%s\n' "$LOCAL_MODELS" | head -10 | sed 's/^/    • /'
+    echo ""
+    # Prefer qwen3.5:9b if present; otherwise first in list
+    DEFAULT_EXTRACT="$(printf '%s' "$LOCAL_MODELS" | head -1)"
+    for preferred in "qwen3.5:9b" "qwen3.5" "gemma4:e4b" "gemma4:e2b" "qwen3:9b"; do
+      if printf '%s\n' "$LOCAL_MODELS" | grep -qx "$preferred"; then
+        DEFAULT_EXTRACT="$preferred"; break
+      fi
+    done
+    DEFAULT_MERGE="$DEFAULT_EXTRACT"
+    for preferred in "qwen3.6:35b-a3b" "gemma4:26b" "qwen3:32b"; do
+      if printf '%s\n' "$LOCAL_MODELS" | grep -qx "$preferred"; then
+        DEFAULT_MERGE="$preferred"; break
+      fi
+    done
 
-  # Google
-  echo -e "  ${BOLD}Google${NC} ${DIM}(https://aistudio.google.com/apikey)${NC}"
-  read -r -p "    API key: " GOOGLE_KEY < /dev/tty
-  if [ -n "$GOOGLE_KEY" ]; then print_ok "Saved"; else echo -e "    ${DIM}⊘ Skipped${NC}"; fi
-  echo ""
+    read -r -p "  Extract model [$DEFAULT_EXTRACT]: " EXTRACT_CHOICE < /dev/tty
+    EXTRACT_CHOICE="${EXTRACT_CHOICE:-$DEFAULT_EXTRACT}"
+    read -r -p "  Merge model   [$DEFAULT_MERGE]: " MERGE_CHOICE < /dev/tty
+    MERGE_CHOICE="${MERGE_CHOICE:-$DEFAULT_MERGE}"
 
-  # Require at least one
-  while [ -z "$ANTHRO_KEY" ] && [ -z "$OPENAI_KEY" ] && [ -z "$GOOGLE_KEY" ]; do
-    print_warn "At least one API key is required."
-    echo -e "  ${BOLD}Anthropic${NC} ${DIM}(https://console.anthropic.com/settings/keys)${NC}"
-    read -r -p "    API key: " ANTHRO_KEY < /dev/tty
-    if [ -n "$ANTHRO_KEY" ]; then break; fi
-    echo -e "  ${BOLD}OpenAI${NC} ${DIM}(https://platform.openai.com/api-keys)${NC}"
-    read -r -p "    API key: " OPENAI_KEY < /dev/tty
-    if [ -n "$OPENAI_KEY" ]; then break; fi
-  done
-
-  # Write .env — only write keys that were actually entered (non-empty)
-  : > "$ENV_FILE"
-  [ -n "$ANTHRO_KEY" ] && echo "ANTHROPIC_API_KEY=${ANTHRO_KEY}" >> "$ENV_FILE"
-  [ -n "$OPENAI_KEY" ] && echo "OPENAI_API_KEY=${OPENAI_KEY}" >> "$ENV_FILE"
-  [ -n "$GOOGLE_KEY" ] && echo "GEMINI_API_KEY=${GOOGLE_KEY}" >> "$ENV_FILE"
-  chmod 600 "$ENV_FILE"
-  print_ok "Saved to $ENV_FILE"
+    cat > "$CONFIG_FILE" <<CEOF
+{
+  "extract_model": "local:$EXTRACT_CHOICE",
+  "merge_model": "local:$MERGE_CHOICE",
+  "local_base_url": "$LOCAL_URL"
+}
+CEOF
+    print_ok "Configured for local LLM: $EXTRACT_CHOICE (extract), $MERGE_CHOICE (merge)"
+    echo -e "  ${DIM}No API key needed. Change models anytime with: gyrus models${NC}"
+  fi
 fi
 
-# Create default config — pick best models for available keys
-CONFIG_FILE="$GYRUS_DIR/config.json"
-if [ ! -f "$CONFIG_FILE" ]; then
-  # Auto-select best extract model based on available keys
-  EXTRACT_MODEL="haiku"  # fallback
-  MERGE_MODEL="haiku"    # fallback
-  if [ -n "$OPENAI_KEY" ] || ([ -f "$ENV_FILE" ] && grep -q "OPENAI_API_KEY=sk-" "$ENV_FILE" 2>/dev/null); then
-    EXTRACT_MODEL="gpt-4.1-mini"
-  elif [ -n "$GOOGLE_KEY" ] || ([ -f "$ENV_FILE" ] && grep -q "GEMINI_API_KEY=AI" "$ENV_FILE" 2>/dev/null); then
-    EXTRACT_MODEL="gemini-flash"
+if [ "$MODEL_MODE" = "1" ]; then
+  # ─── Cloud path ─────────────────────────────────────────────
+  echo ""
+  echo -e "  ${DIM}Enter keys for the providers you use (Enter to skip):${NC}"
+  echo -e "  ${DIM}At least one key is required. More keys = more models to compare.${NC}"
+  echo ""
+
+  HAS_KEY=false
+  ANTHRO_KEY=""
+  OPENAI_KEY=""
+  GOOGLE_KEY=""
+
+  # Check existing keys
+  [ -f "$ENV_FILE" ] && grep -q "ANTHROPIC_API_KEY=sk-" "$ENV_FILE" 2>/dev/null && HAS_KEY=true
+  [ -f "$ENV_FILE" ] && grep -q "OPENAI_API_KEY=sk-" "$ENV_FILE" 2>/dev/null && HAS_KEY=true
+  [ -f "$ENV_FILE" ] && grep -q "GEMINI_API_KEY=AI" "$ENV_FILE" 2>/dev/null && HAS_KEY=true
+
+  if [ "$HAS_KEY" = true ]; then
+    print_ok "Keys already configured in .env"
+  else
+    # Anthropic
+    echo -e "  ${BOLD}Anthropic${NC} ${DIM}(https://console.anthropic.com/settings/keys)${NC}"
+    read -r -p "    API key: " ANTHRO_KEY < /dev/tty
+    if [ -n "$ANTHRO_KEY" ]; then print_ok "Saved"; else echo -e "    ${DIM}⊘ Skipped${NC}"; fi
+    echo ""
+
+    # OpenAI
+    echo -e "  ${BOLD}OpenAI${NC} ${DIM}(https://platform.openai.com/api-keys)${NC}"
+    read -r -p "    API key: " OPENAI_KEY < /dev/tty
+    if [ -n "$OPENAI_KEY" ]; then print_ok "Saved"; else echo -e "    ${DIM}⊘ Skipped${NC}"; fi
+    echo ""
+
+    # Google
+    echo -e "  ${BOLD}Google${NC} ${DIM}(https://aistudio.google.com/apikey)${NC}"
+    read -r -p "    API key: " GOOGLE_KEY < /dev/tty
+    if [ -n "$GOOGLE_KEY" ]; then print_ok "Saved"; else echo -e "    ${DIM}⊘ Skipped${NC}"; fi
+    echo ""
+
+    # Require at least one
+    while [ -z "$ANTHRO_KEY" ] && [ -z "$OPENAI_KEY" ] && [ -z "$GOOGLE_KEY" ]; do
+      print_warn "At least one API key is required (or pick Local at the previous step)."
+      echo -e "  ${BOLD}Anthropic${NC} ${DIM}(https://console.anthropic.com/settings/keys)${NC}"
+      read -r -p "    API key: " ANTHRO_KEY < /dev/tty
+      if [ -n "$ANTHRO_KEY" ]; then break; fi
+      echo -e "  ${BOLD}OpenAI${NC} ${DIM}(https://platform.openai.com/api-keys)${NC}"
+      read -r -p "    API key: " OPENAI_KEY < /dev/tty
+      if [ -n "$OPENAI_KEY" ]; then break; fi
+    done
+
+    # Write .env — only write keys that were actually entered (non-empty)
+    : > "$ENV_FILE"
+    [ -n "$ANTHRO_KEY" ] && echo "ANTHROPIC_API_KEY=${ANTHRO_KEY}" >> "$ENV_FILE"
+    [ -n "$OPENAI_KEY" ] && echo "OPENAI_API_KEY=${OPENAI_KEY}" >> "$ENV_FILE"
+    [ -n "$GOOGLE_KEY" ] && echo "GEMINI_API_KEY=${GOOGLE_KEY}" >> "$ENV_FILE"
+    chmod 600 "$ENV_FILE"
+    print_ok "Saved to $ENV_FILE"
   fi
-  if [ -n "$ANTHRO_KEY" ] || ([ -f "$ENV_FILE" ] && grep -q "ANTHROPIC_API_KEY=sk-" "$ENV_FILE" 2>/dev/null); then
-    MERGE_MODEL="sonnet"
-  elif [ -n "$OPENAI_KEY" ] || ([ -f "$ENV_FILE" ] && grep -q "OPENAI_API_KEY=sk-" "$ENV_FILE" 2>/dev/null); then
-    MERGE_MODEL="gpt-4.1"
-  elif [ -n "$GOOGLE_KEY" ] || ([ -f "$ENV_FILE" ] && grep -q "GEMINI_API_KEY=AI" "$ENV_FILE" 2>/dev/null); then
-    MERGE_MODEL="gemini-pro"
-  fi
-  cat > "$CONFIG_FILE" <<CEOF
+
+  # Create default config for cloud mode — pick best models for available keys
+  if [ ! -f "$CONFIG_FILE" ]; then
+    EXTRACT_MODEL="haiku"
+    MERGE_MODEL="haiku"
+    if [ -n "$OPENAI_KEY" ] || ([ -f "$ENV_FILE" ] && grep -q "OPENAI_API_KEY=sk-" "$ENV_FILE" 2>/dev/null); then
+      EXTRACT_MODEL="gpt-4.1-mini"
+    elif [ -n "$GOOGLE_KEY" ] || ([ -f "$ENV_FILE" ] && grep -q "GEMINI_API_KEY=AI" "$ENV_FILE" 2>/dev/null); then
+      EXTRACT_MODEL="gemini-flash"
+    fi
+    if [ -n "$ANTHRO_KEY" ] || ([ -f "$ENV_FILE" ] && grep -q "ANTHROPIC_API_KEY=sk-" "$ENV_FILE" 2>/dev/null); then
+      MERGE_MODEL="sonnet"
+    elif [ -n "$OPENAI_KEY" ] || ([ -f "$ENV_FILE" ] && grep -q "OPENAI_API_KEY=sk-" "$ENV_FILE" 2>/dev/null); then
+      MERGE_MODEL="gpt-4.1"
+    elif [ -n "$GOOGLE_KEY" ] || ([ -f "$ENV_FILE" ] && grep -q "GEMINI_API_KEY=AI" "$ENV_FILE" 2>/dev/null); then
+      MERGE_MODEL="gemini-pro"
+    fi
+    cat > "$CONFIG_FILE" <<CEOF
 {
   "extract_model": "$EXTRACT_MODEL",
   "merge_model": "$MERGE_MODEL"
 }
 CEOF
-  print_ok "Default config: $EXTRACT_MODEL (extraction), $MERGE_MODEL (merging)"
-  echo -e "  ${DIM}Change anytime in $CONFIG_FILE or run: gyrus compare${NC}"
-fi
-
+    print_ok "Default config: $EXTRACT_MODEL (extraction), $MERGE_MODEL (merging)"
+    echo -e "  ${DIM}Change anytime with: gyrus models   •   benchmark with: gyrus compare${NC}"
+  fi
+fi  # end of MODEL_MODE branch
 fi  # end of JOINING_EXISTING API keys check
 
 # ─── Step 4.5: GitHub sync (optional, recommended) ───
@@ -921,7 +1036,7 @@ if [ "$TOTAL_FOUND" -gt 0 ] && [ "$JOINING_EXISTING" != true ]; then
   read -r -p "  Compare models? [Y/n]: " DO_COMPARE < /dev/tty
   DO_COMPARE="${DO_COMPARE:-Y}"
 
-  set -a; source "$ENV_FILE"; set +a
+  [ -f "$ENV_FILE" ] && { set -a; source "$ENV_FILE"; set +a; } || true
 
   if [[ "$DO_COMPARE" =~ ^[Yy] ]]; then
     echo ""
@@ -952,7 +1067,7 @@ else
   read -r -p "  Start? [Y/n]: " DO_BUILD < /dev/tty
   DO_BUILD="${DO_BUILD:-Y}"
 
-  set -a; source "$ENV_FILE"; set +a
+  [ -f "$ENV_FILE" ] && { set -a; source "$ENV_FILE"; set +a; } || true
 fi
 
 if [[ "$DO_BUILD" =~ ^[Yy] ]]; then

@@ -220,58 +220,156 @@ if ($UserPath -notlike "*$GyrusBinDir*") {
 }
 $env:PATH = "$env:PATH;$GyrusBinDir"
 
-# --- Step 4: API key ---
-Write-Step "Step 4: Anthropic API key"
+# --- Step 4: Choose your model ---
+Write-Step "Step 4: Choose your model"
 
-$NeedsKey = $true
-if (Test-Path $EnvFile) {
-    $content = Get-Content $EnvFile -Raw
-    if ($content -match "ANTHROPIC_API_KEY=" -and $content -notmatch "PASTE_YOUR") {
-        Write-Ok "Key already configured"
-        $NeedsKey = $false
-    }
-}
-
-if ($NeedsKey) {
-    Write-Host ""
-    Write-Host "  Gyrus needs one key: an " -NoNewline
-    Write-Host "Anthropic API key" -ForegroundColor White
-    Write-Host "  Get one (free to start): " -NoNewline
-    Write-Host "https://console.anthropic.com/settings/keys" -ForegroundColor White
-    Write-Host ""
-    $AnthroKey = Read-Host "  Anthropic API key"
-    while ([string]::IsNullOrWhiteSpace($AnthroKey)) {
-        Write-Warn "This is the only key required."
-        $AnthroKey = Read-Host "  Anthropic API key"
-    }
-
-    "ANTHROPIC_API_KEY=$AnthroKey" | Set-Content $EnvFile -Encoding ASCII
-
-    # Restrict permissions to current user only
-    $acl = Get-Acl $EnvFile
-    $acl.SetAccessRuleProtection($true, $false)
-    $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
-        [System.Security.Principal.WindowsIdentity]::GetCurrent().Name,
-        "FullControl", "Allow"
-    )
-    $acl.AddAccessRule($rule)
-    Set-Acl $EnvFile $acl
-    Write-Ok "Saved to $EnvFile"
-
-}
-
-# Create default config
 $ConfigFile = "$GyrusDir\config.json"
-if (-not (Test-Path $ConfigFile)) {
-    @'
+
+# Probe common local-LLM endpoints
+$LocalUrl = ""
+$LocalName = ""
+$LocalModels = @()
+foreach ($probe in @(
+    @{url="http://localhost:11434/v1"; name="Ollama"},
+    @{url="http://localhost:1234/v1";  name="LM Studio"},
+    @{url="http://localhost:8000/v1";  name="vLLM"},
+    @{url="http://localhost:8080/v1";  name="llama.cpp"}
+)) {
+    try {
+        $resp = Invoke-RestMethod -Uri "$($probe.url)/models" `
+                                  -Headers @{Authorization="Bearer local"} `
+                                  -TimeoutSec 2 -ErrorAction Stop
+        $LocalUrl  = $probe.url
+        $LocalName = $probe.name
+        $LocalModels = @($resp.data | ForEach-Object { $_.id })
+        break
+    } catch { continue }
+}
+
+Write-Host ""
+Write-Host "  Gyrus uses an LLM to extract thoughts from sessions and merge them"
+Write-Host "  into project pages. Pick one:"
+Write-Host ""
+Write-Host "  [1] Cloud (Anthropic / OpenAI / Google)"
+Write-Dim "• Best quality out of the box"
+Write-Dim "• Requires an API key"
+Write-Dim "• Typical cost: ~`$5-15/month"
+Write-Host ""
+if ($LocalModels.Count -gt 0) {
+    Write-Host "  [2] Local " -NoNewline
+    Write-Host "($LocalName detected, $($LocalModels.Count) model(s) available)" -ForegroundColor Green
+} else {
+    Write-Host "  [2] Local (Ollama — we'll guide setup)"
+}
+Write-Dim "• `$0/month, your data never leaves the machine"
+Write-Dim "• Recommended: qwen3.5:9b (`<=16GB) or qwen3.6:35b-a3b (`>=24GB)"
+Write-Host ""
+$ModelMode = Read-Host "  Choice [1]"
+if ([string]::IsNullOrWhiteSpace($ModelMode)) { $ModelMode = "1" }
+
+if ($ModelMode -eq "2") {
+    # --- Local path ---
+    if ($LocalModels.Count -eq 0) {
+        Write-Host ""
+        Write-Warn "No local LLM server detected."
+        Write-Dim "Install Ollama from https://ollama.com/download"
+        Write-Dim "Then: ollama pull qwen3.5:9b  (or gemma4:e4b for small machines)"
+        Write-Dim "Then: ollama serve"
+        Write-Host ""
+        $SkipNow = Read-Host "  Save placeholder config and finish Ollama setup later? [Y/n]"
+        if ($SkipNow -notmatch "^[Nn]") {
+            @'
+{
+  "extract_model": "local:qwen3.5:9b",
+  "merge_model": "local:qwen3.5:9b",
+  "local_base_url": "http://localhost:11434/v1"
+}
+'@ | Set-Content $ConfigFile -Encoding ASCII
+            Write-Ok "Saved placeholder config. After installing Ollama, run: gyrus doctor"
+        } else {
+            Write-Warn "Falling back to cloud model setup."
+            $ModelMode = "1"
+        }
+    } else {
+        Write-Host ""
+        Write-Host "  Available models"
+        foreach ($m in ($LocalModels | Select-Object -First 10)) { Write-Host "    - $m" }
+        Write-Host ""
+        # Prefer qwen3.5:9b then gemma4:e4b then first
+        $DefaultExtract = $LocalModels[0]
+        foreach ($pref in @("qwen3.5:9b","gemma4:e4b","gemma4:e2b","qwen3:9b")) {
+            if ($LocalModels -contains $pref) { $DefaultExtract = $pref; break }
+        }
+        $DefaultMerge = $DefaultExtract
+        foreach ($pref in @("qwen3.6:35b-a3b","gemma4:26b","qwen3:32b")) {
+            if ($LocalModels -contains $pref) { $DefaultMerge = $pref; break }
+        }
+
+        $ExtractChoice = Read-Host "  Extract model [$DefaultExtract]"
+        if ([string]::IsNullOrWhiteSpace($ExtractChoice)) { $ExtractChoice = $DefaultExtract }
+        $MergeChoice = Read-Host "  Merge model   [$DefaultMerge]"
+        if ([string]::IsNullOrWhiteSpace($MergeChoice)) { $MergeChoice = $DefaultMerge }
+
+        $configObj = @{
+            extract_model = "local:$ExtractChoice"
+            merge_model = "local:$MergeChoice"
+            local_base_url = $LocalUrl
+        }
+        $configObj | ConvertTo-Json | Set-Content $ConfigFile -Encoding ASCII
+        Write-Ok "Configured for local LLM: $ExtractChoice (extract), $MergeChoice (merge)"
+        Write-Dim "No API key needed. Change models anytime with: gyrus models"
+    }
+}
+
+if ($ModelMode -eq "1") {
+    # --- Cloud path ---
+    $NeedsKey = $true
+    if (Test-Path $EnvFile) {
+        $content = Get-Content $EnvFile -Raw
+        if ($content -match "ANTHROPIC_API_KEY=" -and $content -notmatch "PASTE_YOUR") {
+            Write-Ok "Key already configured"
+            $NeedsKey = $false
+        }
+    }
+
+    if ($NeedsKey) {
+        Write-Host ""
+        Write-Host "  Gyrus needs one key: an " -NoNewline
+        Write-Host "Anthropic API key" -ForegroundColor White
+        Write-Host "  Get one (free to start): " -NoNewline
+        Write-Host "https://console.anthropic.com/settings/keys" -ForegroundColor White
+        Write-Host ""
+        $AnthroKey = Read-Host "  Anthropic API key"
+        while ([string]::IsNullOrWhiteSpace($AnthroKey)) {
+            Write-Warn "This is the only key required (or choose Local above)."
+            $AnthroKey = Read-Host "  Anthropic API key"
+        }
+
+        "ANTHROPIC_API_KEY=$AnthroKey" | Set-Content $EnvFile -Encoding ASCII
+
+        # Restrict permissions to current user only
+        $acl = Get-Acl $EnvFile
+        $acl.SetAccessRuleProtection($true, $false)
+        $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
+            [System.Security.Principal.WindowsIdentity]::GetCurrent().Name,
+            "FullControl", "Allow"
+        )
+        $acl.AddAccessRule($rule)
+        Set-Acl $EnvFile $acl
+        Write-Ok "Saved to $EnvFile"
+    }
+
+    # Create default config for cloud mode
+    if (-not (Test-Path $ConfigFile)) {
+        @'
 {
   "extract_model": "haiku",
   "merge_model": "sonnet"
 }
 '@ | Set-Content $ConfigFile -Encoding ASCII
-    Write-Ok "Default config created (Haiku for extraction, Sonnet for merging)"
-    Write-Dim "Change models anytime in $ConfigFile"
-    Write-Dim "Options: haiku, sonnet, opus, gpt-5.4, gpt-5.4-mini, gpt-5.4-nano, gemini-flash, gemini-pro"
+        Write-Ok "Default config created (Haiku for extraction, Sonnet for merging)"
+        Write-Dim "Change models anytime with: gyrus models  (or edit $ConfigFile)"
+    }
 }
 
 # --- Step 4.5: GitHub sync ---
