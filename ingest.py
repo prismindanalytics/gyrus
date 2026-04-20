@@ -2761,6 +2761,27 @@ def _prompt_yn(msg, default="y"):
     return ans.startswith("y")
 
 
+def _pick_from_list(label, options, default):
+    """Interactive pick from a numbered list. Accepts:
+      - empty → default
+      - a 1-based index matching the printed list
+      - a literal option string (or any free text, for advanced users)
+    Always returns a string. Lenient: unknown text is echoed back
+    verbatim so users who know an exact name can type it."""
+    try:
+        default_idx = options.index(default) + 1
+    except ValueError:
+        default_idx = 1
+    resp = _prompt(f"  {label} [{default_idx}] ({default}): ", "").strip()
+    if not resp:
+        return default
+    if resp.isdigit():
+        n = int(resp)
+        if 1 <= n <= len(options):
+            return options[n - 1]
+    return resp
+
+
 def _which(cmd):
     import shutil
     return shutil.which(cmd)
@@ -2854,11 +2875,34 @@ def run_init(clone_url=None, location=None):
         model_choice = "1"
 
     if model_choice == "2" and local_models:
-        # Local-LLM setup
-        default_extract = "qwen3" if "qwen3" in local_models else local_models[0]
-        default_merge = default_extract
-        extract = _prompt(f"    Extract model [{default_extract}]: ", default_extract)
-        merge = _prompt(f"    Merge model   [{default_merge}]: ", default_merge)
+        # Local-LLM setup — show numbered list for easy picking
+        print()
+        print("    Available models:")
+        for i, m in enumerate(local_models[:15], 1):
+            print(f"      [{i:>2}] {m}")
+        if len(local_models) > 15:
+            print(f"           +{len(local_models) - 15} more")
+        print()
+
+        # Pick smart defaults: qwen3.5:9b class for extract, larger MoE for merge
+        def _first_match(prefs, options):
+            for p in prefs:
+                if p in options:
+                    return p
+            return options[0]
+
+        default_extract = _first_match(
+            ["qwen3.5:9b", "qwen3.5", "gemma4:e4b", "gemma4:e2b", "qwen3:9b"],
+            local_models,
+        )
+        default_merge = _first_match(
+            ["qwen3.6:35b-a3b", "gemma4:26b", "qwen3:32b"],
+            local_models,
+        ) if any(m in local_models for m in ("qwen3.6:35b-a3b", "gemma4:26b",
+                                             "qwen3:32b")) else default_extract
+
+        extract = _pick_from_list("Extract model", local_models, default_extract)
+        merge = _pick_from_list("Merge model  ", local_models, default_merge)
         existing = {}
         if config_path.exists():
             try:
@@ -3597,12 +3641,36 @@ def run_models(base_dir, yes=False):
     if not _prompt_yn("  Change models? [y/N]: ", "n"):
         return 0
 
-    new_extract = _prompt(
-        f"    Extract model [{current_extract}]: ", current_extract
-    )
-    new_merge = _prompt(
-        f"    Merge   model [{current_merge}]: ", current_merge
-    )
+    # Build a combined picker list: local models (if any) + known cloud names
+    # with keys set. Users can still type any name by hand.
+    cloud_by_key = [
+        (["haiku", "sonnet", "opus"], has_key["anthropic"]),
+        (["gpt-5.4-mini", "gpt-5.4", "gpt-5.4-nano"], has_key["openai"]),
+        (["gemini-lite", "gemini-flash", "gemini-pro"], has_key["google"]),
+    ]
+    picker_options = []
+    if local_models:
+        picker_options += [f"local:{m}" for m in local_models[:15]]
+    for names, available in cloud_by_key:
+        if available:
+            picker_options += names
+
+    if picker_options:
+        print()
+        print("  Pick by number, by name, or press Enter for default:")
+        for i, m in enumerate(picker_options, 1):
+            print(f"    [{i:>2}] {m}")
+        print()
+        new_extract = _pick_from_list("Extract model", picker_options, current_extract)
+        new_merge = _pick_from_list("Merge model  ", picker_options, current_merge)
+    else:
+        # No detected options — fall back to plain free-form prompt
+        new_extract = _prompt(
+            f"    Extract model [{current_extract}]: ", current_extract
+        )
+        new_merge = _prompt(
+            f"    Merge   model [{current_merge}]: ", current_merge
+        )
 
     cfg["extract_model"] = new_extract
     cfg["merge_model"] = new_merge
@@ -4177,8 +4245,12 @@ def self_update(base_dir=None):
     return True
 
 
-def compare_models(keys, base_dir, file_config=None):
-    """Run extraction benchmark across available models and generate HTML comparison."""
+def compare_models(keys, base_dir, file_config=None,
+                   local_only=False, cloud_only=False):
+    """Run extraction benchmark across available models and generate HTML
+    comparison. `local_only`/`cloud_only` restrict the pool — useful when
+    the user committed to one path during install and doesn't want
+    the other's noise (or cost) in their benchmark."""
     import webbrowser
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -4188,26 +4260,33 @@ def compare_models(keys, base_dir, file_config=None):
 
     # Determine available models per provider
     available = []
-    if keys.get("anthropic"):
-        available += ["haiku", "sonnet"]
-    if keys.get("openai"):
-        available += ["gpt-4.1-nano", "gpt-4.1-mini", "gpt-5.4-nano", "gpt-5.4-mini"]
-    if keys.get("google"):
-        available += ["gemini-lite", "gemini-flash"]
+    if not local_only:
+        if keys.get("anthropic"):
+            available += ["haiku", "sonnet"]
+        if keys.get("openai"):
+            available += ["gpt-4.1-nano", "gpt-4.1-mini", "gpt-5.4-nano", "gpt-5.4-mini"]
+        if keys.get("google"):
+            available += ["gemini-lite", "gemini-flash"]
 
-    # Auto-include currently-loaded local models (up to 4) so the comparison
+    # Auto-include currently-loaded local models so the comparison
     # reflects what's actually available on the user's machine.
-    local_url, local_name, local_models = _detect_local_llm()
-    if local_models:
-        # Keep only "reasonable for gyrus" sizes — skip tiny (<2B) and huge
-        # (>70B that won't fit). Heuristic: trust the user's installed list.
-        picks = [f"local:{m}" for m in local_models[:4]]
-        available += picks
-        print(f"  + including {len(picks)} local model(s) from {local_name}: "
-              f"{', '.join(local_models[:4])}")
+    if not cloud_only:
+        local_url, local_name, local_models = _detect_local_llm()
+        if local_models:
+            # Include up to 4 local models; trust the user's installed list.
+            picks = [f"local:{m}" for m in local_models[:4]]
+            available += picks
+            scope = "only" if local_only else ""
+            print(f"  + including {len(picks)} local model(s){' (local ' + scope + ')' if scope else ''} from {local_name}: "
+                  f"{', '.join(local_models[:4])}")
 
     if not available:
-        print("  No API keys or local LLM server detected. Cannot compare models.")
+        if local_only:
+            print("  --local-only set but no local LLM server detected.")
+        elif cloud_only:
+            print("  --cloud-only set but no cloud API keys configured.")
+        else:
+            print("  No API keys or local LLM server detected. Cannot compare models.")
         return None
 
     display_names = [_display_name(m) for m in available]
@@ -4797,6 +4876,12 @@ def main():
                         help="Update Gyrus to the latest version from GitHub")
     parser.add_argument("--compare-models", action="store_true",
                         help="Compare extraction models on your sessions and pick one")
+    parser.add_argument("--local-only", action="store_true",
+                        help="With --compare-models: only benchmark local LLM models "
+                             "(skip Anthropic/OpenAI/Google even if keys are configured)")
+    parser.add_argument("--cloud-only", action="store_true",
+                        help="With --compare-models: only benchmark cloud models "
+                             "(skip any local LLM detected on this machine)")
     parser.add_argument("--review-status", action="store_true",
                         help="Interactively review and set project statuses")
     parser.add_argument("--doctor", action="store_true",
@@ -4964,10 +5049,12 @@ def main():
                        or os.environ.get("GEMINI_API_KEY")),
         }
         keys = {k: v for k, v in keys.items() if v}
-        if not keys:
-            parser.error("At least one API key required. Use --anthropic-key, --openai-key, or --google-key")
+        if not keys and not args.local_only:
+            parser.error("At least one API key required (or --local-only with a running Ollama/LM Studio). "
+                         "Use --anthropic-key, --openai-key, or --google-key.")
         file_config = _load_config(type("S", (), {"base_dir": env_base})())
-        compare_models(keys, env_base, file_config)
+        compare_models(keys, env_base, file_config,
+                       local_only=args.local_only, cloud_only=args.cloud_only)
         sys.exit(0)
 
     # Handle --review-status early

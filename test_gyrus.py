@@ -61,6 +61,7 @@ from ingest import (
     run_models,
     RECOMMENDED_LOCAL_EXTRACT,
     RECOMMENDED_LOCAL_MERGE,
+    _pick_from_list,
 )
 
 
@@ -1260,6 +1261,59 @@ class TestLocalLLM(unittest.TestCase):
             url, name, models = _detect_local_llm(timeout=1)
         self.assertIsNone(url)
         self.assertEqual(models, [])
+
+
+class TestPickFromList(unittest.TestCase):
+    """_pick_from_list accepts a 1-based number, a literal name, or empty→default."""
+
+    OPTIONS = ["qwen3.6:35b-a3b", "gemma4:e4b", "qwen3.5:9b", "gemma4:26b"]
+
+    def _with_input(self, s):
+        return patch("builtins.input", return_value=s)
+
+    def test_empty_returns_default(self):
+        with self._with_input(""):
+            self.assertEqual(
+                _pick_from_list("x", self.OPTIONS, "qwen3.5:9b"),
+                "qwen3.5:9b",
+            )
+
+    def test_number_selects_from_list(self):
+        with self._with_input("1"):
+            self.assertEqual(
+                _pick_from_list("x", self.OPTIONS, "qwen3.5:9b"),
+                "qwen3.6:35b-a3b",  # index 1
+            )
+        with self._with_input("3"):
+            self.assertEqual(
+                _pick_from_list("x", self.OPTIONS, "qwen3.5:9b"),
+                "qwen3.5:9b",
+            )
+
+    def test_out_of_range_number_treated_as_name(self):
+        # If user types "42" (invalid index), accept it as a literal string
+        with self._with_input("42"):
+            self.assertEqual(
+                _pick_from_list("x", self.OPTIONS, "qwen3.5:9b"),
+                "42",
+            )
+
+    def test_literal_name_wins(self):
+        with self._with_input("local:custom-model"):
+            self.assertEqual(
+                _pick_from_list("x", self.OPTIONS, "qwen3.5:9b"),
+                "local:custom-model",
+            )
+
+    def test_eof_returns_default(self):
+        # Piped inputs that exhaust stdin return default, not raise
+        def boom(*args, **kwargs):
+            raise EOFError()
+        with patch("builtins.input", boom):
+            self.assertEqual(
+                _pick_from_list("x", self.OPTIONS, "gemma4:26b"),
+                "gemma4:26b",
+            )
 
 
 class TestGyrusModelsSubcommand(unittest.TestCase):

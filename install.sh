@@ -394,26 +394,63 @@ CEOF
   else
     echo ""
     echo -e "  ${BOLD}Available models${NC}"
-    printf '%s\n' "$LOCAL_MODELS" | head -10 | sed 's/^/    • /'
+    # Build an indexed array so the user can pick by number
+    MODEL_ARR=()
+    while IFS= read -r m; do
+      [ -z "$m" ] && continue
+      MODEL_ARR+=("$m")
+    done <<< "$LOCAL_MODELS"
+    SHOW_COUNT=$(( ${#MODEL_ARR[@]} > 15 ? 15 : ${#MODEL_ARR[@]} ))
+    for ((i=0; i<SHOW_COUNT; i++)); do
+      printf "    [%2d] %s\n" "$((i+1))" "${MODEL_ARR[$i]}"
+    done
+    if [ "${#MODEL_ARR[@]}" -gt 15 ]; then
+      echo "         +$((${#MODEL_ARR[@]} - 15)) more"
+    fi
     echo ""
-    # Prefer qwen3.5:9b if present; otherwise first in list
-    DEFAULT_EXTRACT="$(printf '%s' "$LOCAL_MODELS" | head -1)"
+
+    # Pick smart defaults
+    DEFAULT_EXTRACT="${MODEL_ARR[0]}"
     for preferred in "qwen3.5:9b" "qwen3.5" "gemma4:e4b" "gemma4:e2b" "qwen3:9b"; do
-      if printf '%s\n' "$LOCAL_MODELS" | grep -qx "$preferred"; then
-        DEFAULT_EXTRACT="$preferred"; break
-      fi
+      for m in "${MODEL_ARR[@]}"; do
+        if [ "$m" = "$preferred" ]; then DEFAULT_EXTRACT="$preferred"; break 2; fi
+      done
     done
     DEFAULT_MERGE="$DEFAULT_EXTRACT"
     for preferred in "qwen3.6:35b-a3b" "gemma4:26b" "qwen3:32b"; do
-      if printf '%s\n' "$LOCAL_MODELS" | grep -qx "$preferred"; then
-        DEFAULT_MERGE="$preferred"; break
-      fi
+      for m in "${MODEL_ARR[@]}"; do
+        if [ "$m" = "$preferred" ]; then DEFAULT_MERGE="$preferred"; break 2; fi
+      done
     done
 
-    read -r -p "  Extract model [$DEFAULT_EXTRACT]: " EXTRACT_CHOICE < /dev/tty
-    EXTRACT_CHOICE="${EXTRACT_CHOICE:-$DEFAULT_EXTRACT}"
-    read -r -p "  Merge model   [$DEFAULT_MERGE]: " MERGE_CHOICE < /dev/tty
-    MERGE_CHOICE="${MERGE_CHOICE:-$DEFAULT_MERGE}"
+    # Resolve default indices for display
+    DEFAULT_EXTRACT_IDX=1
+    DEFAULT_MERGE_IDX=1
+    for i in "${!MODEL_ARR[@]}"; do
+      [ "${MODEL_ARR[$i]}" = "$DEFAULT_EXTRACT" ] && DEFAULT_EXTRACT_IDX=$((i+1))
+      [ "${MODEL_ARR[$i]}" = "$DEFAULT_MERGE" ] && DEFAULT_MERGE_IDX=$((i+1))
+    done
+
+    echo -e "  ${DIM}Enter a number, a model name, or press Enter for default.${NC}"
+    read -r -p "  Extract model [$DEFAULT_EXTRACT_IDX] ($DEFAULT_EXTRACT): " EXTRACT_INPUT < /dev/tty
+    if [ -z "$EXTRACT_INPUT" ]; then
+      EXTRACT_CHOICE="$DEFAULT_EXTRACT"
+    elif [[ "$EXTRACT_INPUT" =~ ^[0-9]+$ ]] && [ "$EXTRACT_INPUT" -ge 1 ] \
+         && [ "$EXTRACT_INPUT" -le "${#MODEL_ARR[@]}" ]; then
+      EXTRACT_CHOICE="${MODEL_ARR[$((EXTRACT_INPUT - 1))]}"
+    else
+      EXTRACT_CHOICE="$EXTRACT_INPUT"
+    fi
+
+    read -r -p "  Merge model   [$DEFAULT_MERGE_IDX] ($DEFAULT_MERGE): " MERGE_INPUT < /dev/tty
+    if [ -z "$MERGE_INPUT" ]; then
+      MERGE_CHOICE="$DEFAULT_MERGE"
+    elif [[ "$MERGE_INPUT" =~ ^[0-9]+$ ]] && [ "$MERGE_INPUT" -ge 1 ] \
+         && [ "$MERGE_INPUT" -le "${#MODEL_ARR[@]}" ]; then
+      MERGE_CHOICE="${MODEL_ARR[$((MERGE_INPUT - 1))]}"
+    else
+      MERGE_CHOICE="$MERGE_INPUT"
+    fi
 
     cat > "$CONFIG_FILE" <<CEOF
 {
@@ -1040,14 +1077,19 @@ if [ "$TOTAL_FOUND" -gt 0 ] && [ "$JOINING_EXISTING" != true ]; then
 
   if [[ "$DO_COMPARE" =~ ^[Yy] ]]; then
     echo ""
-    # Build key flags
+    # Build key flags + scope flag
     KEY_FLAGS=""
     [ -n "${ANTHROPIC_API_KEY:-}" ] && KEY_FLAGS="$KEY_FLAGS --anthropic-key $ANTHROPIC_API_KEY"
-    [ -n "${OPENAI_API_KEY:-}" ] && KEY_FLAGS="$KEY_FLAGS --openai-key $OPENAI_API_KEY"
-    [ -n "${GEMINI_API_KEY:-}" ] && KEY_FLAGS="$KEY_FLAGS --google-key $GEMINI_API_KEY"
-    "$UV" run --python "$UV_PYTHON" "$INGEST_SCRIPT" --compare-models $KEY_FLAGS < /dev/tty 2>&1 || true
+    [ -n "${OPENAI_API_KEY:-}" ]    && KEY_FLAGS="$KEY_FLAGS --openai-key $OPENAI_API_KEY"
+    [ -n "${GEMINI_API_KEY:-}" ]    && KEY_FLAGS="$KEY_FLAGS --google-key $GEMINI_API_KEY"
+    # Respect the user's Step 4 choice: if they picked local, compare local only
+    SCOPE_FLAG=""
+    if [ "${MODEL_MODE:-1}" = "2" ]; then
+      SCOPE_FLAG="--local-only"
+    fi
+    "$UV" run --python "$UV_PYTHON" "$INGEST_SCRIPT" --compare-models $KEY_FLAGS $SCOPE_FLAG < /dev/tty 2>&1 || true
   else
-    echo -e "  ${DIM}Skipped. Run later with: gyrus compare${NC}"
+    echo -e "  ${DIM}Skipped. Run later with: gyrus compare (or: gyrus compare --local-only)${NC}"
   fi
 fi
 

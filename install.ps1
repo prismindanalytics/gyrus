@@ -293,9 +293,16 @@ if ($ModelMode -eq "2") {
     } else {
         Write-Host ""
         Write-Host "  Available models"
-        foreach ($m in ($LocalModels | Select-Object -First 10)) { Write-Host "    - $m" }
+        $ShowCount = [Math]::Min($LocalModels.Count, 15)
+        for ($i = 0; $i -lt $ShowCount; $i++) {
+            Write-Host ("    [{0,2}] {1}" -f ($i+1), $LocalModels[$i])
+        }
+        if ($LocalModels.Count -gt 15) {
+            Write-Host ("         +{0} more" -f ($LocalModels.Count - 15))
+        }
         Write-Host ""
-        # Prefer qwen3.5:9b then gemma4:e4b then first
+
+        # Pick smart defaults
         $DefaultExtract = $LocalModels[0]
         foreach ($pref in @("qwen3.5:9b","gemma4:e4b","gemma4:e2b","qwen3:9b")) {
             if ($LocalModels -contains $pref) { $DefaultExtract = $pref; break }
@@ -304,11 +311,24 @@ if ($ModelMode -eq "2") {
         foreach ($pref in @("qwen3.6:35b-a3b","gemma4:26b","qwen3:32b")) {
             if ($LocalModels -contains $pref) { $DefaultMerge = $pref; break }
         }
+        $DefaultExtractIdx = [Array]::IndexOf($LocalModels, $DefaultExtract) + 1
+        $DefaultMergeIdx = [Array]::IndexOf($LocalModels, $DefaultMerge) + 1
 
-        $ExtractChoice = Read-Host "  Extract model [$DefaultExtract]"
-        if ([string]::IsNullOrWhiteSpace($ExtractChoice)) { $ExtractChoice = $DefaultExtract }
-        $MergeChoice = Read-Host "  Merge model   [$DefaultMerge]"
-        if ([string]::IsNullOrWhiteSpace($MergeChoice)) { $MergeChoice = $DefaultMerge }
+        # Helper: accept number, name, or empty for default
+        function Resolve-Choice($input, $default, $list) {
+            if ([string]::IsNullOrWhiteSpace($input)) { return $default }
+            if ($input -match '^\d+$') {
+                $n = [int]$input
+                if ($n -ge 1 -and $n -le $list.Count) { return $list[$n-1] }
+            }
+            return $input
+        }
+
+        Write-Dim "Enter a number, a model name, or press Enter for default."
+        $ExtractInput = Read-Host "  Extract model [$DefaultExtractIdx] ($DefaultExtract)"
+        $ExtractChoice = Resolve-Choice $ExtractInput $DefaultExtract $LocalModels
+        $MergeInput = Read-Host "  Merge model   [$DefaultMergeIdx] ($DefaultMerge)"
+        $MergeChoice = Resolve-Choice $MergeInput $DefaultMerge $LocalModels
 
         $configObj = @{
             extract_model = "local:$ExtractChoice"
