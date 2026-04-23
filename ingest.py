@@ -10,7 +10,7 @@ Knowledge pages are local markdown files by default.
 https://gyrus.sh
 """
 
-__version__ = "2026.04.19.0"
+__version__ = "2026.04.22.1"
 
 import argparse
 import atexit
@@ -2482,6 +2482,12 @@ def _doctor_check_git_sync(base_dir):
     if not _git_is_repo(base_dir):
         return ("warn", "git sync", "not a git repo",
                 "run `gyrus init` to set up cross-machine sync")
+    # Stuck rebase leaves HEAD detached — subsequent `push -u origin HEAD`
+    # fails with "not a full refname". Detect and flag for --fix.
+    git_dir = base_dir / ".git"
+    if (git_dir / "rebase-merge").exists() or (git_dir / "rebase-apply").exists():
+        return ("fail", "git sync", "rebase in progress — push will fail",
+                "run `gyrus doctor --fix` to abort the rebase")
     remote = _git_remote_url(base_dir)
     if not remote:
         return ("warn", "git sync", "no origin remote",
@@ -2622,7 +2628,15 @@ def _doctor_fix_dataless(base_dir):
 
 
 def _doctor_fix_git_sync(base_dir):
-    """Initialize a local repo if missing, or pull+push if configured."""
+    """Initialize a local repo if missing, or pull+push if configured.
+    If a rebase is in progress (detached HEAD), abort it first — otherwise
+    the pull/push steps below will fail with "not a full refname"."""
+    git_dir = base_dir / ".git"
+    if (git_dir / "rebase-merge").exists() or (git_dir / "rebase-apply").exists():
+        rc, _, err = _git_run(["rebase", "--abort"], base_dir, timeout=10)
+        if rc != 0:
+            return False, f"rebase --abort failed: {err[:60]}"
+        return True, "aborted stuck rebase (re-run `gyrus doctor --fix` to sync)"
     if not _git_is_repo(base_dir):
         rc, _, err = _git_run(
             ["init", "--initial-branch=main", "--quiet"],
@@ -5219,6 +5233,8 @@ def main():
     # Validate that the chosen models have API keys
     for role, model_name in [("extract", extract_model), ("merge", merge_model)]:
         resolved = _resolve_model(model_name)
+        if resolved["provider"] == "local":
+            continue
         if resolved["provider"] not in _config["keys"]:
             parser.error(
                 f"{role} model '{model_name}' requires a {resolved['provider']} API key. "
