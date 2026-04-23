@@ -10,7 +10,7 @@ Knowledge pages are local markdown files by default.
 https://gyrus.sh
 """
 
-__version__ = "2026.04.22.1"
+__version__ = "2026.04.22.2"
 
 import argparse
 import atexit
@@ -5325,24 +5325,37 @@ def main():
     merge_input_tok = est_projects * 8000 / 1_000_000
     merge_output_tok = est_projects * 4000 / 1_000_000
 
-    ext_price = MODEL_PRICING.get(extract_model, (1, 5))
-    merge_price = MODEL_PRICING.get(merge_model, (3, 15))
+    # Local models run on user hardware: $0 API cost, and local endpoints
+    # (Ollama default, etc.) serialize on one GPU and run per-call slower
+    # than comparably-sized cloud models.
+    ext_is_local = _resolve_model(extract_model)["provider"] == "local"
+    merge_is_local = _resolve_model(merge_model)["provider"] == "local"
+
+    ext_price = (0.0, 0.0) if ext_is_local else MODEL_PRICING.get(extract_model, (1, 5))
+    merge_price = (0.0, 0.0) if merge_is_local else MODEL_PRICING.get(merge_model, (3, 15))
 
     ext_cost = ext_input_tok * ext_price[0] + ext_output_tok * ext_price[1]
     merge_cost = merge_input_tok * merge_price[0] + merge_output_tok * merge_price[1]
     total_est = ext_cost + merge_cost
 
-    # Time estimate: ~5s per extraction call with parallelism, ~15s per merge
-    max_workers = file_config.get("parallel_extractions", 4)
-    ext_time_mins = (n_sessions / max_workers * 5) / 60
-    merge_time_mins = (est_projects * 15) / 60
+    # Time estimate: cloud uses parallelism + fast per-call; local serializes
+    # and runs slower end-to-end. Rough per-call baselines.
+    if ext_is_local:
+        max_workers = 1
+        ext_sec_per_call = 20
+    else:
+        max_workers = file_config.get("parallel_extractions", 4)
+        ext_sec_per_call = 5
+    merge_sec_per_call = 45 if merge_is_local else 15
+    ext_time_mins = (n_sessions / max_workers * ext_sec_per_call) / 60
+    merge_time_mins = (est_projects * merge_sec_per_call) / 60
     total_time_mins = ext_time_mins + merge_time_mins
 
     print(f"  Cost estimate: ~${total_est:.2f} "
           f"({n_sessions} extractions @ {extract_model}, "
           f"~{est_projects} merges @ {merge_model})")
     print(f"  Time estimate: ~{total_time_mins:.0f} minutes "
-          f"({max_workers} parallel workers)")
+          f"({max_workers} parallel worker{'s' if max_workers != 1 else ''})")
 
     # If large batch, offer live vs background
     if n_sessions > 20 and not args.dry_run and sys.stdin.isatty():
