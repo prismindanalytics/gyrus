@@ -10,7 +10,7 @@ Knowledge pages are local markdown files by default.
 https://gyrus.sh
 """
 
-__version__ = "2026.04.22.2"
+__version__ = "2026.04.22.3"
 
 import argparse
 import atexit
@@ -5419,7 +5419,12 @@ def main():
     # ── Step 1: Extract & save thoughts ──
     batch_thoughts = []
     repo_groups = file_config.get("repo_groups")
-    max_workers = file_config.get("parallel_extractions", 4)
+    # Local endpoints typically serialize on one GPU — parallel workers fight
+    # each other for the same resource instead of speeding things up.
+    if _resolve_model(extract_model)["provider"] == "local":
+        max_workers = 1
+    else:
+        max_workers = file_config.get("parallel_extractions", 4)
 
     def _process_session(session):
         """Extract thoughts from a single session (thread-safe for LLM calls)."""
