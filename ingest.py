@@ -10,7 +10,7 @@ Knowledge pages are local markdown files by default.
 https://gyrus.sh
 """
 
-__version__ = "2026.04.22.3"
+__version__ = "2026.05.04.1"
 
 import argparse
 import atexit
@@ -1588,6 +1588,67 @@ def call_sonnet(prompt, anthropic_key, max_tokens=8192):
     return call_llm(prompt, role="merge", max_tokens=max_tokens)
 
 
+_THINK_BLOCK_RE = re.compile(r"<think(?:ing)?>.*?</think(?:ing)?>", re.DOTALL | re.IGNORECASE)
+
+
+def _clean_merge_output(text):
+    """Strip <think> blocks and any leading reasoning preamble before the first H1.
+
+    Local thinking-models (qwen3.5, deepseek-r1, etc.) sometimes leak their reasoning
+    trace ahead of the answer. The wiki page must start with `# ProjectName` per the
+    merge prompt, so anything before the first `# ` is reasoning we can drop.
+    """
+    text = _THINK_BLOCK_RE.sub("", text)
+    h1 = re.search(r"^# \S", text, re.MULTILINE)
+    if h1 and h1.start() > 0:
+        text = text[h1.start():]
+    return text.strip()
+
+
+def _has_repetition_loop(text, line_threshold=5, ngram_threshold=8):
+    """Detect degenerate-loop output from a wedged local model."""
+    from collections import Counter
+    lines = [ln.strip() for ln in text.splitlines() if len(ln.strip()) > 20]
+    if lines:
+        most_common_line, n = Counter(lines).most_common(1)[0]
+        if n >= line_threshold:
+            return f"line repeated {n}× ({most_common_line[:60]!r})"
+    if len(text) > 60 * ngram_threshold:
+        windows = Counter(text[i:i + 60] for i in range(0, len(text) - 60, 30))
+        most_common_window, n = windows.most_common(1)[0]
+        if n >= ngram_threshold:
+            return f"60-char window repeated {n}×"
+    return None
+
+
+def _validate_merge_output(updated_content, slug):
+    """Reject corrupted merge output. Returns None on success, reason string on failure."""
+    if not updated_content or len(updated_content) < 200:
+        return f"output too short ({len(updated_content)} chars)"
+    if not updated_content.lstrip().startswith("# "):
+        return "output does not start with an H1 heading"
+    head = updated_content[:200].lower()
+    for marker in ("thinking process:", "let me think", "i need to "):
+        if marker in head:
+            return f"reasoning-trace leak detected ({marker!r})"
+    h2_count = len(re.findall(r"^## \S", updated_content, re.MULTILINE))
+    if h2_count < 3:
+        return f"only {h2_count} H2 sections (expected ≥3)"
+    repetition = _has_repetition_loop(updated_content)
+    if repetition:
+        return f"repetition loop: {repetition}"
+    return None
+
+
+def _quarantine_bad_merge(store, slug, raw_response, reason):
+    """Write a rejected merge output to disk for debugging without overwriting the page."""
+    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+    path = store.projects_dir / f"{slug}.failed-merge.{ts}.md"
+    header = f"<!-- rejected merge for '{slug}' at {ts}: {reason} -->\n\n"
+    path.write_text(header + raw_response)
+    return path
+
+
 # ─── Knowledge Pipeline ───
 
 
@@ -1759,12 +1820,23 @@ def merge_into_knowledge_pages(thoughts_by_project, store, anthropic_key):
 
         # Extract change summary
         change_summary = ""
-        if "CHANGE_SUMMARY:" in response_text:
-            parts = response_text.split("CHANGE_SUMMARY:")
+        cleaned = _clean_merge_output(response_text)
+        if "CHANGE_SUMMARY:" in cleaned:
+            parts = cleaned.split("CHANGE_SUMMARY:")
             updated_content = parts[0].strip()
             change_summary = parts[1].strip()
         else:
-            updated_content = response_text.strip()
+            updated_content = cleaned
+
+        # Validate: reject reasoning-leak, repetition loops, or empty output.
+        # Leaving thoughts unmerged so the next run retries with a fresh sample.
+        reject_reason = _validate_merge_output(updated_content, slug)
+        if reject_reason:
+            quarantine = _quarantine_bad_merge(store, slug, response_text, reject_reason)
+            print(f"    ✗ Rejected merge for '{slug}': {reject_reason}")
+            print(f"      Raw output saved to {quarantine.name} for inspection.")
+            print(f"      Page kept at v{version}; thoughts will be retried next run.")
+            continue
 
         # Save updated page
         new_version = version + 1
@@ -1814,12 +1886,20 @@ def merge_into_me_page(thoughts, store, anthropic_key):
         return
 
     change_summary = ""
-    if "CHANGE_SUMMARY:" in response_text:
-        parts = response_text.split("CHANGE_SUMMARY:")
+    cleaned = _clean_merge_output(response_text)
+    if "CHANGE_SUMMARY:" in cleaned:
+        parts = cleaned.split("CHANGE_SUMMARY:")
         updated_content = parts[0].strip()
         change_summary = parts[1].strip()
     else:
-        updated_content = response_text.strip()
+        updated_content = cleaned
+
+    reject_reason = _validate_merge_output(updated_content, "me")
+    if reject_reason:
+        quarantine = _quarantine_bad_merge(store, "me", response_text, reject_reason)
+        print(f"    ✗ Rejected merge for 'me': {reject_reason}")
+        print(f"      Raw output saved to {quarantine.name}; page kept at v{version}.")
+        return
 
     new_version = version + 1
     store.save_page("me", updated_content, new_version)
@@ -1864,12 +1944,20 @@ def merge_into_ideas_page(thoughts, store, anthropic_key):
         return
 
     change_summary = ""
-    if "CHANGE_SUMMARY:" in response_text:
-        parts = response_text.split("CHANGE_SUMMARY:")
+    cleaned = _clean_merge_output(response_text)
+    if "CHANGE_SUMMARY:" in cleaned:
+        parts = cleaned.split("CHANGE_SUMMARY:")
         updated_content = parts[0].strip()
         change_summary = parts[1].strip()
     else:
-        updated_content = response_text.strip()
+        updated_content = cleaned
+
+    reject_reason = _validate_merge_output(updated_content, "ideas")
+    if reject_reason:
+        quarantine = _quarantine_bad_merge(store, "ideas", response_text, reject_reason)
+        print(f"    ✗ Rejected merge for 'ideas': {reject_reason}")
+        print(f"      Raw output saved to {quarantine.name}; page kept at v{version}.")
+        return
 
     new_version = version + 1
     store.save_page("ideas", updated_content, new_version)

@@ -211,8 +211,17 @@ class MarkdownStorage:
         return None, 0
 
     def save_page(self, slug, content, version):
-        """Write a knowledge page. Appends version as hidden comment."""
+        """Write a knowledge page. Appends version as hidden comment.
+
+        Keeps a single-level backup at <slug>.bak.md so a bad merge can be rolled
+        back. Validation lives in the caller (see _validate_merge_output in ingest.py).
+        """
         filepath = self.projects_dir / f"{slug}.md"
+
+        # Snapshot the prior version so a bad merge is recoverable.
+        if filepath.exists():
+            backup = self.projects_dir / f"{slug}.bak.md"
+            backup.write_text(_safe_read(filepath))
 
         # Strip old version comment if present
         content = re.sub(r'\n<!-- version: \d+ -->\s*$', '', content)
@@ -228,6 +237,9 @@ class MarkdownStorage:
         for filepath in sorted(self.projects_dir.glob("*.md")):
             slug = filepath.stem
             if slug in ("status", "cross-cutting", "me", "ideas"):
+                continue
+            # Skip backup files and quarantined bad merges.
+            if slug.endswith(".bak") or ".failed-merge." in filepath.name:
                 continue
             content = _safe_read(filepath)
             version = 1
