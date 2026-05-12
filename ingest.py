@@ -10,7 +10,7 @@ Knowledge pages are local markdown files by default.
 https://gyrus.sh
 """
 
-__version__ = "2026.05.12.2"
+__version__ = "2026.05.12.3"
 
 import argparse
 import atexit
@@ -2600,6 +2600,18 @@ def _doctor_check_git_sync(base_dir):
                           base_dir, timeout=5)
     if rc != 0:
         return ("warn", "git sync", f"origin unreachable: {err[:40]}", None)
+    # Detect missing upstream OR unrelated histories — both make `gyrus sync`
+    # silently fail. The ahead/behind check below would otherwise error out
+    # and fall through to "ready", masking the problem (observed in the wild
+    # where a fresh-init'd github repo and a long-running local repo had
+    # zero common ancestors and every push was rejected non-fast-forward).
+    rc, _, _ = _git_run(["merge-base", "HEAD", "@{u}"], base_dir, timeout=5)
+    if rc != 0:
+        return ("fail", "git sync",
+                f"{remote} (no common history with upstream)",
+                "either upstream isn't tracked, or histories diverged.\n"
+                "     `git push --force origin main` overwrites remote (destructive),\n"
+                "     `git pull --allow-unrelated-histories origin main` merges them")
     # Ahead/behind
     rc, out, _ = _git_run(
         ["rev-list", "--count", "--left-right", "HEAD...@{u}"],
