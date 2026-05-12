@@ -10,7 +10,7 @@ Knowledge pages are local markdown files by default.
 https://gyrus.sh
 """
 
-__version__ = "2026.05.04.1"
+__version__ = "2026.05.12.2"
 
 import argparse
 import atexit
@@ -1364,11 +1364,26 @@ def _call_local(model, messages, max_tokens, api_key, temperature=0):
     endpoint via config.local_base_url or $GYRUS_LOCAL_BASE_URL.
     """
     base_url = _local_base_url().rstrip("/")
+
+    # Disable reasoning on thinking-tuned models (Qwen3.x, DeepSeek-R1) so the
+    # final answer lands in `content` instead of the model burning the entire
+    # token budget on an internal monologue. The canonical OpenAI-compat knob
+    # is `reasoning_effort: "none"` — verified to zero out reasoning on
+    # qwen3.5:9b under Ollama (the body-level `think: false` only works on
+    # Ollama's native `/api/chat`, not `/v1/chat/completions`). The `/no_think`
+    # system directive is a Qwen-specific belt-and-suspenders for servers that
+    # don't honor `reasoning_effort` (older Ollama, some llama.cpp / MLX);
+    # non-thinking models treat it as ignorable text.
+    if not (messages and messages[0].get("role") == "system"
+            and "/no_think" in messages[0].get("content", "")):
+        messages = [{"role": "system", "content": "/no_think"}] + list(messages)
+
     body = json.dumps({
         "model": model,
         "max_tokens": max_tokens,
         "temperature": temperature,
         "messages": messages,
+        "reasoning_effort": "none",
     }).encode()
 
     req = Request(
@@ -2620,6 +2635,31 @@ def _doctor_check_fragmentation(base_dir):
             "run `gyrus merge` to review and consolidate")
 
 
+def _doctor_check_quarantine(base_dir):
+    """Flag rejected-merge dumps left in projects/ by the validator."""
+    projects_dir = base_dir / "projects"
+    if not projects_dir.is_dir():
+        return ("ok", "quarantine", "no projects yet", None)
+    files = list(projects_dir.glob("*.failed-merge.*.md"))
+    if not files:
+        return ("ok", "quarantine", "none", None)
+    by_project = {}
+    for f in files:
+        slug = f.name.split(".failed-merge.", 1)[0]
+        by_project[slug] = by_project.get(slug, 0) + 1
+    top = sorted(by_project.items(), key=lambda kv: kv[1], reverse=True)
+    sample = ", ".join(f"{s} ({n})" for s, n in top[:3])
+    if len(top) > 3:
+        sample += f", +{len(top) - 3} more"
+    hint = ("merge model is producing rejectable output — often a thinking-\n"
+            "     model leak. consider switching merge_model to a non-thinking\n"
+            "     local model (gemma/llama) via `gyrus models`.\n"
+            "     `gyrus doctor --fix` deletes the quarantine dumps")
+    return ("warn", "quarantine",
+            f"{len(files)} rejected merge dump(s): {sample}",
+            hint)
+
+
 def _doctor_check_freshness(base_dir):
     """Re-use heartbeat logic: how old is the newest thought?"""
     thoughts_dir = base_dir / "thoughts"
@@ -2715,6 +2755,24 @@ def _doctor_fix_dataless(base_dir):
                    f"(try: killall bird fileproviderd)")
 
 
+def _doctor_fix_quarantine(base_dir):
+    """Delete quarantined .failed-merge.*.md dumps. Pages are untouched."""
+    projects_dir = base_dir / "projects"
+    files = list(projects_dir.glob("*.failed-merge.*.md")) if projects_dir.is_dir() else []
+    if not files:
+        return True, "no quarantine files to remove"
+    deleted = 0
+    for f in files:
+        try:
+            f.unlink()
+            deleted += 1
+        except OSError:
+            pass
+    if deleted == len(files):
+        return True, f"removed {deleted} quarantine file(s)"
+    return False, f"removed {deleted}/{len(files)} (some couldn't be deleted)"
+
+
 def _doctor_fix_git_sync(base_dir):
     """Initialize a local repo if missing, or pull+push if configured.
     If a rebase is in progress (detached HEAD), abort it first — otherwise
@@ -2760,6 +2818,7 @@ _DOCTOR_FIXERS = {
     "schedule":       lambda base: _doctor_fix_schedule(),
     "dataless files": lambda base: _doctor_fix_dataless(base),
     "git sync":       lambda base: _doctor_fix_git_sync(base),
+    "quarantine":     lambda base: _doctor_fix_quarantine(base),
 }
 
 
@@ -2776,6 +2835,7 @@ def run_doctor(base_dir, fix=False):
         _doctor_check_dataless(base_dir),
         _doctor_check_freshness(base_dir),
         _doctor_check_fragmentation(base_dir),
+        _doctor_check_quarantine(base_dir),
         _doctor_check_schedule(),
         _doctor_check_git_sync(base_dir),
         _doctor_check_env(base_dir),
