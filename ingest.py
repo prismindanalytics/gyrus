@@ -10,7 +10,7 @@ Knowledge pages are local markdown files by default.
 https://gyrus.sh
 """
 
-__version__ = "2026.05.12.3"
+__version__ = "2026.05.13.1"
 
 import argparse
 import atexit
@@ -253,6 +253,7 @@ RULES:
 5. If a section has no relevant information, leave it minimal rather than inventing content.
 6. "Key Decisions" and "Timeline & History" are append-only — never remove entries.
 7. Mark the status based on the most recent evidence. If there's no recent activity, mark as dormant.
+8. PRESERVE EXISTING WORDING VERBATIM. When re-emitting content from the current page, reproduce it character-for-character — do not paraphrase, restructure, or "improve" lines. Only modify a line if a new thought directly contradicts or supersedes it. This keeps pages stable across runs and across different merge models.
 
 Output the COMPLETE updated page in this markdown structure:
 
