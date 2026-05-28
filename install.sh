@@ -721,17 +721,19 @@ GITIGNORE
       [[ "$CLONE_URL" == https://* ]] || CLONE_URL="https://github.com/$CLONE_URL"
     fi
 
-    # If GYRUS_DIR already has non-code contents (e.g. config.json from Step 4
-    # or knowledge content from a prior run), confirm before overwriting.
-    NON_CODE_FILES=$(find "$GYRUS_DIR" -maxdepth 1 -type f ! -name '*.py' ! -name '.env' 2>/dev/null | wc -l | tr -d ' ')
+    # config.json (Step 4's just-chosen model setup) is machine-local — treat
+    # it like .env and preserve it across the clone, so this machine's choices
+    # win over machine #1's synced config (which may not run here: e.g. no
+    # Ollama, different API keys available).
+    NON_CODE_FILES=$(find "$GYRUS_DIR" -maxdepth 1 -type f ! -name '*.py' ! -name '.env' ! -name 'config.json' 2>/dev/null | wc -l | tr -d ' ')
     PROCEED_WITH_CLONE=true
     if [ "${NON_CODE_FILES:-0}" -gt 0 ]; then
       echo ""
-      print_warn "$GYRUS_DIR already has $NON_CODE_FILES file(s) that would be replaced by the clone."
-      echo -e "  ${DIM}(typically just config.json from Step 4 — your .env and code files are preserved either way)${NC}"
+      print_warn "$GYRUS_DIR already has $NON_CODE_FILES knowledge file(s) that would be replaced by the clone."
+      echo -e "  ${DIM}(your config.json, .env, and code files are preserved either way)${NC}"
       echo ""
       echo -e "  ${BOLD}[1]${NC} Back up and replace with the remote repo"
-      echo -e "      ${DIM}Existing files moved to ${GYRUS_DIR}.bak-<timestamp>${NC}"
+      echo -e "      ${DIM}Existing data moved to ${GYRUS_DIR}.bak-<timestamp>${NC}"
       echo -e "  ${BOLD}[2]${NC} Cancel — keep local data, skip GitHub sync"
       echo ""
       read -r -p "  Choice [1]: " CLONE_OVERWRITE < /dev/tty
@@ -742,23 +744,30 @@ GITIGNORE
       else
         BACKUP_DIR="${GYRUS_DIR}.bak-$(date +%Y%m%d-%H%M%S)"
         mkdir -p "$BACKUP_DIR"
-        # Move everything except code files (*.py) and .env — those stay in place
-        find "$GYRUS_DIR" -mindepth 1 -maxdepth 1 ! -name '*.py' ! -name '.env' -exec mv {} "$BACKUP_DIR/" \; 2>/dev/null || true
+        # Move everything except code files (*.py), .env, and config.json — those stay in place
+        find "$GYRUS_DIR" -mindepth 1 -maxdepth 1 ! -name '*.py' ! -name '.env' ! -name 'config.json' -exec mv {} "$BACKUP_DIR/" \; 2>/dev/null || true
         print_ok "Backed up existing data to $BACKUP_DIR"
       fi
     fi
 
     if [ "$PROCEED_WITH_CLONE" = true ]; then
-      # Stash code files to preserve ingest.py/storage.py that we just installed
+      # Stash machine-local files (preserve across the clone-merge): code we
+      # just installed and Step 4's config.json (so the synced config from
+      # machine #1 doesn't clobber the model choice the user just made).
       STASH=$(mktemp -d)
       cp "$GYRUS_DIR"/*.py "$STASH/" 2>/dev/null || true
+      cp "$GYRUS_DIR/config.json" "$STASH/" 2>/dev/null || true
       # Clone into a temp location then move contents
       TMPCLONE=$(mktemp -d)
       if git clone "$CLONE_URL" "$TMPCLONE/repo" 2>/tmp/gh-clone-out; then
         # Merge: copy clone contents into GYRUS_DIR
         cp -R "$TMPCLONE/repo/." "$GYRUS_DIR/"
-        # Restore code files (gitignored in the repo, shouldn't come from clone)
+        # Restore stashed machine-local files (override anything the clone wrote)
         cp "$STASH"/*.py "$GYRUS_DIR/" 2>/dev/null || true
+        if [ -f "$STASH/config.json" ]; then
+          cp "$STASH/config.json" "$GYRUS_DIR/config.json"
+          print_ok "Kept your Step 4 model config (synced repo's config.json ignored)"
+        fi
         rm -rf "$TMPCLONE" "$STASH"
         print_ok "Cloned existing knowledge base"
         print_ok "Auto-sync enabled (every run pulls & pushes)"
