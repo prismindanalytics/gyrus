@@ -315,25 +315,27 @@ else
 print_step "Step 4: Choose your model"
 
 # --- Detect a local LLM server (Ollama, LM Studio, etc.) ---
-LOCAL_URL=""
-LOCAL_NAME=""
-LOCAL_MODELS=""
-for probe in "http://localhost:11434/v1|Ollama" \
-             "http://localhost:1234/v1|LM Studio" \
-             "http://localhost:8000/v1|vLLM" \
-             "http://localhost:8080/v1|llama.cpp"; do
-  probe_url="${probe%|*}"
-  probe_name="${probe##*|}"
-  if resp=$(curl -sf --max-time 2 "$probe_url/models" \
-              -H "Authorization: Bearer local" 2>/dev/null); then
-    LOCAL_URL="$probe_url"
-    LOCAL_NAME="$probe_name"
-    # Extract model ids from OpenAI-style /models response
-    LOCAL_MODELS=$(printf '%s' "$resp" | grep -oE '"id"[[:space:]]*:[[:space:]]*"[^"]+"' \
-                   | sed -E 's/.*"id"[[:space:]]*:[[:space:]]*"([^"]+)"/\1/' | head -20)
-    break
-  fi
-done
+probe_local_llm() {
+  LOCAL_URL=""
+  LOCAL_NAME=""
+  LOCAL_MODELS=""
+  for probe in "http://localhost:11434/v1|Ollama" \
+               "http://localhost:1234/v1|LM Studio" \
+               "http://localhost:8000/v1|vLLM" \
+               "http://localhost:8080/v1|llama.cpp"; do
+    probe_url="${probe%|*}"
+    probe_name="${probe##*|}"
+    if resp=$(curl -sf --max-time 2 "$probe_url/models" \
+                -H "Authorization: Bearer local" 2>/dev/null); then
+      LOCAL_URL="$probe_url"
+      LOCAL_NAME="$probe_name"
+      LOCAL_MODELS=$(printf '%s' "$resp" | grep -oE '"id"[[:space:]]*:[[:space:]]*"[^"]+"' \
+                     | sed -E 's/.*"id"[[:space:]]*:[[:space:]]*"([^"]+)"/\1/' | head -20)
+      break
+    fi
+  done
+}
+probe_local_llm
 
 echo ""
 echo -e "  Gyrus uses an LLM to extract thoughts from sessions and merge them"
@@ -356,9 +358,10 @@ echo ""
 read -r -p "  Choice [1]: " MODEL_MODE < /dev/tty
 MODEL_MODE="${MODEL_MODE:-1}"
 
+LOCAL_PLACEHOLDER_SAVED=false
 if [ "$MODEL_MODE" = "2" ]; then
   # ─── Local path ─────────────────────────────────────────────
-  if [ -z "$LOCAL_MODELS" ]; then
+  while [ -z "$LOCAL_MODELS" ] && [ "$MODEL_MODE" = "2" ]; do
     echo ""
     print_warn "No local LLM server detected."
     echo ""
@@ -373,29 +376,47 @@ if [ "$MODEL_MODE" = "2" ]; then
     echo -e "  ${DIM}  ollama pull gemma4:e4b     # smaller machines${NC}"
     echo -e "  ${DIM}  ollama pull qwen3.6:35b-a3b  # 24GB+ machines${NC}"
     echo ""
-    echo -e "  ${BOLD}[1]${NC} Save local config now — install Ollama later"
+    echo -e "  ${BOLD}[1]${NC} I've installed it — re-check and continue"
+    echo -e "  ${BOLD}[2]${NC} Save local config — install Ollama later"
     echo -e "      ${DIM}Run \`gyrus doctor\` after installing to verify${NC}"
-    echo -e "  ${BOLD}[2]${NC} Switch to cloud setup instead"
+    echo -e "  ${BOLD}[3]${NC} Switch to cloud setup instead"
     echo ""
     read -r -p "  Choice [1]: " NO_OLLAMA_CHOICE < /dev/tty
     NO_OLLAMA_CHOICE="${NO_OLLAMA_CHOICE:-1}"
-    if [ "$NO_OLLAMA_CHOICE" = "2" ]; then
-      # Fall back to cloud
-      print_warn "Switching to cloud model setup."
-      MODEL_MODE="1"
-    else
-      # Write a config pointing at Ollama's default — user completes later
-      cat > "$CONFIG_FILE" <<CEOF
+    case "$NO_OLLAMA_CHOICE" in
+      3)
+        print_warn "Switching to cloud model setup."
+        MODEL_MODE="1"
+        ;;
+      2)
+        # Write a config pointing at Ollama's default — user completes later
+        cat > "$CONFIG_FILE" <<CEOF
 {
   "extract_model": "local:qwen3.5:9b",
   "merge_model": "local:qwen3.5:9b",
   "local_base_url": "http://localhost:11434/v1"
 }
 CEOF
-      print_ok "Saved placeholder config — install Ollama + pull qwen3.5:9b before running gyrus"
-      echo -e "  ${DIM}Then verify with: gyrus doctor${NC}"
-    fi
-  else
+        print_ok "Saved placeholder config — install Ollama + pull qwen3.5:9b before running gyrus"
+        echo -e "  ${DIM}Then verify with: gyrus doctor${NC}"
+        LOCAL_PLACEHOLDER_SAVED=true
+        break
+        ;;
+      *)
+        echo ""
+        echo -e "  ${DIM}Re-checking for a local LLM server…${NC}"
+        probe_local_llm
+        if [ -z "$LOCAL_MODELS" ]; then
+          print_warn "Still no local LLM server. Make sure 'ollama serve' is running and a model is pulled."
+        else
+          COUNT=$(printf '%s' "$LOCAL_MODELS" | grep -c . || echo "0")
+          print_ok "$LOCAL_NAME detected with $COUNT model(s)"
+        fi
+        ;;
+    esac
+  done
+
+  if [ "$MODEL_MODE" = "2" ] && [ "$LOCAL_PLACEHOLDER_SAVED" = false ]; then
     echo ""
     echo -e "  ${BOLD}Available models${NC}"
     # Build an indexed array so the user can pick by number
