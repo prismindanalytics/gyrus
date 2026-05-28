@@ -373,9 +373,17 @@ if [ "$MODEL_MODE" = "2" ]; then
     echo -e "  ${DIM}  ollama pull gemma4:e4b     # smaller machines${NC}"
     echo -e "  ${DIM}  ollama pull qwen3.6:35b-a3b  # 24GB+ machines${NC}"
     echo ""
-    read -r -p "  Skip for now (and finish Ollama setup later)? [Y/n]: " SKIP_NOW < /dev/tty
-    SKIP_NOW="${SKIP_NOW:-Y}"
-    if [[ "$SKIP_NOW" =~ ^[Yy] ]]; then
+    echo -e "  ${BOLD}[1]${NC} Save local config now — install Ollama later"
+    echo -e "      ${DIM}Run \`gyrus doctor\` after installing to verify${NC}"
+    echo -e "  ${BOLD}[2]${NC} Switch to cloud setup instead"
+    echo ""
+    read -r -p "  Choice [1]: " NO_OLLAMA_CHOICE < /dev/tty
+    NO_OLLAMA_CHOICE="${NO_OLLAMA_CHOICE:-1}"
+    if [ "$NO_OLLAMA_CHOICE" = "2" ]; then
+      # Fall back to cloud
+      print_warn "Switching to cloud model setup."
+      MODEL_MODE="1"
+    else
       # Write a config pointing at Ollama's default — user completes later
       cat > "$CONFIG_FILE" <<CEOF
 {
@@ -386,10 +394,6 @@ if [ "$MODEL_MODE" = "2" ]; then
 CEOF
       print_ok "Saved placeholder config — install Ollama + pull qwen3.5:9b before running gyrus"
       echo -e "  ${DIM}Then verify with: gyrus doctor${NC}"
-    else
-      # Fall back to cloud
-      print_warn "Falling back to cloud model setup."
-      MODEL_MODE="1"
     fi
   else
     echo ""
