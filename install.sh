@@ -721,11 +721,34 @@ GITIGNORE
       [[ "$CLONE_URL" == https://* ]] || CLONE_URL="https://github.com/$CLONE_URL"
     fi
 
-    # If GYRUS_DIR already has non-code contents, bail — safer than overwriting
+    # If GYRUS_DIR already has non-code contents (e.g. config.json from Step 4
+    # or knowledge content from a prior run), confirm before overwriting.
     NON_CODE_FILES=$(find "$GYRUS_DIR" -maxdepth 1 -type f ! -name '*.py' ! -name '.env' 2>/dev/null | wc -l | tr -d ' ')
+    PROCEED_WITH_CLONE=true
     if [ "${NON_CODE_FILES:-0}" -gt 0 ]; then
-      print_warn "Can't clone into $GYRUS_DIR — it already has data. Run from a fresh setup."
-    else
+      echo ""
+      print_warn "$GYRUS_DIR already has $NON_CODE_FILES file(s) that would be replaced by the clone."
+      echo -e "  ${DIM}(typically just config.json from Step 4 — your .env and code files are preserved either way)${NC}"
+      echo ""
+      echo -e "  ${BOLD}[1]${NC} Back up and replace with the remote repo"
+      echo -e "      ${DIM}Existing files moved to ${GYRUS_DIR}.bak-<timestamp>${NC}"
+      echo -e "  ${BOLD}[2]${NC} Cancel — keep local data, skip GitHub sync"
+      echo ""
+      read -r -p "  Choice [1]: " CLONE_OVERWRITE < /dev/tty
+      CLONE_OVERWRITE="${CLONE_OVERWRITE:-1}"
+      if [ "$CLONE_OVERWRITE" = "2" ]; then
+        echo -e "  ${DIM}Skipped. Run \`gyrus init\` later if you change your mind.${NC}"
+        PROCEED_WITH_CLONE=false
+      else
+        BACKUP_DIR="${GYRUS_DIR}.bak-$(date +%Y%m%d-%H%M%S)"
+        mkdir -p "$BACKUP_DIR"
+        # Move everything except code files (*.py) and .env — those stay in place
+        find "$GYRUS_DIR" -mindepth 1 -maxdepth 1 ! -name '*.py' ! -name '.env' -exec mv {} "$BACKUP_DIR/" \; 2>/dev/null || true
+        print_ok "Backed up existing data to $BACKUP_DIR"
+      fi
+    fi
+
+    if [ "$PROCEED_WITH_CLONE" = true ]; then
       # Stash code files to preserve ingest.py/storage.py that we just installed
       STASH=$(mktemp -d)
       cp "$GYRUS_DIR"/*.py "$STASH/" 2>/dev/null || true
