@@ -600,8 +600,15 @@ fi  # end of MODEL_MODE branch
 fi  # end of JOINING_EXISTING API keys check
 
 # ─── Step 4.5: GitHub sync (optional, recommended) ───
-if [ "$JOINING_EXISTING" != true ]; then
+# Skip when joining ONLY if the existing dir already has .git wired up.
+# Otherwise (e.g. previous install died before clone), we still need to
+# set up sync — the data may be there but the git remote isn't.
+if [ "$JOINING_EXISTING" != true ] || [ ! -d "$GYRUS_DIR/.git" ]; then
+if [ "$JOINING_EXISTING" = true ]; then
+  print_step "Step 4.5: Cross-machine sync via GitHub (no .git found — finishing setup)"
+else
 print_step "Step 4.5: Cross-machine sync via GitHub (recommended)"
+fi
 
 echo ""
 echo -e "  ${DIM}A private GitHub repo keeps your knowledge base in sync${NC}"
