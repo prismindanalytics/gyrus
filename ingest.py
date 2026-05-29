@@ -10,7 +10,7 @@ Knowledge pages are local markdown files by default.
 https://gyrus.sh
 """
 
-__version__ = "2026.05.28.2"
+__version__ = "2026.05.28.3"
 
 import argparse
 import atexit
@@ -4363,7 +4363,15 @@ def self_update(base_dir=None):
     """Download the latest Gyrus scripts from GitHub."""
     import urllib.request
     base = Path(base_dir) if base_dir else Path.home() / ".gyrus"
-    repo_url = "https://raw.githubusercontent.com/prismindanalytics/gyrus/main"
+    # Use the GitHub API rather than raw.githubusercontent.com — the raw CDN
+    # caches with cache-control: max-age=300, so fresh commits are invisible
+    # to `gyrus update` for up to 5 minutes. The API endpoint with the
+    # vnd.github.raw Accept header reflects HEAD immediately. (api.github.com
+    # is rate-limited to 60/hr unauthenticated; `gyrus update` runs far
+    # below that. If a user ever hits the limit, fall back to raw with a
+    # cache-buster query string so they still get fresh content.)
+    api_url = "https://api.github.com/repos/prismindanalytics/gyrus/contents"
+    raw_url = "https://raw.githubusercontent.com/prismindanalytics/gyrus/main"
     files = {
         "ingest.py": base / "ingest.py",
         "storage.py": base / "storage.py",
@@ -4376,11 +4384,25 @@ def self_update(base_dir=None):
     if claude_cmd_dir.parent.exists():
         files["skills/claude-code/gyrus.md"] = claude_cmd_dir / "gyrus.md"
 
+    def _fetch(path):
+        # Try API first (uncached).
+        try:
+            req = urllib.request.Request(
+                f"{api_url}/{path}?ref=main",
+                headers={"Accept": "application/vnd.github.raw"},
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                return resp.read().decode("utf-8")
+        except Exception:
+            # Fall back to raw CDN with a cache-buster (works around stale
+            # edge entries; Fastly varies on the full URL including query).
+            req = urllib.request.Request(f"{raw_url}/{path}?cb={int(time.time())}")
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                return resp.read().decode("utf-8")
+
     # Check for new version first
     try:
-        req = urllib.request.Request(f"{repo_url}/ingest.py")
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            remote_content = resp.read().decode("utf-8")
+        remote_content = _fetch("ingest.py")
     except Exception as e:
         print(f"  Could not reach GitHub: {e}")
         return False
@@ -4407,9 +4429,7 @@ def self_update(base_dir=None):
     # Download remaining files
     for fname, target in list(files.items())[1:]:
         try:
-            req = urllib.request.Request(f"{repo_url}/{fname}")
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                content = resp.read().decode("utf-8")
+            content = _fetch(fname)
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(content)
             print(f"  Updated {target}")
