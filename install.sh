@@ -635,6 +635,11 @@ GH_OK=false
 if command -v gh &>/dev/null; then
   if gh auth status &>/dev/null; then
     GH_OK=true
+    # Wire git to use gh's credentials for github.com — without this, plain
+    # `git clone https://...` fails on PRIVATE repos with "Repository not
+    # found" (GitHub returns 404 for unauthenticated access to private repos).
+    # Idempotent — safe to run on every install.
+    gh auth setup-git --hostname github.com &>/dev/null || true
   else
     print_warn "gh CLI is installed but not logged in. Run: gh auth login"
     echo -e "  ${DIM}Then: gyrus init  (to set up GitHub sync later)${NC}"
@@ -804,9 +809,17 @@ GITIGNORE
       STASH=$(mktemp -d)
       cp "$GYRUS_DIR"/*.py "$STASH/" 2>/dev/null || true
       cp "$GYRUS_DIR/config.json" "$STASH/" 2>/dev/null || true
-      # Clone into a temp location then move contents
+      # Clone into a temp location then move contents.
+      # Prefer `gh repo clone` — it handles auth for private repos seamlessly.
+      # Fall back to `git clone` if gh is missing or fails for some reason.
       TMPCLONE=$(mktemp -d)
-      if git clone "$CLONE_URL" "$TMPCLONE/repo" 2>/tmp/gh-clone-out; then
+      CLONE_OK=false
+      if command -v gh &>/dev/null && gh repo clone "$CLONE_URL" "$TMPCLONE/repo" -- --quiet 2>/tmp/gh-clone-out; then
+        CLONE_OK=true
+      elif git clone "$CLONE_URL" "$TMPCLONE/repo" 2>>/tmp/gh-clone-out; then
+        CLONE_OK=true
+      fi
+      if [ "$CLONE_OK" = true ]; then
         # Merge: copy clone contents into GYRUS_DIR
         cp -R "$TMPCLONE/repo/." "$GYRUS_DIR/"
         # Restore stashed machine-local files (override anything the clone wrote)
@@ -819,8 +832,11 @@ GITIGNORE
         print_ok "Cloned existing knowledge base"
         print_ok "Auto-sync enabled (every run pulls & pushes)"
       else
-        print_warn "git clone failed:"
-        sed 's/^/    /' /tmp/gh-clone-out 2>/dev/null | tail -3
+        print_warn "Clone failed:"
+        sed 's/^/    /' /tmp/gh-clone-out 2>/dev/null | tail -5
+        echo -e "  ${DIM}If the repo is private, make sure \`gh\` is logged in:${NC}"
+        echo -e "  ${DIM}  gh auth status   # verify login${NC}"
+        echo -e "  ${DIM}  gh auth setup-git  # wire git to use gh's token${NC}"
         rm -rf "$TMPCLONE" "$STASH"
       fi
     fi
