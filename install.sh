@@ -809,16 +809,59 @@ GITIGNORE
       STASH=$(mktemp -d)
       cp "$GYRUS_DIR"/*.py "$STASH/" 2>/dev/null || true
       cp "$GYRUS_DIR/config.json" "$STASH/" 2>/dev/null || true
-      # Clone into a temp location then move contents.
-      # Prefer `gh repo clone` — it handles auth for private repos seamlessly.
-      # Fall back to `git clone` if gh is missing or fails for some reason.
+
+      # Try the clone — prefer gh repo clone (handles private-repo auth).
+      attempt_clone() {
+        : > /tmp/gh-clone-out
+        rm -rf "$TMPCLONE"
+        TMPCLONE=$(mktemp -d)
+        if command -v gh &>/dev/null && gh repo clone "$CLONE_URL" "$TMPCLONE/repo" -- --quiet 2>/tmp/gh-clone-out; then
+          return 0
+        fi
+        git clone "$CLONE_URL" "$TMPCLONE/repo" 2>>/tmp/gh-clone-out
+      }
+
       TMPCLONE=$(mktemp -d)
       CLONE_OK=false
-      if command -v gh &>/dev/null && gh repo clone "$CLONE_URL" "$TMPCLONE/repo" -- --quiet 2>/tmp/gh-clone-out; then
+      if attempt_clone; then
         CLONE_OK=true
-      elif git clone "$CLONE_URL" "$TMPCLONE/repo" 2>>/tmp/gh-clone-out; then
-        CLONE_OK=true
+      else
+        # Diagnose: GitHub returns "not found" for both missing repos AND
+        # private repos the current user can't see. Most common cause on
+        # a new machine is that gh is logged in as the wrong account
+        # (or not logged in at all).
+        print_warn "Clone failed:"
+        sed 's/^/    /' /tmp/gh-clone-out 2>/dev/null | tail -5
+        if grep -qiE "could not resolve|repository not found|authentication|^remote: (Permission|Repository)" /tmp/gh-clone-out 2>/dev/null; then
+          echo ""
+          CURRENT_GH_USER="$(gh api user --jq .login 2>/dev/null || echo '(not logged in)')"
+          echo -e "  ${DIM}gh is currently logged in as: ${BOLD}$CURRENT_GH_USER${NC}"
+          echo -e "  ${DIM}Private repos only appear to accounts that have access.${NC}"
+          echo ""
+          read -r -p "  Log in to GitHub interactively now and retry? [Y/n]: " AUTH_NOW < /dev/tty
+          AUTH_NOW="${AUTH_NOW:-Y}"
+          if [[ "$AUTH_NOW" =~ ^[Yy] ]]; then
+            echo ""
+            # `gh auth login` is interactive — connect it to the user's TTY.
+            # --hostname avoids re-asking; --git-protocol https avoids the
+            # SSH-key dance; --web opens a browser (fallback to device code).
+            if gh auth login --hostname github.com --git-protocol https --web < /dev/tty; then
+              gh auth setup-git --hostname github.com &>/dev/null || true
+              CURRENT_GH_USER="$(gh api user --jq .login 2>/dev/null || echo '?')"
+              print_ok "Now logged in as $CURRENT_GH_USER — retrying clone…"
+              if attempt_clone; then
+                CLONE_OK=true
+              else
+                print_warn "Clone still failed:"
+                sed 's/^/    /' /tmp/gh-clone-out 2>/dev/null | tail -5
+              fi
+            else
+              print_warn "gh login was cancelled or failed."
+            fi
+          fi
+        fi
       fi
+
       if [ "$CLONE_OK" = true ]; then
         # Merge: copy clone contents into GYRUS_DIR
         cp -R "$TMPCLONE/repo/." "$GYRUS_DIR/"
@@ -832,11 +875,10 @@ GITIGNORE
         print_ok "Cloned existing knowledge base"
         print_ok "Auto-sync enabled (every run pulls & pushes)"
       else
-        print_warn "Clone failed:"
-        sed 's/^/    /' /tmp/gh-clone-out 2>/dev/null | tail -5
-        echo -e "  ${DIM}If the repo is private, make sure \`gh\` is logged in:${NC}"
-        echo -e "  ${DIM}  gh auth status   # verify login${NC}"
-        echo -e "  ${DIM}  gh auth setup-git  # wire git to use gh's token${NC}"
+        echo -e "  ${DIM}Skipping clone. After fixing auth, finish with:${NC}"
+        echo -e "  ${DIM}  gh auth login && gh auth setup-git${NC}"
+        echo -e "  ${DIM}  cd \"$GYRUS_DIR\" && git init -b main && git remote add origin $CLONE_URL${NC}"
+        echo -e "  ${DIM}  git fetch origin main && git reset --soft origin/main && gyrus sync${NC}"
         rm -rf "$TMPCLONE" "$STASH"
       fi
     fi
