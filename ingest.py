@@ -10,7 +10,7 @@ Knowledge pages are local markdown files by default.
 https://gyrus.sh
 """
 
-__version__ = "2026.05.28.3"
+__version__ = "2026.05.28.4"
 
 import argparse
 import atexit
@@ -2249,6 +2249,68 @@ def _git_identity_args(base_dir):
     return args
 
 
+def _git_head_branch(base_dir):
+    """Return the current branch name, or None if HEAD is detached/unborn.
+    Detached HEAD makes `git push origin HEAD` fail with "not a full
+    refname", so callers that push want to know this state."""
+    rc, branch, _ = _git_run(
+        ["rev-parse", "--abbrev-ref", "HEAD"], base_dir, timeout=5,
+    )
+    if rc != 0:
+        return None  # unborn: no commits yet
+    if branch == "HEAD":
+        return None  # detached
+    return branch or None
+
+
+def _git_default_remote_branch(base_dir):
+    """Detect origin's default branch (main / master / whatever).
+    Tries the cached symbolic ref first, falls back to `ls-remote` if
+    refs/remotes/origin/HEAD isn't set locally. Returns "main" as a
+    final fallback so callers always get *something* to attach to."""
+    rc, ref, _ = _git_run(
+        ["symbolic-ref", "refs/remotes/origin/HEAD"], base_dir, timeout=5,
+    )
+    if rc == 0 and ref:
+        # ref like "refs/remotes/origin/main"
+        return ref.rsplit("/", 1)[-1]
+    rc, out, _ = _git_run(
+        ["ls-remote", "--symref", "origin", "HEAD"], base_dir, timeout=10,
+    )
+    if rc == 0 and out:
+        for line in out.splitlines():
+            # "ref: refs/heads/main\tHEAD"
+            if line.startswith("ref: refs/heads/"):
+                return line.split("refs/heads/", 1)[1].split()[0]
+    return "main"
+
+
+def _git_attach_head_to_default(base_dir):
+    """Force HEAD onto a real branch tracking origin's default. Idempotent:
+    no-op when HEAD is already on a named branch. Used to recover from
+    detached/unborn HEAD that would otherwise break `push origin HEAD`.
+    Returns (ok, branch_name_or_msg)."""
+    if _git_head_branch(base_dir):
+        return True, _git_head_branch(base_dir)
+    if not _git_remote_url(base_dir):
+        return False, "no remote — can't pick a default branch"
+    # Make sure refs/remotes/origin/<default> exists locally before we point at it
+    _git_run(["fetch", "origin", "--quiet"], base_dir, timeout=30)
+    default = _git_default_remote_branch(base_dir)
+    rc, _, err = _git_run(
+        ["checkout", "-B", default, f"origin/{default}"],
+        base_dir, timeout=15,
+    )
+    if rc != 0:
+        # Fallback: orphan branch with no upstream yet (very fresh repo)
+        rc2, _, err2 = _git_run(
+            ["checkout", "-B", default], base_dir, timeout=10,
+        )
+        if rc2 != 0:
+            return False, f"checkout -B {default} failed: {(err or err2)[:60]}"
+    return True, default
+
+
 def _git_pull(base_dir, quiet=True):
     """Rebase-pull from origin. Non-fatal. Returns (ok, short_message).
     No-ops silently if there's no upstream yet (first run after init)."""
@@ -2277,9 +2339,18 @@ def _git_commit_push(base_dir, message, quiet=True):
     Uses `push -u origin HEAD` so upstream is set on the first successful
     push — handles the post-`gh repo create` case where the remote exists
     but the initial push lost a race against GitHub backend propagation.
-    Retries once on non-fast-forward (auto-pull then re-push)."""
+    Retries once on non-fast-forward (auto-pull then re-push).
+    Self-heals detached/unborn HEAD by attaching to origin's default branch
+    before pushing — otherwise `push origin HEAD` errors with "not a full
+    refname" (seen when users wire up the remote manually after a botched
+    install)."""
     if not _git_remote_url(base_dir):
         return True, "no remote"
+    if not _git_head_branch(base_dir):
+        ok_attach, branch_or_msg = _git_attach_head_to_default(base_dir)
+        if not ok_attach:
+            return False, f"detached HEAD: {branch_or_msg}"
+        # Continue with the attach result; pushes below will resolve cleanly.
     _git_run(["add", "-A"], base_dir, timeout=15)
     rc, staged, _ = _git_run(
         ["diff", "--cached", "--name-only"], base_dir, timeout=10,
@@ -2596,6 +2667,14 @@ def _doctor_check_git_sync(base_dir):
     if not remote:
         return ("warn", "git sync", "no origin remote",
                 "run `gyrus init` or add remote manually")
+    # Detached / unborn HEAD also breaks `push origin HEAD` with the same
+    # "not a full refname" error. Common when users wire up the remote
+    # manually (git init + remote add + reset --soft) — depending on git
+    # version that leaves HEAD in odd states.
+    if not _git_head_branch(base_dir):
+        return ("fail", "git sync",
+                "HEAD is detached / unborn — push will fail",
+                "run `gyrus doctor --fix` to attach HEAD to origin's default branch")
     # Reachability (short timeout — if offline, don't block doctor)
     rc, _, err = _git_run(["ls-remote", "--heads", "origin"],
                           base_dir, timeout=5)
@@ -2789,7 +2868,9 @@ def _doctor_fix_quarantine(base_dir):
 def _doctor_fix_git_sync(base_dir):
     """Initialize a local repo if missing, or pull+push if configured.
     If a rebase is in progress (detached HEAD), abort it first — otherwise
-    the pull/push steps below will fail with "not a full refname"."""
+    the pull/push steps below will fail with "not a full refname".
+    Also attaches HEAD to origin's default branch if it's detached/unborn,
+    which fixes manual-setup leftovers from `git init + remote add`."""
     git_dir = base_dir / ".git"
     if (git_dir / "rebase-merge").exists() or (git_dir / "rebase-apply").exists():
         rc, _, err = _git_run(["rebase", "--abort"], base_dir, timeout=10)
@@ -2814,6 +2895,14 @@ def _doctor_fix_git_sync(base_dir):
         return True, "initialized local repo (add remote via `gyrus init`)"
     if not _git_remote_url(base_dir):
         return False, "no remote — run `gyrus init` to configure GitHub sync"
+    # Attach HEAD to a real branch if it's currently detached / unborn.
+    # _git_commit_push below would self-heal too, but doing it explicitly
+    # here gives the user a clean diagnostic line in the doctor output.
+    if not _git_head_branch(base_dir):
+        ok_attach, branch_or_msg = _git_attach_head_to_default(base_dir)
+        if not ok_attach:
+            return False, f"could not attach HEAD: {branch_or_msg}"
+        # Fall through to pull/push — branch is now {branch_or_msg}
     ok_pull, pull_msg = _git_pull(base_dir)
     if not ok_pull:
         return False, f"pull failed: {pull_msg}"
