@@ -139,18 +139,34 @@ if [ -n "$CUSTOM_DIR" ]; then
     echo -e "  ${GREEN}Found existing Gyrus knowledge base at this location!${NC}"
     [ "$PAGE_COUNT" -gt 0 ] 2>/dev/null && echo -e "  ${BOLD}$PAGE_COUNT project pages${NC}, config, and API keys already present."
     echo ""
-    echo -e "  ${BOLD}[1]${NC} Join this knowledge base ${DIM}(recommended — sync with other machines)${NC}"
-    echo -e "  ${BOLD}[2]${NC} Start fresh ${DIM}(overwrites existing config and scripts)${NC}"
+    echo -e "  ${BOLD}[1]${NC} Keep this data ${DIM}(continue using what's already here)${NC}"
+    echo -e "  ${BOLD}[2]${NC} Re-run setup ${DIM}(re-pick model/keys; existing files stay until overwritten)${NC}"
+    echo -e "  ${BOLD}[3]${NC} Replace with another machine's data ${DIM}(clone its GitHub repo over this)${NC}"
     echo ""
     read -r -p "  Choice [1]: " JOIN_CHOICE < /dev/tty
     JOIN_CHOICE="${JOIN_CHOICE:-1}"
 
-    if [ "$JOIN_CHOICE" = "1" ]; then
-      JOINING_EXISTING=true
-      print_ok "Joining existing knowledge base at $GYRUS_DIR"
-    else
-      JOINING_EXISTING=false
-    fi
+    case "$JOIN_CHOICE" in
+      2)
+        JOINING_EXISTING=false
+        ;;
+      3)
+        JOINING_EXISTING=false
+        echo ""
+        read -r -p "  Repo URL (e.g. github.com/you/gyrus-knowledge): " CLONE_URL < /dev/tty
+        if [ -z "$CLONE_URL" ]; then
+          print_warn "No URL given — falling back to keeping existing data."
+          JOINING_EXISTING=true
+          print_ok "Joining existing knowledge base at $GYRUS_DIR"
+        else
+          print_ok "Will clone from $CLONE_URL during Step 4.5"
+        fi
+        ;;
+      *)
+        JOINING_EXISTING=true
+        print_ok "Joining existing knowledge base at $GYRUS_DIR"
+        ;;
+    esac
   fi
 
   # Create symlink from default location if using custom path
