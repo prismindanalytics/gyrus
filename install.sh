@@ -279,26 +279,50 @@ WRAPPER
 chmod +x "$GYRUS_BIN"
 print_ok "Installed 'gyrus' command to $GYRUS_BIN"
 echo -e "  ${DIM}Usage: gyrus compare, gyrus update, gyrus digest, gyrus help${NC}"
+SHELL_PROFILE=""
 if ! echo "$PATH" | grep -q "$HOME/.local/bin"; then
-  # Auto-add to shell profile
-  SHELL_PROFILE=""
-  if [ -f "$HOME/.zshrc" ]; then
-    SHELL_PROFILE="$HOME/.zshrc"
-  elif [ -f "$HOME/.bashrc" ]; then
-    SHELL_PROFILE="$HOME/.bashrc"
-  elif [ -f "$HOME/.bash_profile" ]; then
-    SHELL_PROFILE="$HOME/.bash_profile"
-  fi
+  # Pick the profile that actually gets sourced for the user's login shell.
+  # Falling back to a non-existent profile (the old behavior on fresh macOS
+  # accounts where ~/.zshrc isn't created until something writes to it) left
+  # PATH unmodified — so `gyrus` would be "command not found" in new shells.
+  USER_SHELL_NAME="$(basename "${SHELL:-zsh}")"
+  EXPORT_LINE='export PATH="$HOME/.local/bin:$PATH"'
+  case "$USER_SHELL_NAME" in
+    zsh)
+      SHELL_PROFILE="$HOME/.zshrc"
+      ;;
+    bash)
+      # macOS bash login shells read .bash_profile; Linux interactive bash reads .bashrc
+      if [ "$(uname)" = "Darwin" ]; then
+        SHELL_PROFILE="$HOME/.bash_profile"
+      else
+        SHELL_PROFILE="$HOME/.bashrc"
+      fi
+      ;;
+    fish)
+      SHELL_PROFILE="$HOME/.config/fish/config.fish"
+      EXPORT_LINE='set -gx PATH $HOME/.local/bin $PATH'
+      mkdir -p "$(dirname "$SHELL_PROFILE")"
+      ;;
+    *)
+      SHELL_PROFILE=""
+      ;;
+  esac
 
-  if [ -n "$SHELL_PROFILE" ] && ! grep -q '\.local/bin' "$SHELL_PROFILE" 2>/dev/null; then
-    echo '' >> "$SHELL_PROFILE"
-    echo '# Added by Gyrus installer' >> "$SHELL_PROFILE"
-    echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$SHELL_PROFILE"
-    print_ok "Added ~/.local/bin to PATH in $(basename "$SHELL_PROFILE")"
-    echo -e "  ${DIM}Run 'source ~/${SHELL_PROFILE##*/}' or restart your terminal to use 'gyrus'${NC}"
+  if [ -n "$SHELL_PROFILE" ]; then
+    # Create the profile if missing — common on fresh macOS accounts.
+    touch "$SHELL_PROFILE"
+    if ! grep -q '\.local/bin' "$SHELL_PROFILE" 2>/dev/null; then
+      printf '\n# Added by Gyrus installer\n%s\n' "$EXPORT_LINE" >> "$SHELL_PROFILE"
+      print_ok "Added ~/.local/bin to PATH in $(basename "$SHELL_PROFILE")"
+    else
+      print_ok "$(basename "$SHELL_PROFILE") already references ~/.local/bin"
+    fi
+    echo -e "  ${DIM}New terminals get it automatically. For this one:${NC}"
+    echo -e "  ${DIM}  source ${SHELL_PROFILE/#$HOME/~}${NC}"
   else
-    echo -e "  ${YELLOW}!${NC} Add to your shell profile to use 'gyrus' from anywhere:"
-    echo -e "  ${DIM}  echo 'export PATH=\"\$HOME/.local/bin:\$PATH\"' >> ~/.zshrc${NC}"
+    echo -e "  ${YELLOW}!${NC} Unknown shell ($USER_SHELL_NAME). Add to your shell profile manually:"
+    echo -e "  ${DIM}  $EXPORT_LINE${NC}"
   fi
   export PATH="$HOME/.local/bin:$PATH"
 fi
@@ -1241,3 +1265,19 @@ echo "  Set up sync on another Mac:"
 echo "    curl -fsSL https://gyrus.sh/install | bash   # installs gyrus"
 echo "    gyrus init --clone <your-github-repo-url>    # clones your data"
 echo ""
+
+# Final sanity check: gyrus must be on PATH for new shells.
+# This shell already has it (we exported PATH earlier), so check the binary directly.
+if [ ! -x "$GYRUS_BIN" ]; then
+  print_fail "gyrus wrapper missing at $GYRUS_BIN — reinstall from https://gyrus.sh"
+elif [ -n "$SHELL_PROFILE" ] && ! grep -q '\.local/bin' "$SHELL_PROFILE" 2>/dev/null; then
+  print_warn "Your shell profile ($(basename "$SHELL_PROFILE")) doesn't reference ~/.local/bin."
+  echo -e "  ${DIM}New terminals won't find 'gyrus'. Fix with:${NC}"
+  echo -e "  ${DIM}  echo 'export PATH=\"\$HOME/.local/bin:\$PATH\"' >> $SHELL_PROFILE${NC}"
+fi
+# Heads-up for this terminal — exported PATH doesn't propagate to the parent shell
+# when install.sh ran via `curl | bash` or `bash install.sh`.
+if [ -n "$SHELL_PROFILE" ]; then
+  echo -e "  ${DIM}This terminal: run \`source ${SHELL_PROFILE/#$HOME/~}\` (or open a new one) to use \`gyrus\` now.${NC}"
+  echo ""
+fi
