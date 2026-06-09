@@ -220,14 +220,14 @@ class NotionStorage:
     def _load_thought_cache(self):
         if self._thought_cache_file.exists():
             try:
-                with open(self._thought_cache_file) as f:
+                with open(self._thought_cache_file, encoding="utf-8") as f:
                     return json.load(f)
             except (json.JSONDecodeError, IOError):
                 pass
         return []
 
     def _save_thought_cache(self):
-        with open(self._thought_cache_file, "w") as f:
+        with open(self._thought_cache_file, "w", encoding="utf-8") as f:
             json.dump(self._thought_cache, f)
 
     def _query_database(self, filter_obj=None, sorts=None, page_size=100, start_cursor=None):
@@ -662,7 +662,7 @@ class NotionStorage:
         """Load ingestion state from local JSON (not Notion — too slow for frequent reads)."""
         if self.state_file.exists():
             try:
-                with open(self.state_file) as f:
+                with open(self.state_file, encoding="utf-8") as f:
                     return json.load(f)
             except (json.JSONDecodeError, IOError):
                 pass
@@ -670,5 +670,5 @@ class NotionStorage:
 
     def save_state(self, state):
         """Save ingestion state to local JSON."""
-        with open(self.state_file, "w") as f:
+        with open(self.state_file, "w", encoding="utf-8") as f:
             json.dump(state, f, indent=2)

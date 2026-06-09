@@ -10,7 +10,7 @@ Knowledge pages are local markdown files by default.
 https://gyrus.sh
 """
 
-__version__ = "2026.06.09.1"
+__version__ = "2026.06.09.2"
 
 import argparse
 import atexit
@@ -59,7 +59,7 @@ def _acquire_lock(base_dir):
     lock_path = _lock_path()
     if lock_path.exists():
         try:
-            lock_data = json.loads(lock_path.read_text())
+            lock_data = json.loads(lock_path.read_text(encoding="utf-8"))
             lock_age = time.time() - lock_data.get("time", 0)
             lock_machine = lock_data.get("machine", "unknown")
             # Stale lock (older than 30 minutes) — steal it
@@ -77,7 +77,7 @@ def _acquire_lock(base_dir):
             "machine": socket.gethostname(),
             "pid": os.getpid(),
             "time": time.time(),
-        }))
+        }), encoding="utf-8")
         atexit.register(lambda: lock_path.unlink(missing_ok=True))
     except OSError:
         pass  # Can't write lock — proceed anyway
@@ -554,7 +554,7 @@ def find_cowork_sessions(state):
             if mtime > last_processed:
                 # Read metadata for title context
                 try:
-                    meta = json.load(open(json_file))
+                    meta = json.loads(Path(json_file).read_text(encoding="utf-8"))
                     title = meta.get("title", "")
                 except Exception:
                     title = ""
@@ -625,7 +625,7 @@ def _extract_workspace_from_codex(jsonl_path):
     import re
     pattern = re.compile(r'<cwd>/Users/[^/]+/Documents/(?:GitHub|iOS)/([^<]+)</cwd>')
     try:
-        with open(jsonl_path, errors="ignore") as f:
+        with open(jsonl_path, encoding="utf-8", errors="ignore") as f:
             for line in f:
                 match = pattern.search(line)
                 if match:
@@ -806,7 +806,7 @@ def extract_antigravity_session(session_dir, max_chars=30000):
     for ext in ("*.md", "*.txt"):
         for f in sorted(glob.glob(os.path.join(session_dir, ext))):
             try:
-                with open(f) as fh:
+                with open(f, encoding="utf-8") as fh:
                     parts.append(fh.read())
             except Exception:
                 pass
@@ -816,7 +816,7 @@ def extract_antigravity_session(session_dir, max_chars=30000):
 def extract_codex_conversation(path, max_chars=30000):
     lines = []
     try:
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             for line in f:
                 try:
                     entry = json.loads(line.strip())
@@ -859,7 +859,7 @@ def extract_codex_conversation(path, max_chars=30000):
 def extract_claude_code_conversation(path, max_chars=30000):
     lines = []
     try:
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             for line in f:
                 try:
                     entry = json.loads(line.strip())
@@ -945,7 +945,7 @@ def extract_copilot_conversation(path, max_chars=30000):
     """Extract conversation from GitHub Copilot chat JSONL files."""
     lines = []
     try:
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             for line in f:
                 try:
                     entry = json.loads(line.strip())
@@ -968,7 +968,7 @@ def extract_cline_conversation(path, max_chars=30000):
     """Extract conversation from Cline's api_conversation_history.json."""
     lines = []
     try:
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             data = json.load(f)
         messages = data if isinstance(data, list) else data.get("messages", [])
         for msg in messages:
@@ -992,7 +992,7 @@ def extract_continue_conversation(path, max_chars=30000):
     """Extract conversation from Continue.dev session JSON files."""
     lines = []
     try:
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             data = json.load(f)
         # Continue stores history as a list of steps or messages
         history = data.get("history", data.get("steps", data.get("messages", [])))
@@ -1015,7 +1015,7 @@ def extract_continue_conversation(path, max_chars=30000):
 def extract_aider_conversation(path, max_chars=30000):
     """Extract conversation from Aider's .aider.chat.history.md files."""
     try:
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             return f.read()[:max_chars]
     except Exception:
         return ""
@@ -1025,7 +1025,7 @@ def extract_opencode_conversation(path, max_chars=30000):
     """Extract conversation from OpenCode session JSON files."""
     lines = []
     try:
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             data = json.load(f)
         messages = data.get("messages", data.get("conversation", []))
         if isinstance(messages, list):
@@ -1049,7 +1049,7 @@ def extract_cowork_conversation(path, output_dir=None, max_chars=30000):
     Format: one JSON object per line with type/role/message fields."""
     lines = []
     try:
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             for raw_line in f:
                 raw_line = raw_line.strip()
                 if not raw_line:
@@ -1089,7 +1089,7 @@ def extract_cowork_conversation(path, output_dir=None, max_chars=30000):
             fpath = os.path.join(output_dir, fname)
             if os.path.isfile(fpath) and os.path.getsize(fpath) < 50000:
                 try:
-                    with open(fpath) as f:
+                    with open(fpath, encoding="utf-8") as f:
                         lines.append(f"\n--- Output: {fname} ---\n{f.read()[:5000]}")
                 except Exception:
                     pass
@@ -1107,7 +1107,7 @@ def find_tool_memory_files(max_chars=10000):
     global_claude_md = _HOME / ".claude" / "CLAUDE.md"
     if global_claude_md.is_file():
         try:
-            memories.append(("claude-code-global", global_claude_md.read_text()[:3000]))
+            memories.append(("claude-code-global", global_claude_md.read_text(encoding="utf-8")[:3000]))
         except Exception:
             pass
 
@@ -1133,7 +1133,7 @@ def find_tool_memory_files(max_chars=10000):
                         continue
                     seen.add(f)
                     try:
-                        content = f.read_text()[:2000]
+                        content = f.read_text(encoding="utf-8")[:2000]
                         if len(content) > 50:  # Skip near-empty files
                             project_hint = f.parent.name
                             memories.append((f"memory-{project_hint}-{name}", content))
@@ -1145,7 +1145,7 @@ def find_tool_memory_files(max_chars=10000):
     if cursor_rules.is_dir():
         for f in cursor_rules.glob("*.md"):
             try:
-                content = f.read_text()[:2000]
+                content = f.read_text(encoding="utf-8")[:2000]
                 if len(content) > 50:
                     memories.append((f"cursor-rule-{f.stem}", content))
             except Exception:
@@ -1663,7 +1663,7 @@ def _quarantine_bad_merge(store, slug, raw_response, reason):
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
     path = store.projects_dir / f"{slug}.failed-merge.{ts}.md"
     header = f"<!-- rejected merge for '{slug}' at {ts}: {reason} -->\n\n"
-    path.write_text(header + raw_response)
+    path.write_text(header + raw_response, encoding="utf-8")
     return path
 
 
@@ -2068,7 +2068,7 @@ def _parse_status_overrides(store):
     overrides = {}
     if not status_path.exists():
         return overrides
-    for line in status_path.read_text().splitlines():
+    for line in status_path.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if not line.startswith("- **"):
             continue
@@ -2120,7 +2120,7 @@ def _read_text_safe(path, timeout_s=5):
         has_alarm = False
     if not has_alarm:
         try:
-            return path.read_text()
+            return path.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
             return None
 
@@ -2130,7 +2130,7 @@ def _read_text_safe(path, timeout_s=5):
     prev = _sig.signal(_sig.SIGALRM, _handler)
     _sig.alarm(timeout_s)
     try:
-        return path.read_text()
+        return path.read_text(encoding="utf-8")
     except (_ReadTimeout, OSError, UnicodeDecodeError):
         return None
     finally:
@@ -2532,7 +2532,7 @@ def _doctor_check_env(base_dir):
     config_path = base_dir / "config.json"
     if config_path.exists():
         try:
-            cfg = json.loads(config_path.read_text())
+            cfg = json.loads(config_path.read_text(encoding="utf-8"))
             extract = cfg.get("extract_model", "")
             merge = cfg.get("merge_model", "")
             if (_resolve_model(extract)["provider"] == "local"
@@ -2641,7 +2641,7 @@ def _doctor_check_lockfile():
     if not lock.exists():
         return ("ok", "lockfile", "none held", None)
     try:
-        data = json.loads(lock.read_text())
+        data = json.loads(lock.read_text(encoding="utf-8"))
         age_min = (time.time() - data.get("time", 0)) / 60
         machine = data.get("machine", "?")
     except (OSError, json.JSONDecodeError):
@@ -2888,7 +2888,7 @@ def _doctor_fix_git_sync(base_dir):
             return False, f"git init failed: {err[:60]}"
         gitignore = base_dir / ".gitignore"
         if not gitignore.exists():
-            gitignore.write_text(_DEFAULT_GITIGNORE)
+            gitignore.write_text(_DEFAULT_GITIGNORE, encoding="utf-8")
         _git_run(["add", "-A"], base_dir, timeout=15)
         _git_run(
             _git_identity_args(base_dir) + ["commit", "-m", "gyrus: initial", "--quiet"],
@@ -3121,7 +3121,7 @@ def run_init(clone_url=None, location=None):
     local_url, local_name, local_models = _detect_local_llm()
     existing_key = os.environ.get("ANTHROPIC_API_KEY", "")
     if env_file.exists():
-        for line in env_file.read_text().splitlines():
+        for line in env_file.read_text(encoding="utf-8").splitlines():
             if line.startswith("ANTHROPIC_API_KEY="):
                 existing_key = line.split("=", 1)[1].strip().strip("\"'")
                 break
@@ -3172,13 +3172,13 @@ def run_init(clone_url=None, location=None):
         existing = {}
         if config_path.exists():
             try:
-                existing = json.loads(config_path.read_text())
+                existing = json.loads(config_path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
                 existing = {}
         existing["extract_model"] = f"local:{extract}"
         existing["merge_model"] = f"local:{merge}"
         existing["local_base_url"] = local_url
-        config_path.write_text(json.dumps(existing, indent=2))
+        config_path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
         print(f"    ✓ configured: extract={extract}, merge={merge}")
         print(f"    ✓ saved to {config_path.name}")
     elif existing_key:
@@ -3187,7 +3187,7 @@ def run_init(clone_url=None, location=None):
         print("    Get one at: https://console.anthropic.com/settings/keys")
         key = _prompt("    ANTHROPIC_API_KEY: ")
         if key:
-            env_file.write_text(f"ANTHROPIC_API_KEY={key}\n")
+            env_file.write_text(f"ANTHROPIC_API_KEY={key}\n", encoding="utf-8")
             env_file.chmod(0o600)
             print(f"    ✓ saved to {env_file.name} (0600)")
         else:
@@ -3282,7 +3282,7 @@ def _init_clone(clone_url, location=None):
         key = os.environ.get("ANTHROPIC_API_KEY") or _prompt(
             "  Anthropic API key: ")
         if key:
-            env_file.write_text(f"ANTHROPIC_API_KEY={key}\n")
+            env_file.write_text(f"ANTHROPIC_API_KEY={key}\n", encoding="utf-8")
             env_file.chmod(0o600)
             print("    ✓ saved .env")
 
@@ -3318,7 +3318,7 @@ def _init_github_repo(loc):
         _git_run(["init", "--initial-branch=main"], loc, timeout=10)
         gitignore = loc / ".gitignore"
         if not gitignore.exists():
-            gitignore.write_text(_DEFAULT_GITIGNORE)
+            gitignore.write_text(_DEFAULT_GITIGNORE, encoding="utf-8")
         _git_run(["add", "-A"], loc, timeout=15)
         _git_run(
             _git_identity_args(loc) + ["commit", "-m", "gyrus: initial", "--quiet"],
@@ -3764,7 +3764,7 @@ def run_merge(store, slugs, yes=False):
         if s.lower() not in existing_alias_names:
             aliases.append({"alias": s, "canonical_slug": into})
             changed_aliases += 1
-    store.aliases_file.write_text(json.dumps(aliases, indent=2))
+    store.aliases_file.write_text(json.dumps(aliases, indent=2), encoding="utf-8")
     print(f"    ✓ rewrote {changed_aliases} alias row(s)")
 
     # 2. Rewrite thoughts in JSONL files (in-place)
@@ -3788,7 +3788,7 @@ def run_merge(store, slugs, yes=False):
                     touched = True
                 new_lines.append(json.dumps(t))
             if touched:
-                jsonl_file.write_text("\n".join(new_lines) + "\n")
+                jsonl_file.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
     print(f"    ✓ rewrote {rewritten_thoughts} thought record(s)")
 
     # 3. Remove orphan project pages
@@ -3806,7 +3806,7 @@ def run_merge(store, slugs, yes=False):
             # Rewrite status.md by dropping merged slugs — cheap approximation
             status_path = store.base_dir / "status.md"
             if status_path.exists():
-                lines = status_path.read_text().splitlines()
+                lines = status_path.read_text(encoding="utf-8").splitlines()
                 kept = []
                 drops = 0
                 for line in lines:
@@ -3815,7 +3815,7 @@ def run_merge(store, slugs, yes=False):
                         continue
                     kept.append(line)
                 if drops:
-                    status_path.write_text("\n".join(kept) + "\n")
+                    status_path.write_text("\n".join(kept) + "\n", encoding="utf-8")
                     print(f"    ✓ removed {drops} row(s) from status.md")
     except OSError:
         pass
@@ -3830,7 +3830,7 @@ def run_models(base_dir, yes=False):
     """Show current extract/merge models and interactively switch."""
     config_path = base_dir / "config.json"
     try:
-        cfg = json.loads(config_path.read_text()) if config_path.exists() else {}
+        cfg = json.loads(config_path.read_text(encoding="utf-8")) if config_path.exists() else {}
     except (OSError, json.JSONDecodeError):
         cfg = {}
 
@@ -3848,7 +3848,7 @@ def run_models(base_dir, yes=False):
 
     # What keys does the user have?
     env_file = base_dir / ".env"
-    env_text = env_file.read_text() if env_file.exists() else ""
+    env_text = env_file.read_text(encoding="utf-8") if env_file.exists() else ""
     has_key = {
         "anthropic": "ANTHROPIC_API_KEY=" in env_text,
         "openai":    "OPENAI_API_KEY=" in env_text,
@@ -3947,7 +3947,7 @@ def run_models(base_dir, yes=False):
             and local_url and not cfg.get("local_base_url")):
         cfg["local_base_url"] = local_url
 
-    config_path.write_text(json.dumps(cfg, indent=2))
+    config_path.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
     print(f"    ✓ saved to {config_path}")
     print(f"    → run `gyrus doctor` to verify the new models are reachable")
     return 0
@@ -4187,7 +4187,7 @@ def _save_run_log(store, sessions, thoughts, cost):
         "merge_model": _config.get("merge_model", ""),
     }
 
-    with open(log_path, "a") as f:
+    with open(log_path, "a", encoding="utf-8") as f:
         f.write(json.dumps(entry, default=str) + "\n")
 
 
@@ -4199,7 +4199,7 @@ def show_run_log(base_dir, n=10):
         return
 
     entries = []
-    for line in log_path.read_text().splitlines():
+    for line in log_path.read_text(encoding="utf-8").splitlines():
         try:
             entries.append(json.loads(line))
         except json.JSONDecodeError:
@@ -4267,11 +4267,11 @@ def sync_tool_context(store):
         targets["Antigravity (GEMINI.md)"] = gemini_md
 
     for label, path in targets.items():
-        existing = path.read_text() if path.exists() else ""
+        existing = path.read_text(encoding="utf-8") if path.exists() else ""
         if marker in existing:
             continue  # already configured
         new_content = existing.rstrip() + "\n\n" + pointer if existing.strip() else pointer
-        path.write_text(new_content + "\n")
+        path.write_text(new_content + "\n", encoding="utf-8")
         print(f"  ✓ {label}: added Gyrus read instructions")
 
 
@@ -4443,7 +4443,7 @@ def _load_config(store):
     config_path = base / "config.json"
     if config_path.exists():
         try:
-            with open(config_path) as f:
+            with open(config_path, encoding="utf-8") as f:
                 return json.load(f)
         except (json.JSONDecodeError, IOError):
             pass
@@ -4514,7 +4514,7 @@ def self_update(base_dir=None):
     # Write ingest.py (already downloaded)
     target = files["ingest.py"]
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(remote_content)
+    target.write_text(remote_content, encoding="utf-8")
     print(f"  Updated {target}")
 
     # Download remaining files
@@ -4522,7 +4522,7 @@ def self_update(base_dir=None):
         try:
             content = _fetch(fname)
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(content)
+            target.write_text(content, encoding="utf-8")
             print(f"  Updated {target}")
         except Exception as e:
             print(f"  Warning: could not update {fname}: {e}")
@@ -4914,12 +4914,12 @@ Output ONLY the JSON object."""
     cfg = {}
     if config_path.exists():
         try:
-            cfg = json.loads(config_path.read_text())
+            cfg = json.loads(config_path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, IOError):
             pass
     cfg["extract_model"] = extract_chosen
     cfg["merge_model"] = merge_chosen
-    config_path.write_text(json.dumps(cfg, indent=2) + "\n")
+    config_path.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
     print(f"\n  ✓ Updated config.json:")
     print(f"    extract_model = {_display_name(extract_chosen)} ({extract_chosen})")
     print(f"    merge_model   = {_display_name(merge_chosen)} ({merge_chosen})")
@@ -5152,7 +5152,7 @@ def _generate_comparison_html(results, sessions, texts, model_order, output_path
 </body>
 </html>"""
 
-    Path(output_path).write_text(page)
+    Path(output_path).write_text(page, encoding="utf-8")
 
 
 def main():
@@ -5265,7 +5265,7 @@ def main():
     env_base = Path(args.base_dir) if args.base_dir else Path.home() / ".gyrus"
     env_file = env_base / ".env"
     if env_file.exists():
-        for line in env_file.read_text().splitlines():
+        for line in env_file.read_text(encoding="utf-8").splitlines():
             line = line.strip()
             if line and not line.startswith("#") and "=" in line:
                 key, _, value = line.partition("=")
@@ -5373,7 +5373,7 @@ def main():
         else:
             digest = generate_digest(recent, store, [])
             digest_path = env_base / "latest-digest.md"
-            digest_path.write_text(digest)
+            digest_path.write_text(digest, encoding="utf-8")
             print(digest)
             print(f"\nSaved to: {digest_path}")
             # Email if configured
@@ -5403,7 +5403,7 @@ def main():
         # Set up keys — read directly from .env since os.environ.setdefault may not have overridden
         env_keys = {}
         if env_file.exists():
-            for line in env_file.read_text().splitlines():
+            for line in env_file.read_text(encoding="utf-8").splitlines():
                 line = line.strip()
                 if line and not line.startswith("#") and "=" in line:
                     k, _, v = line.partition("=")
@@ -5655,7 +5655,7 @@ def main():
                 cmd.append(arg)
             print(f"  Starting background ingestion...")
             print(f"  Progress: tail -f {log_file}")
-            with open(log_file, "a") as lf:
+            with open(log_file, "a", encoding="utf-8") as lf:
                 subprocess.Popen(cmd, stdout=lf, stderr=lf,
                                  start_new_session=True)
             print(f"  Knowledge pages will appear in: {store.base_dir / 'projects'}/")
@@ -5878,7 +5878,7 @@ def main():
                 send_digest_email(digest, digest_config, store.base_dir if hasattr(store, "base_dir") else Path.home() / ".gyrus")
             # Always save to file
             digest_path = (store.base_dir if hasattr(store, "base_dir") else Path.home() / ".gyrus") / "latest-digest.md"
-            digest_path.write_text(digest)
+            digest_path.write_text(digest, encoding="utf-8")
             print(f"  Digest: {digest_path}")
 
     # ── Summary + Run Log ──

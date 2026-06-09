@@ -16,12 +16,12 @@ from difflib import SequenceMatcher
 
 def _safe_write(path, content):
     """Write text to a file. Thin wrapper kept for call-site stability."""
-    Path(path).write_text(content)
+    Path(path).write_text(content, encoding="utf-8")
 
 
 def _safe_read(path):
     """Read text from a file. Thin wrapper kept for call-site stability."""
-    return Path(path).read_text()
+    return Path(path).read_text(encoding="utf-8")
 
 
 class MarkdownStorage:
@@ -74,7 +74,7 @@ class MarkdownStorage:
         filepath = self.thoughts_dir / f"{date_str}.jsonl"
         for _attempt in range(3):
             try:
-                with open(filepath, "a") as f:
+                with open(filepath, "a", encoding="utf-8") as f:
                     f.write(json.dumps(thought, default=str) + "\n")
                 break
             except OSError as e:
@@ -116,7 +116,7 @@ class MarkdownStorage:
                              reverse=order_desc)
 
         for filepath in jsonl_files:
-            with open(filepath) as f:
+            with open(filepath, encoding="utf-8") as f:
                 for line in f:
                     line = line.strip()
                     if not line:
@@ -176,7 +176,7 @@ class MarkdownStorage:
         """Update a thought within a specific JSONL file."""
         lines = []
         found = False
-        with open(filepath) as f:
+        with open(filepath, encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if not line:
@@ -191,7 +191,7 @@ class MarkdownStorage:
                     lines.append(line)
 
         if found:
-            with open(filepath, "w") as f:
+            with open(filepath, "w", encoding="utf-8") as f:
                 f.write("\n".join(lines) + "\n")
         return found
 
@@ -221,7 +221,7 @@ class MarkdownStorage:
         # Snapshot the prior version so a bad merge is recoverable.
         if filepath.exists():
             backup = self.projects_dir / f"{slug}.bak.md"
-            backup.write_text(_safe_read(filepath))
+            backup.write_text(_safe_read(filepath), encoding="utf-8")
 
         # Strip old version comment if present
         content = re.sub(r'\n<!-- version: \d+ -->\s*$', '', content)
@@ -254,7 +254,7 @@ class MarkdownStorage:
     def get_aliases(self):
         """Read all project aliases. Returns list of {alias, canonical_slug}."""
         if self.aliases_file.exists():
-            with open(self.aliases_file) as f:
+            with open(self.aliases_file, encoding="utf-8") as f:
                 return json.load(f)
         return []
 
@@ -269,29 +269,29 @@ class MarkdownStorage:
         else:
             aliases.append({"alias": alias, "canonical_slug": canonical_slug})
 
-        with open(self.aliases_file, "w") as f:
+        with open(self.aliases_file, "w", encoding="utf-8") as f:
             json.dump(aliases, f, indent=2)
 
     # ─── Status & Sync ───
 
     def write_status(self, content):
         """Write the status.md overview file."""
-        (self.base_dir / "status.md").write_text(content)
+        (self.base_dir / "status.md").write_text(content, encoding="utf-8")
 
     def write_cross_cutting(self, content):
         """Write the cross-cutting.md file."""
-        (self.base_dir / "cross-cutting.md").write_text(content)
+        (self.base_dir / "cross-cutting.md").write_text(content, encoding="utf-8")
 
     # ─── State Management ───
 
     def load_state(self):
         """Load ingestion state (processed sessions, etc)."""
         if self.state_file.exists():
-            with open(self.state_file) as f:
+            with open(self.state_file, encoding="utf-8") as f:
                 return json.load(f)
         return {"processed_sessions": {}, "last_cross_reference": 0}
 
     def save_state(self, state):
         """Save ingestion state."""
-        with open(self.state_file, "w") as f:
+        with open(self.state_file, "w", encoding="utf-8") as f:
             json.dump(state, f, indent=2)

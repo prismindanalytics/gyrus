@@ -46,7 +46,7 @@ def load_fixtures(base_dir, eval_type="extraction"):
     d = _fixtures_dir(base_dir, eval_type)
     for f in sorted(d.glob("*.json")):
         try:
-            fixtures.append(json.loads(f.read_text()))
+            fixtures.append(json.loads(f.read_text(encoding="utf-8")))
         except (json.JSONDecodeError, IOError) as e:
             print(f"  Warning: skipping {f.name}: {e}")
     return fixtures
@@ -461,7 +461,7 @@ def save_prompt_version(base_dir, name, extraction_prompt, merge_prompt):
         "extraction_prompt": extraction_prompt,
         "merge_prompt": merge_prompt,
     }
-    (d / f"{name}.json").write_text(json.dumps(data, indent=2) + "\n")
+    (d / f"{name}.json").write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     print(f"  ✓ Saved prompt version: {name}")
 
 
@@ -471,7 +471,7 @@ def load_prompt_version(base_dir, name):
     if not path.exists():
         print(f"  Error: prompt version '{name}' not found")
         return None
-    return json.loads(path.read_text())
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 # ─── Results ───
@@ -483,7 +483,7 @@ def save_results(base_dir, results):
     d.mkdir(parents=True, exist_ok=True)
     ts = datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
     path = d / f"{ts}.json"
-    path.write_text(json.dumps(results, indent=2, default=str) + "\n")
+    path.write_text(json.dumps(results, indent=2, default=str) + "\n", encoding="utf-8")
     return path
 
 
@@ -495,7 +495,7 @@ def load_latest_results(base_dir):
     files = sorted(d.glob("*.json"))
     if not files:
         return None
-    return json.loads(files[-1].read_text())
+    return json.loads(files[-1].read_text(encoding="utf-8"))
 
 
 # ─── Run Eval ───
@@ -515,7 +515,7 @@ def run_eval(args, base_dir, config):
         env_keys = {}
         env_file = Path(base_dir) / ".env"
         if env_file.exists():
-            for line in env_file.read_text().splitlines():
+            for line in env_file.read_text(encoding="utf-8").splitlines():
                 line = line.strip()
                 if line and not line.startswith("#") and "=" in line:
                     k, _, v = line.partition("=")
@@ -823,7 +823,7 @@ def run_curate(args, base_dir):
 
     # Save
     path = _fixtures_dir(base_dir, "extraction") / f"{fid}.json"
-    path.write_text(json.dumps(fixture, indent=2, default=str) + "\n")
+    path.write_text(json.dumps(fixture, indent=2, default=str) + "\n", encoding="utf-8")
     print(f"\n  ✓ Saved fixture: {path}")
     print(f"  Golden thoughts: {len(golden)}")
     print(f"  Edit the fixture JSON to refine negative assertions and expected counts")
