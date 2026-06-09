@@ -15,8 +15,15 @@ from difflib import SequenceMatcher
 
 
 def _safe_write(path, content):
-    """Write text to a file. Thin wrapper kept for call-site stability."""
-    Path(path).write_text(content, encoding="utf-8")
+    """Write text atomically: temp file in the same directory, then rename.
+
+    A crash or full disk mid-write can never leave a truncated page,
+    aliases.json, or state file behind — the old content survives intact.
+    """
+    path = Path(path)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(content, encoding="utf-8")
+    os.replace(tmp, path)
 
 
 def _safe_read(path):
@@ -191,8 +198,7 @@ class MarkdownStorage:
                     lines.append(line)
 
         if found:
-            with open(filepath, "w", encoding="utf-8") as f:
-                f.write("\n".join(lines) + "\n")
+            _safe_write(filepath, "\n".join(lines) + "\n")
         return found
 
     # ─── Knowledge Pages ───
@@ -269,18 +275,21 @@ class MarkdownStorage:
         else:
             aliases.append({"alias": alias, "canonical_slug": canonical_slug})
 
-        with open(self.aliases_file, "w", encoding="utf-8") as f:
-            json.dump(aliases, f, indent=2)
+        self.save_aliases(aliases)
+
+    def save_aliases(self, aliases):
+        """Write the full alias list atomically."""
+        _safe_write(self.aliases_file, json.dumps(aliases, indent=2))
 
     # ─── Status & Sync ───
 
     def write_status(self, content):
         """Write the status.md overview file."""
-        (self.base_dir / "status.md").write_text(content, encoding="utf-8")
+        _safe_write(self.base_dir / "status.md", content)
 
     def write_cross_cutting(self, content):
         """Write the cross-cutting.md file."""
-        (self.base_dir / "cross-cutting.md").write_text(content, encoding="utf-8")
+        _safe_write(self.base_dir / "cross-cutting.md", content)
 
     # ─── State Management ───
 
@@ -293,5 +302,4 @@ class MarkdownStorage:
 
     def save_state(self, state):
         """Save ingestion state."""
-        with open(self.state_file, "w", encoding="utf-8") as f:
-            json.dump(state, f, indent=2)
+        _safe_write(self.state_file, json.dumps(state, indent=2))

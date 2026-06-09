@@ -10,7 +10,7 @@ Knowledge pages are local markdown files by default.
 https://gyrus.sh
 """
 
-__version__ = "2026.06.09.2"
+__version__ = "2026.06.09.3"
 
 import argparse
 import atexit
@@ -91,7 +91,7 @@ def _release_lock(base_dir):
     except OSError:
         pass
 
-from storage import MarkdownStorage
+from storage import MarkdownStorage, _safe_write as _atomic_write
 
 _SYSTEM = platform.system()
 _MACHINE = socket.gethostname()
@@ -3764,7 +3764,7 @@ def run_merge(store, slugs, yes=False):
         if s.lower() not in existing_alias_names:
             aliases.append({"alias": s, "canonical_slug": into})
             changed_aliases += 1
-    store.aliases_file.write_text(json.dumps(aliases, indent=2), encoding="utf-8")
+    store.save_aliases(aliases)
     print(f"    ✓ rewrote {changed_aliases} alias row(s)")
 
     # 2. Rewrite thoughts in JSONL files (in-place)
@@ -3788,7 +3788,7 @@ def run_merge(store, slugs, yes=False):
                     touched = True
                 new_lines.append(json.dumps(t))
             if touched:
-                jsonl_file.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+                _atomic_write(jsonl_file, "\n".join(new_lines) + "\n")
     print(f"    ✓ rewrote {rewritten_thoughts} thought record(s)")
 
     # 3. Remove orphan project pages
