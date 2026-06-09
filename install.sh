@@ -1239,17 +1239,14 @@ if [ "$TOTAL_FOUND" -gt 0 ] && [ "$JOINING_EXISTING" != true ]; then
 
   if [[ "$DO_COMPARE" =~ ^[Yy] ]]; then
     echo ""
-    # Build key flags + scope flag
-    KEY_FLAGS=""
-    [ -n "${ANTHROPIC_API_KEY:-}" ] && KEY_FLAGS="$KEY_FLAGS --anthropic-key $ANTHROPIC_API_KEY"
-    [ -n "${OPENAI_API_KEY:-}" ]    && KEY_FLAGS="$KEY_FLAGS --openai-key $OPENAI_API_KEY"
-    [ -n "${GEMINI_API_KEY:-}" ]    && KEY_FLAGS="$KEY_FLAGS --google-key $GEMINI_API_KEY"
+    # Keys come from the environment (.env was sourced with set -a above) —
+    # never pass them as CLI flags, which are world-readable in `ps` output.
     # Respect the user's Step 4 choice: if they picked local, compare local only
     SCOPE_FLAG=""
     if [ "${MODEL_MODE:-1}" = "2" ]; then
       SCOPE_FLAG="--local-only"
     fi
-    "$UV" run --python "$UV_PYTHON" "$INGEST_SCRIPT" --compare-models $KEY_FLAGS $SCOPE_FLAG < /dev/tty 2>&1 || true
+    "$UV" run --python "$UV_PYTHON" "$INGEST_SCRIPT" --compare-models $SCOPE_FLAG < /dev/tty 2>&1 || true
   else
     echo -e "  ${DIM}Skipped. Run later with: gyrus compare (or: gyrus compare --local-only)${NC}"
   fi
@@ -1278,12 +1275,10 @@ if [[ "$DO_BUILD" =~ ^[Yy] ]]; then
   echo ""
   echo -e "${BOLD}  Building your knowledge base...${NC}"
   echo "─────────────────────────────────────────"
-  # Build key flags from .env
-  KEY_FLAGS=""
-  [ -n "${ANTHROPIC_API_KEY:-}" ] && KEY_FLAGS="$KEY_FLAGS --anthropic-key $ANTHROPIC_API_KEY"
-  [ -n "${OPENAI_API_KEY:-}" ] && KEY_FLAGS="$KEY_FLAGS --openai-key $OPENAI_API_KEY"
-  [ -n "${GEMINI_API_KEY:-}" ] && KEY_FLAGS="$KEY_FLAGS --google-key $GEMINI_API_KEY"
-  "$UV" run --python "$UV_PYTHON" "$INGEST_SCRIPT" $KEY_FLAGS < /dev/tty 2>&1 || true
+  # Keys come from the environment (.env was sourced with set -a above) and
+  # ingest.py also auto-loads ~/.gyrus/.env — never pass keys as CLI flags,
+  # which are world-readable in `ps` output.
+  "$UV" run --python "$UV_PYTHON" "$INGEST_SCRIPT" < /dev/tty 2>&1 || true
   echo "─────────────────────────────────────────"
 
   # Show the wow result

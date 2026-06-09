@@ -716,7 +716,9 @@ if ($DoBuild -match "^[Yy]") {
     Write-Host "  Building your knowledge base..." -ForegroundColor White
     Write-Host ("-" * 45)
 
-    & $UvCmd run --python $UvPython $IngestScript --anthropic-key $envVars["ANTHROPIC_API_KEY"] 2>&1
+    # ingest.py auto-loads ~/.gyrus/.env — never pass keys on the command
+    # line, where they are visible in Task Manager / Get-Process output.
+    & $UvCmd run --python $UvPython $IngestScript 2>&1
 
     Write-Host ("-" * 45)
 
@@ -736,7 +738,7 @@ if ($DoBuild -match "^[Yy]") {
 } else {
     Write-Host ""
     Write-Dim "Skipped. Run this later (reads API key from .env automatically):"
-    Write-Host "    cd $GyrusDir; `$env:ANTHROPIC_API_KEY=((Get-Content .env | Select-String '^ANTHROPIC_API_KEY=').ToString().Split('=',2)[1]); uv run --python $UvPython ingest.py --anthropic-key `$env:ANTHROPIC_API_KEY"
+    Write-Host "    cd $GyrusDir; uv run --python $UvPython ingest.py"
     Write-Host ""
 }
 
