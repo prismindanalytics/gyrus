@@ -10,7 +10,7 @@ Knowledge pages are local markdown files by default.
 https://gyrus.sh
 """
 
-__version__ = "2026.06.09.3"
+__version__ = "2026.06.09.4"
 
 import argparse
 import atexit
@@ -4505,11 +4505,17 @@ def self_update(base_dir=None):
             remote_version = line.split("=")[1].strip().strip('"').strip("'")
             break
 
-    if remote_version and remote_version == __version__:
+    if remote_version is None:
+        # Whatever we downloaded isn't a Gyrus script (proxy error page,
+        # rate-limit JSON, …). Never overwrite a working install with it.
+        print("  Update aborted: downloaded file has no __version__ — keeping current install.")
+        return False
+
+    if remote_version == __version__:
         print(f"  Already up to date (v{__version__})")
         return True
 
-    print(f"  Updating: v{__version__} -> v{remote_version or 'latest'}")
+    print(f"  Updating: v{__version__} -> v{remote_version}")
 
     # Write ingest.py (already downloaded)
     target = files["ingest.py"]
@@ -5743,6 +5749,8 @@ def main():
 
                 if not thoughts:
                     state["processed_sessions"][session["state_key"]] = session["mtime"]
+                    if not args.dry_run and _completed[0] % 10 == 0:
+                        store.save_state(state)  # checkpoint: crash ≠ re-extract everything
                     continue
 
                 print(_progress_line(_completed[0], source, session["session_id"],
@@ -5768,6 +5776,8 @@ def main():
                         print(f"    -> {t['content'][:100]}")
 
                 state["processed_sessions"][session["state_key"]] = session["mtime"]
+                if not args.dry_run and _completed[0] % 10 == 0:
+                    store.save_state(state)  # checkpoint: crash ≠ re-extract everything
     else:
         # Sequential extraction (single worker)
         for idx, session in enumerate(all_sessions):
@@ -5807,6 +5817,8 @@ def main():
                     print(f"    -> {t['content'][:100]}")
             else:
                 state["processed_sessions"][session["state_key"]] = session["mtime"]
+                if (idx + 1) % 10 == 0:
+                    store.save_state(state)  # checkpoint: crash ≠ re-extract everything
 
     if not args.dry_run:
         store.save_state(state)
