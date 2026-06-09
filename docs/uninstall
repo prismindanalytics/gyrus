@@ -70,17 +70,45 @@ if [ -f "$GYRUS_DIR/skills/codex/gyrus-instructions.md" ]; then
   echo -e "  ${GREEN}✓${NC} Codex instructions will be removed with ~/.gyrus"
 fi
 
-# Remove symlink if exists
+# Remove symlink if exists, then offer to remove the target too
 if [ -L "$HOME/.gyrus" ]; then
   REAL_DIR=$(readlink "$HOME/.gyrus")
+  # Resolve relative symlinks
+  case "$REAL_DIR" in
+    /*) ;;
+    *) REAL_DIR="$HOME/$REAL_DIR" ;;
+  esac
   rm -f "$HOME/.gyrus"
   echo -e "  ${GREEN}✓${NC} Removed symlink ~/.gyrus -> $REAL_DIR"
-  echo -e "  ${DIM}Note: The actual directory at $REAL_DIR was NOT removed.${NC}"
+
+  if [ -d "$REAL_DIR" ]; then
+    echo ""
+    read -r -p "  Also remove the actual data directory $REAL_DIR? [y/N]: " REMOVE_TARGET < /dev/tty
+    if [[ "${REMOVE_TARGET:-n}" =~ ^[Yy] ]]; then
+      rm -rf "$REAL_DIR"
+      echo -e "  ${GREEN}✓${NC} Removed $REAL_DIR"
+    else
+      echo -e "  ${DIM}Kept $REAL_DIR (remove manually if you change your mind).${NC}"
+    fi
+  fi
 elif [ -d "$GYRUS_DIR" ]; then
   rm -rf "$GYRUS_DIR"
   echo -e "  ${GREEN}✓${NC} Removed $GYRUS_DIR"
 fi
 
+# Remove the `gyrus` shell wrapper
+if [ -f "$HOME/.local/bin/gyrus" ]; then
+  rm -f "$HOME/.local/bin/gyrus"
+  echo -e "  ${GREEN}✓${NC} Removed ~/.local/bin/gyrus"
+fi
+
+# Remove the `gyrus.cmd` Windows wrapper (if running under WSL/Git Bash)
+if [ -f "$HOME/.local/bin/gyrus.cmd" ]; then
+  rm -f "$HOME/.local/bin/gyrus.cmd"
+  echo -e "  ${GREEN}✓${NC} Removed ~/.local/bin/gyrus.cmd"
+fi
+
 echo ""
 echo -e "${GREEN}Gyrus has been uninstalled.${NC}"
+echo -e "${DIM}Your GitHub knowledge-base repo (if any) was NOT touched.${NC}"
 echo ""
