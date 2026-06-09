@@ -208,6 +208,16 @@ class NotionStorage:
         self.state_dir.mkdir(parents=True, exist_ok=True)
         self.state_file = self.state_dir / ".notion-state.json"
 
+        # Filesystem fallbacks: ingest.py writes local debug artifacts
+        # (quarantined merge output via store.projects_dir) and resolves
+        # paths via store.base_dir. Point them at the local state dir so
+        # those code paths work with the Notion backend instead of raising
+        # AttributeError mid-merge.
+        self.base_dir = self.state_dir
+        self.projects_dir = self.state_dir / "projects"
+        self.projects_dir.mkdir(parents=True, exist_ok=True)
+        self.aliases_file = self.state_dir / "aliases.json"
+
         # Local thought cache for dedup (avoids slow Notion queries)
         self._thought_cache_file = self.state_dir / ".notion-thought-cache.json"
         self._thought_cache = self._load_thought_cache()
