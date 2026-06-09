@@ -33,7 +33,8 @@ def _notion_request(method, endpoint, notion_key, data=None):
     for attempt in range(MAX_RETRIES):
         req = urllib.request.Request(url, data=body, headers=headers, method=method)
         try:
-            with urllib.request.urlopen(req) as resp:
+            # Time-boxed so a hung Notion API never wedges an ingest run.
+            with urllib.request.urlopen(req, timeout=30) as resp:
                 return json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as e:
             if e.code == 429:
@@ -46,6 +47,12 @@ def _notion_request(method, endpoint, notion_key, data=None):
             except Exception:
                 err_body = ""
             raise RuntimeError(f"Notion API {method} {endpoint} → {e.code}: {err_body}") from e
+        except (urllib.error.URLError, TimeoutError) as e:
+            # Network blip or timeout — retry with backoff, then surface cleanly.
+            if attempt < MAX_RETRIES - 1:
+                time.sleep(RETRY_BACKOFF * (2 ** attempt))
+                continue
+            raise RuntimeError(f"Notion API unreachable: {method} {endpoint}: {e}") from e
     raise RuntimeError(f"Notion API rate-limited after {MAX_RETRIES} retries: {method} {endpoint}")
 
 

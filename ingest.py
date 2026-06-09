@@ -10,7 +10,7 @@ Knowledge pages are local markdown files by default.
 https://gyrus.sh
 """
 
-__version__ = "2026.05.28.4"
+__version__ = "2026.06.09.1"
 
 import argparse
 import atexit
@@ -1295,7 +1295,8 @@ def _call_anthropic(model, messages, max_tokens, api_key, temperature=0):
         },
     )
 
-    with urlopen(req) as resp:
+    # Time-box the call: a hung connection must not wedge a cron ingest forever.
+    with urlopen(req, timeout=300) as resp:
         data = json.loads(resp.read())
         return data["content"][0]["text"]
 
@@ -1318,7 +1319,7 @@ def _call_openai(model, messages, max_tokens, api_key, temperature=0):
         },
     )
 
-    with urlopen(req) as resp:
+    with urlopen(req, timeout=300) as resp:
         data = json.loads(resp.read())
         return data["choices"][0]["message"]["content"]
 
@@ -1443,7 +1444,7 @@ def _call_google(model, messages, max_tokens, api_key, temperature=0):
         headers={"content-type": "application/json"},
     )
 
-    with urlopen(req) as resp:
+    with urlopen(req, timeout=300) as resp:
         data = json.loads(resp.read())
         return data["candidates"][0]["content"]["parts"][0]["text"]
 
@@ -1594,7 +1595,8 @@ def call_claude(text, anthropic_key, workspace="", repo_groups=None):
             elif isinstance(t, str) and len(t) > 10:
                 normalized.append({"content": t, "project": None, "tags": [], "kind": "project"})
         return normalized
-    except (HTTPError, json.JSONDecodeError, KeyError, IndexError, ValueError) as e:
+    except (OSError, json.JSONDecodeError, KeyError, IndexError, ValueError) as e:
+        # OSError covers HTTPError, URLError, and socket timeouts alike.
         print(f"  LLM extraction error: {e}")
         return []
 
@@ -1830,7 +1832,7 @@ def merge_into_knowledge_pages(thoughts_by_project, store, anthropic_key):
 
         try:
             response_text = call_sonnet(prompt, anthropic_key)
-        except (HTTPError, KeyError, IndexError, ValueError, json.JSONDecodeError) as e:
+        except (OSError, KeyError, IndexError, ValueError, json.JSONDecodeError) as e:
             print(f"    Merge API error: {e}")
             continue
 
@@ -1897,7 +1899,7 @@ def merge_into_me_page(thoughts, store, anthropic_key):
 
     try:
         response_text = call_sonnet(prompt, anthropic_key)
-    except (HTTPError, KeyError, IndexError, ValueError, json.JSONDecodeError) as e:
+    except (OSError, KeyError, IndexError, ValueError, json.JSONDecodeError) as e:
         print(f"    Me page merge error: {e}")
         return
 
@@ -1955,7 +1957,7 @@ def merge_into_ideas_page(thoughts, store, anthropic_key):
 
     try:
         response_text = call_sonnet(prompt, anthropic_key)
-    except (HTTPError, KeyError, IndexError, ValueError, json.JSONDecodeError) as e:
+    except (OSError, KeyError, IndexError, ValueError, json.JSONDecodeError) as e:
         print(f"    Ideas page merge error: {e}")
         return
 
@@ -2052,7 +2054,7 @@ def run_cross_reference_scan(store, anthropic_key, new_thoughts=None):
         else:
             print("    No new cross-references found")
 
-    except (HTTPError, json.JSONDecodeError, KeyError) as e:
+    except (OSError, json.JSONDecodeError, KeyError) as e:
         print(f"    Cross-reference scan error: {e}")
 
 
@@ -3529,7 +3531,7 @@ def _llm_suggest_merges(pages, existing_cluster_slugs=None):
         raw = call_llm(prompt, role="extract", max_tokens=2048)
         raw = _strip_json_fences(raw)
         suggestions = json.loads(raw)
-    except (HTTPError, json.JSONDecodeError, KeyError, ValueError) as e:
+    except (OSError, json.JSONDecodeError, KeyError, ValueError) as e:
         print(f"  ⚠️  LLM suggestion call failed: {e}")
         return []
 
