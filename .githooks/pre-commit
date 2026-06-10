@@ -22,4 +22,10 @@ fi
 sed -i '' "s/__version__ = \".*\"/__version__ = \"$NEW_VERSION\"/" ingest.py
 git add ingest.py
 
+# Keep pyproject.toml in lockstep (same date-based scheme)
+if [ -f pyproject.toml ]; then
+  sed -i '' "s/^version = \".*\"/version = \"$NEW_VERSION\"/" pyproject.toml
+  git add pyproject.toml
+fi
+
 echo "Version: $NEW_VERSION"

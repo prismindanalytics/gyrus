@@ -9,7 +9,21 @@ on:
       - 'uninstall.sh'
 
 jobs:
+  # Gate: never publish installers from a commit that fails the test suite
+  # or has a syntax-broken install script. (The full OS/Python matrix runs
+  # in test.yml; this is a fast single-platform gate.)
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: python -m unittest test_gyrus
+      - run: bash -n install.sh && bash -n uninstall.sh
+
   deploy:
+    needs: test
     runs-on: ubuntu-latest
     permissions:
       contents: read

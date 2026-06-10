@@ -18,12 +18,23 @@ The knowledge base is plain markdown files. Read them directly:
 
 Each project page contains: status, overview, key decisions, open questions, connections to other projects, and recent activity.
 
+## Export to connected services
+
+When the user says "push to [service]", "export to [service]", or "sync to [service]", check which connectors/MCP tools are available and use them to export Gyrus project pages.
+
+1. Read the project page(s): `~/.gyrus/projects/*.md`
+2. Detect which relevant connector tools are available to you
+3. Create/update content in the target service — e.g. one Notion page or Google Doc per project, project decisions as Linear/Jira issues, digests as Slack messages, wiki pages via GitHub
+
+If the target service isn't connected, suggest connecting it first (Settings → Connectors). For "export everything", iterate over all files in `~/.gyrus/projects/` and report what was exported.
+
 ## When to use
 
 - Before starting strategic work: read the project page for context
 - When the user asks "what did I decide about X?" or "has this been explored?"
 - When you notice cross-project connections worth surfacing
 - When the user says "gyrus" or "check gyrus" or "what do we know about"
+- When the user says "push to [service]" or "export to [service]" → export via connectors
 
 ## Guidelines
 
@@ -31,3 +42,4 @@ Each project page contains: status, overview, key decisions, open questions, con
 - Highlight key decisions, open questions, and recent activity
 - Note when information might be stale (check dates)
 - Don't modify the files — Gyrus manages them automatically
+- For exports: confirm the target and scope before pushing (one project vs all)

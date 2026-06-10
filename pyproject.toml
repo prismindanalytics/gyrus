@@ -1,6 +1,7 @@
 [project]
 name = "gyrus"
-version = "0.2.0"
+# Date-based, kept in lockstep with ingest.py __version__ by .githooks/pre-commit
+version = "2026.06.09.4"
 description = "Your AI tools don't talk to each other. Gyrus fixes that."
 readme = "README.md"
 license = {text = "MIT"}
