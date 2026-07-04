@@ -1,13 +1,24 @@
 #!/bin/bash
-# Auto-bump version in ingest.py on every commit that includes it
+# Auto-bump version in ingest.py on every commit that includes it.
 # Format: YYYY.MM.DD.N (N increments per day)
+#
+# Enable with: git config core.hooksPath .githooks
+set -euo pipefail
 
-if ! git diff --cached --name-only | grep -q "ingest.py"; then
-  exit 0  # ingest.py not in this commit, skip
-fi
+# Note: avoid `big-output | grep -q` under `pipefail` — grep short-circuits and
+# the producer gets SIGPIPE, making the pipeline non-zero even on a match. Match
+# against captured strings instead.
+STAGED_FILES=$(git diff --cached --name-only)
+case $'\n'"$STAGED_FILES"$'\n' in
+  *$'\n'"ingest.py"$'\n'*) : ;;      # ingest.py is staged — continue
+  *) exit 0 ;;                        # not in this commit, skip
+esac
 
 TODAY=$(date +%Y.%m.%d)
-CURRENT=$(grep '__version__' ingest.py | head -1 | sed 's/.*"\(.*\)"/\1/')
+# Compute the bump from the STAGED blob, not the worktree, so unstaged edits to
+# ingest.py aren't silently pulled into the commit.
+STAGED_INGEST=$(git show :ingest.py)
+CURRENT=$(printf '%s\n' "$STAGED_INGEST" | grep '__version__' | head -1 | sed 's/.*"\(.*\)"/\1/')
 
 if echo "$CURRENT" | grep -q "^$TODAY"; then
   # Same day — increment sequence number
@@ -19,13 +30,34 @@ else
   NEW_VERSION="$TODAY.1"
 fi
 
-sed -i '' "s/__version__ = \".*\"/__version__ = \"$NEW_VERSION\"/" ingest.py
-git add ingest.py
+# Rewrite the version in the staged blob and re-stage ONLY that change (via the
+# index), leaving any unstaged worktree hunks untouched. Also update the
+# worktree copy so it stays consistent with the index.
+bump_in_index() {
+  local path="$1" pattern="$2"
+  local staged new hash
+  staged=$(git show ":$path")
+  new=$(printf '%s\n' "$staged" | sed "$pattern")
+  hash=$(printf '%s' "$new" | git hash-object -w --stdin)
+  git update-index --cacheinfo 100644,"$hash","$path"
+  # Keep the worktree file in sync (portable in-place edit, no BSD/GNU split).
+  printf '%s' "$new" > "$path"
+}
+
+bump_in_index ingest.py "s/__version__ = \".*\"/__version__ = \"$NEW_VERSION\"/"
 
 # Keep pyproject.toml in lockstep (same date-based scheme)
-if [ -f pyproject.toml ]; then
-  sed -i '' "s/^version = \".*\"/version = \"$NEW_VERSION\"/" pyproject.toml
-  git add pyproject.toml
+if git ls-files --error-unmatch pyproject.toml >/dev/null 2>&1; then
+  bump_in_index pyproject.toml "s/^version = \".*\"/version = \"$NEW_VERSION\"/"
 fi
+
+# Fail loudly if the bump didn't take, rather than committing a stale version.
+# Match against the captured blob (no pipe) to avoid the pipefail/SIGPIPE
+# false-negative on ingest.py's large output.
+STAGED_AFTER=$(git show :ingest.py)
+case "$STAGED_AFTER" in
+  *"__version__ = \"$NEW_VERSION\""*) : ;;
+  *) echo "pre-commit: version bump failed" >&2; exit 1 ;;
+esac
 
 echo "Version: $NEW_VERSION"

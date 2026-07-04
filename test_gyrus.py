@@ -14,7 +14,7 @@ from pathlib import Path
 from unittest.mock import patch, MagicMock
 from datetime import datetime, timezone
 
-from storage import MarkdownStorage
+from storage import MarkdownStorage, _safe_write, redact_secrets
 from ingest import (
     extract_claude_code_conversation,
     extract_codex_conversation,
@@ -63,6 +63,22 @@ from ingest import (
     RECOMMENDED_LOCAL_MERGE,
     _pick_from_list,
 )
+
+# Sandbox the lockfile for the whole suite so tests never touch — or race —
+# the shared machine-wide lock a real scheduled ingest may be holding.
+_LOCK_SANDBOX = None
+
+
+def setUpModule():
+    global _LOCK_SANDBOX
+    _LOCK_SANDBOX = tempfile.mkdtemp(prefix="gyrus-test-lock-")
+    os.environ["GYRUS_LOCK_DIR"] = _LOCK_SANDBOX
+
+
+def tearDownModule():
+    os.environ.pop("GYRUS_LOCK_DIR", None)
+    if _LOCK_SANDBOX:
+        shutil.rmtree(_LOCK_SANDBOX, ignore_errors=True)
 
 
 class TestMarkdownStorage(unittest.TestCase):
@@ -814,30 +830,24 @@ class TestDoctorFixes(unittest.TestCase):
 
     def setUp(self):
         self.tmpdir = Path(tempfile.mkdtemp())
-        # Keep any existing real lockfile safe — we back it up and restore later
-        self._real_lock = _lock_path()
-        self._real_lock_backup = None
-        if self._real_lock.exists():
-            self._real_lock_backup = self._real_lock.read_bytes()
-            self._real_lock.unlink()
+        # The lockfile is sandboxed for the whole module (setUpModule sets
+        # GYRUS_LOCK_DIR), so operating on it never touches the machine's real
+        # lock or races a live scheduled ingest.
+        self._lock = _lock_path()
+        self._lock.unlink(missing_ok=True)
 
     def tearDown(self):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
-        # Clean up any lockfile we created
-        if self._real_lock.exists():
-            self._real_lock.unlink()
-        # Restore the user's real lockfile if we displaced one
-        if self._real_lock_backup is not None:
-            self._real_lock.write_bytes(self._real_lock_backup)
+        self._lock.unlink(missing_ok=True)
 
     def test_fix_lockfile_removes_file(self):
-        self._real_lock.parent.mkdir(parents=True, exist_ok=True)
-        self._real_lock.write_text(json.dumps(
+        self._lock.parent.mkdir(parents=True, exist_ok=True)
+        self._lock.write_text(json.dumps(
             {"machine": "x", "pid": 1, "time": 0}
         ))
         ok, msg = _doctor_fix_lockfile()
         self.assertTrue(ok)
-        self.assertFalse(self._real_lock.exists())
+        self.assertFalse(self._lock.exists())
 
     def test_fix_lockfile_noop_when_missing(self):
         ok, msg = _doctor_fix_lockfile()
@@ -1356,6 +1366,122 @@ class TestGyrusModelsSubcommand(unittest.TestCase):
         self.assertIn("gemma4-e2b", out)
         self.assertIn("qwen3.5-9b", out)
         self.assertIn("qwen3.6-35b", out)
+
+
+class TestSafeWrite(unittest.TestCase):
+    """_safe_write is the durability guarantee behind pages/aliases/state —
+    a failed write must never corrupt the existing file (regression guard for
+    the CI-gated crash-safety features)."""
+
+    def setUp(self):
+        self.tmpdir = Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_happy_path_writes_via_replace(self):
+        target = self.tmpdir / "page.md"
+        with patch("storage.os.replace", wraps=os.replace) as spy:
+            _safe_write(target, "hello")
+        self.assertTrue(spy.called)
+        self.assertEqual(target.read_text(encoding="utf-8"), "hello")
+
+    def test_failed_replace_leaves_original_intact(self):
+        target = self.tmpdir / "page.md"
+        target.write_text("ORIGINAL", encoding="utf-8")
+        with patch("storage.os.replace", side_effect=OSError("boom")):
+            with self.assertRaises(OSError):
+                _safe_write(target, "NEW CONTENT")
+        # The original file must be untouched — no partial/truncated write.
+        self.assertEqual(target.read_text(encoding="utf-8"), "ORIGINAL")
+
+    def test_no_direct_write_to_final_path(self):
+        # The temp file, not the destination, is what gets written first.
+        target = self.tmpdir / "page.md"
+        target.write_text("ORIGINAL", encoding="utf-8")
+        with patch("storage.os.replace", side_effect=OSError("boom")):
+            with self.assertRaises(OSError):
+                _safe_write(target, "NEW")
+        # A .tmp sibling was created (left behind on failed replace by design).
+        self.assertTrue((self.tmpdir / "page.md.tmp").exists())
+
+
+class TestCorruptStateRecovery(unittest.TestCase):
+    """A truncated state/aliases file must not brick every subsequent run."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.store = MarkdownStorage(base_dir=self.tmpdir)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_corrupt_state_resets_instead_of_crashing(self):
+        self.store.state_file.write_text("{ this is not json", encoding="utf-8")
+        state = self.store.load_state()
+        self.assertEqual(state, {"processed_sessions": {}, "last_cross_reference": 0})
+
+    def test_corrupt_aliases_returns_empty(self):
+        self.store.aliases_file.write_text("{ broken", encoding="utf-8")
+        self.assertEqual(self.store.get_aliases(), [])
+
+
+class TestSecretRedaction(unittest.TestCase):
+    """Extracted content is scrubbed of credential shapes before persistence."""
+
+    def test_redacts_common_key_shapes(self):
+        cases = [
+            "sk-ant-api03-" + "A" * 40,
+            "ghp_" + "b" * 36,
+            "AKIA" + "1234567890ABCDEF",
+            "AIza" + "C" * 35,
+        ]
+        for secret in cases:
+            out = redact_secrets(f"the key is {secret} ok")
+            self.assertIn("[REDACTED]", out)
+            self.assertNotIn(secret, out)
+
+    def test_leaves_normal_text_alone(self):
+        text = "We decided to pivot the roadmap to B2B in Q3."
+        self.assertEqual(redact_secrets(text), text)
+
+    def test_save_thoughts_redacts(self):
+        tmpdir = tempfile.mkdtemp()
+        try:
+            store = MarkdownStorage(base_dir=tmpdir)
+            secret = "sk-ant-api03-" + "Z" * 40
+            store.save_thoughts(
+                [{"content": f"api key {secret}"}],
+                "claude-code", "sess1",
+                session_date="2026-01-01T00:00:00Z",
+            )
+            saved = store.get_thoughts()
+            self.assertTrue(saved)
+            self.assertNotIn(secret, saved[0]["content"])
+            self.assertIn("[REDACTED]", saved[0]["content"])
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+class TestPageSlugSafety(unittest.TestCase):
+    """Page paths derived from untrusted LLM/transcript output can't traverse."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.store = MarkdownStorage(base_dir=self.tmpdir)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_traversal_slug_rejected(self):
+        for bad in ("../../.claude/CLAUDE", "foo/bar", "..", ".hidden"):
+            with self.assertRaises(ValueError):
+                self.store.save_page(bad, "content", 1)
+
+    def test_normal_slug_ok(self):
+        self.store.save_page("kidworthy", "# Kidworthy\n", 1)
+        content, version = self.store.get_page("kidworthy")
+        self.assertIn("Kidworthy", content)
 
 
 if __name__ == "__main__":

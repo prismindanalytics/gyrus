@@ -509,6 +509,15 @@ def run_eval(args, base_dir, config):
     deep = getattr(args, "eval_deep", False)
     regression = getattr(args, "eval_regression", False)
     compare = getattr(args, "eval_compare", None)
+    only_fixture = getattr(args, "eval_fixture", None)
+
+    # These flags are advertised but not yet implemented — warn instead of
+    # silently running a different (paid) eval than the user asked for.
+    if deep:
+        print("  ⚠️  --eval-deep (LLM hallucination spot-checks) is not implemented yet — ignoring.")
+    if compare:
+        print(f"  ⚠️  --eval-compare {' '.join(compare)} is not implemented yet — "
+              "running a normal eval of the current prompts instead.")
 
     # Ensure ingest._config is set (may have been reset by import)
     if not ingest._config.get("keys"):
@@ -548,6 +557,8 @@ def run_eval(args, base_dir, config):
     # ── Extraction eval ──
     if eval_type in ("extraction", "both"):
         fixtures = load_fixtures(base_dir, "extraction")
+        if only_fixture:
+            fixtures = [f for f in fixtures if f.get("id") == only_fixture]
         if not fixtures:
             print("  No extraction fixtures found in ~/.gyrus/eval/fixtures/extraction/")
             print("  Run --eval-curate to create some, or see docs for fixture format")
@@ -566,6 +577,9 @@ def run_eval(args, base_dir, config):
                     text, None, workspace=workspace,
                     repo_groups=config.get("repo_groups")
                 )
+                if extracted is ingest.EXTRACTION_FAILED:
+                    print(f"  {fid:<28} extraction call failed (skipped)")
+                    continue
 
                 score = score_extraction(extracted, fixture)
                 scores.append(score)
@@ -595,6 +609,8 @@ def run_eval(args, base_dir, config):
     # ── Merge eval ──
     if eval_type in ("merge", "both"):
         fixtures = load_fixtures(base_dir, "merge")
+        if only_fixture:
+            fixtures = [f for f in fixtures if f.get("id") == only_fixture]
         if not fixtures:
             print("\n  No merge fixtures found in ~/.gyrus/eval/fixtures/merge/")
             print("  See docs for fixture format")

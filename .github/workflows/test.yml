@@ -19,3 +19,33 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: python -m unittest test_gyrus -v
+
+  version-lockstep:
+    # The pre-commit hook that bumps __version__ lives outside version control
+    # (core.hooksPath) and silently no-ops on GNU sed. Enforce the invariant in
+    # CI so shipped fixes actually reach users via `gyrus update`.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: ingest.py __version__ matches pyproject version
+        run: |
+          IV=$(grep -m1 '^__version__' ingest.py | sed 's/.*"\(.*\)".*/\1/')
+          PV=$(grep -m1 '^version' pyproject.toml | sed 's/.*"\(.*\)".*/\1/')
+          echo "ingest.py=$IV pyproject=$PV"
+          if [ "$IV" != "$PV" ]; then
+            echo "::error::ingest.py __version__ ($IV) != pyproject version ($PV)"
+            exit 1
+          fi
+      - name: Changes to ingest.py must bump __version__
+        if: github.event_name == 'pull_request'
+        run: |
+          base="origin/${{ github.base_ref }}"
+          git fetch origin "${{ github.base_ref }}" --depth=1 || true
+          if git diff --name-only "$base"...HEAD | grep -qx 'ingest.py'; then
+            if ! git diff "$base"...HEAD -- ingest.py | grep -q '^+__version__'; then
+              echo "::error::ingest.py changed without bumping __version__ (run the pre-commit hook or bump manually)"
+              exit 1
+            fi
+          fi

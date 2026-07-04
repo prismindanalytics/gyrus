@@ -5,6 +5,7 @@ Cross-machine sync is handled by git (see `gyrus init`).
 Optional: NotionStorage — Notion API (storage_notion.py).
 """
 
+import errno
 import json
 import os
 import re
@@ -15,15 +16,58 @@ from difflib import SequenceMatcher
 
 
 def _safe_write(path, content):
-    """Write text atomically: temp file in the same directory, then rename.
+    """Write text atomically: temp file in the same directory, fsync, rename.
 
-    A crash or full disk mid-write can never leave a truncated page,
-    aliases.json, or state file behind — the old content survives intact.
+    A crash, power loss, or full disk mid-write can never leave a truncated
+    page, aliases.json, or state file behind — the old content survives intact.
+    The fsync before rename is what makes this hold across a *system* crash
+    (kernel panic / power loss), not just a process crash.
     """
     path = Path(path)
     tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(content, encoding="utf-8")
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(content)
+        f.flush()
+        os.fsync(f.fileno())
     os.replace(tmp, path)
+    # Persist the rename itself (best-effort; not supported on every platform).
+    try:
+        dir_fd = os.open(str(path.parent), os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+    except (OSError, AttributeError):
+        pass
+
+
+# Credential shapes we never want written to disk or pushed to git. Applied to
+# extracted thought content as a defense-in-depth backstop — the extraction
+# prompt is instructed not to reproduce secrets, but an LLM is not a guarantee.
+_SECRET_PATTERNS = [
+    re.compile(r"sk-ant-[A-Za-z0-9_\-]{20,}"),
+    re.compile(r"sk-[A-Za-z0-9]{20,}"),
+    re.compile(r"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}"),
+    re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}"),
+    re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
+    re.compile(r"\bAIza[0-9A-Za-z_\-]{35}\b"),
+    re.compile(r"\bxox[baprs]-[A-Za-z0-9\-]{10,}"),
+    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----",
+               re.DOTALL),
+    re.compile(r"://[^/\s:@]+:[^/\s:@]+@"),  # scheme://user:pass@host
+]
+
+
+def redact_secrets(text):
+    """Replace anything shaped like an API key/token/private key with [REDACTED]."""
+    if not text or not isinstance(text, str):
+        return text
+    for pat in _SECRET_PATTERNS:
+        if pat is _SECRET_PATTERNS[-1]:
+            text = pat.sub("://[REDACTED]@", text)
+        else:
+            text = pat.sub("[REDACTED]", text)
+    return text
 
 
 def _safe_read(path):
@@ -85,7 +129,9 @@ class MarkdownStorage:
                     f.write(json.dumps(thought, default=str) + "\n")
                 break
             except OSError as e:
-                if e.errno == 11 and _attempt < 2:
+                # EAGAIN (11 on Linux) / EDEADLK (11 on macOS) / EWOULDBLOCK —
+                # transient lock contention; back off and retry by errno name.
+                if e.errno in (errno.EAGAIN, errno.EDEADLK, errno.EWOULDBLOCK) and _attempt < 2:
                     time.sleep(0.5 * (_attempt + 1))
                 else:
                     raise
@@ -97,12 +143,13 @@ class MarkdownStorage:
         ids = []
         for thought in thoughts:
             row = {
-                "content": thought["content"],
+                "content": redact_secrets(thought["content"]),
                 "source": source,
                 "session_id": session_id,
                 "project": thought.get("project"),
                 "canonical_project": thought.get("canonical_project"),
                 "tags": thought.get("tags", []),
+                "kind": thought.get("kind", "project"),
                 "processed": False,
                 "merged_into_page": None,
                 "skipped": thought.get("skipped", False),
@@ -143,10 +190,13 @@ class MarkdownStorage:
                         if not merged and t.get("merged_into_page"):
                             continue
                     if processed is not None:
-                        if t.get("processed") != processed:
+                        # Treat a missing key as False so rows written without
+                        # it (e.g. cross-reference thoughts) are not silently
+                        # excluded from processed=False / skipped=False queries.
+                        if bool(t.get("processed")) != processed:
                             continue
                     if skipped is not None:
-                        if t.get("skipped") != skipped:
+                        if bool(t.get("skipped")) != skipped:
                             continue
 
                     all_thoughts.append(t)
@@ -203,9 +253,22 @@ class MarkdownStorage:
 
     # ─── Knowledge Pages ───
 
+    def _page_path(self, slug):
+        """Resolve a slug to its page path, refusing traversal outside projects/.
+
+        A slug can originate from LLM/transcript output; without this guard a
+        value like ``../../.claude/CLAUDE`` would let a page write escape the
+        knowledge directory and overwrite arbitrary files."""
+        if not slug or "/" in slug or "\\" in slug or slug.startswith("."):
+            raise ValueError(f"unsafe page slug: {slug!r}")
+        filepath = (self.projects_dir / f"{slug}.md")
+        if filepath.resolve().parent != self.projects_dir.resolve():
+            raise ValueError(f"unsafe page slug: {slug!r}")
+        return filepath
+
     def get_page(self, slug):
         """Read a knowledge page. Returns (content, version) or (None, 0)."""
-        filepath = self.projects_dir / f"{slug}.md"
+        filepath = self._page_path(slug)
         if filepath.exists():
             content = _safe_read(filepath)
             # Extract version from a hidden comment at the end
@@ -222,7 +285,7 @@ class MarkdownStorage:
         Keeps a single-level backup at <slug>.bak.md so a bad merge can be rolled
         back. Validation lives in the caller (see _validate_merge_output in ingest.py).
         """
-        filepath = self.projects_dir / f"{slug}.md"
+        filepath = self._page_path(slug)
 
         # Snapshot the prior version so a bad merge is recoverable.
         if filepath.exists():
@@ -260,8 +323,13 @@ class MarkdownStorage:
     def get_aliases(self):
         """Read all project aliases. Returns list of {alias, canonical_slug}."""
         if self.aliases_file.exists():
-            with open(self.aliases_file, encoding="utf-8") as f:
-                return json.load(f)
+            try:
+                with open(self.aliases_file, encoding="utf-8") as f:
+                    return json.load(f)
+            except (json.JSONDecodeError, ValueError):
+                # A truncated/corrupt aliases file must not brick every run.
+                print(f"  ⚠️  {self.aliases_file.name} is corrupt — starting with no aliases")
+                return []
         return []
 
     def save_alias(self, alias, canonical_slug):
@@ -287,6 +355,11 @@ class MarkdownStorage:
         """Write the status.md overview file."""
         _safe_write(self.base_dir / "status.md", content)
 
+    def read_status(self):
+        """Read the status.md overview file (empty string if absent)."""
+        path = self.base_dir / "status.md"
+        return _safe_read(path) if path.exists() else ""
+
     def write_cross_cutting(self, content):
         """Write the cross-cutting.md file."""
         _safe_write(self.base_dir / "cross-cutting.md", content)
@@ -296,8 +369,13 @@ class MarkdownStorage:
     def load_state(self):
         """Load ingestion state (processed sessions, etc)."""
         if self.state_file.exists():
-            with open(self.state_file, encoding="utf-8") as f:
-                return json.load(f)
+            try:
+                with open(self.state_file, encoding="utf-8") as f:
+                    return json.load(f)
+            except (json.JSONDecodeError, ValueError):
+                # A truncated state file would otherwise crash every run. Reset
+                # rather than brick — worst case re-ingests already-seen sessions.
+                print(f"  ⚠️  {self.state_file.name} is corrupt — resetting ingest state")
         return {"processed_sessions": {}, "last_cross_reference": 0}
 
     def save_state(self, state):

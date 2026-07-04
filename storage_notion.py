@@ -4,6 +4,7 @@ Stores knowledge pages, thoughts, and aliases in Notion databases via the API.
 Uses only urllib (no external dependencies).
 """
 
+import http.client
 import json
 import os
 import time
@@ -12,6 +13,8 @@ import urllib.error
 import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
+
+from storage import _safe_write
 
 
 NOTION_API = "https://api.notion.com/v1/"
@@ -37,18 +40,25 @@ def _notion_request(method, endpoint, notion_key, data=None):
             with urllib.request.urlopen(req, timeout=30) as resp:
                 return json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as e:
-            if e.code == 429:
-                retry_after = float(e.headers.get("Retry-After", RETRY_BACKOFF * (2 ** attempt)))
-                time.sleep(retry_after)
-                continue
+            # Retry rate limits and transient server errors; a single 5xx during
+            # a Notion incident must not abort the whole run (and can leave a
+            # page half-rewritten — see _replace_page_content).
+            if e.code == 429 or e.code in (500, 502, 503, 504, 529):
+                if attempt < MAX_RETRIES - 1:
+                    retry_after = float(e.headers.get("Retry-After",
+                                        RETRY_BACKOFF * (2 ** attempt)))
+                    time.sleep(retry_after)
+                    continue
             # Read error body for debugging
             try:
                 err_body = e.read().decode("utf-8", errors="replace") if e.fp else ""
             except Exception:
                 err_body = ""
             raise RuntimeError(f"Notion API {method} {endpoint} → {e.code}: {err_body}") from e
-        except (urllib.error.URLError, TimeoutError) as e:
-            # Network blip or timeout — retry with backoff, then surface cleanly.
+        except (urllib.error.URLError, http.client.HTTPException, OSError) as e:
+            # Network blip, timeout, or truncated response body (IncompleteRead,
+            # ConnectionReset) — retry with backoff, then surface cleanly.
+            # OSError covers URLError/TimeoutError/ConnectionReset alike.
             if attempt < MAX_RETRIES - 1:
                 time.sleep(RETRY_BACKOFF * (2 ** attempt))
                 continue
@@ -75,31 +85,56 @@ def _plain_text(rich_text_array):
 
 
 def _paragraph_blocks(content):
-    """Split content into paragraph blocks (max 2000 chars each)."""
+    """Split content into paragraph blocks.
+
+    Each paragraph becomes one block; paragraphs longer than Notion's 2000-char
+    rich_text limit are represented as multiple rich_text elements *within one
+    block* (Notion allows up to 100 per block) rather than being split into
+    separate blocks — so _read_blocks can rejoin them losslessly without
+    injecting spurious paragraph breaks mid-content.
+    """
     if not content:
         return []
     blocks = []
-    # Split on double newlines for natural paragraphs, then chunk
-    paragraphs = content.split("\n\n")
-    for para in paragraphs:
+    for para in content.split("\n\n"):
         para = para.strip()
         if not para:
             continue
-        # Notion block text limit is 2000 chars
-        for i in range(0, len(para), 2000):
-            chunk = para[i:i + 2000]
+        rich = [{"type": "text", "text": {"content": para[i:i + 2000]}}
+                for i in range(0, len(para), 2000)] or [{"type": "text", "text": {"content": ""}}]
+        # Notion caps rich_text at 100 elements per block; a >200k-char
+        # paragraph is implausible for a knowledge page, but guard anyway.
+        for j in range(0, len(rich), 100):
             blocks.append({
                 "object": "block",
                 "type": "paragraph",
-                "paragraph": {
-                    "rich_text": [{"type": "text", "text": {"content": chunk}}]
-                }
+                "paragraph": {"rich_text": rich[j:j + 100]},
             })
     return blocks
 
 
+# Block types whose rich_text we can round-trip back to markdown, with the
+# prefix to re-emit. Anything not listed is read as plain text so user edits
+# in the Notion UI are preserved rather than silently deleted on next save.
+_BLOCK_PREFIX = {
+    "heading_1": "# ",
+    "heading_2": "## ",
+    "heading_3": "### ",
+    "bulleted_list_item": "- ",
+    "numbered_list_item": "- ",
+    "quote": "> ",
+    "to_do": "- [ ] ",
+    "toggle": "",
+    "callout": "",
+}
+
+
 def _read_blocks(notion_key, page_id):
-    """Read all block children of a page and return concatenated text."""
+    """Read all block children of a page and return concatenated text.
+
+    Extracts rich_text from every common block type (not just paragraphs), so
+    headings/lists/quotes/etc. the user added in the Notion UI survive the
+    read → merge → rewrite cycle instead of being dropped."""
     parts = []
     cursor = None
     while True:
@@ -109,9 +144,19 @@ def _read_blocks(notion_key, page_id):
         resp = _notion_request("GET", endpoint, notion_key)
         for block in resp.get("results", []):
             btype = block.get("type", "")
-            if btype == "paragraph":
-                text = _plain_text(block.get("paragraph", {}).get("rich_text", []))
-                parts.append(text)
+            payload = block.get(btype, {}) if isinstance(block.get(btype), dict) else {}
+            if btype == "code":
+                text = _plain_text(payload.get("rich_text", []))
+                lang = payload.get("language", "")
+                parts.append(f"```{lang}\n{text}\n```")
+            elif btype == "divider":
+                parts.append("---")
+            elif "rich_text" in payload:
+                text = _plain_text(payload.get("rich_text", []))
+                prefix = _BLOCK_PREFIX.get(btype, "")
+                if btype == "to_do" and payload.get("checked"):
+                    prefix = "- [x] "
+                parts.append(prefix + text)
         if resp.get("has_more"):
             cursor = resp.get("next_cursor")
         else:
@@ -237,8 +282,9 @@ class NotionStorage:
         return []
 
     def _save_thought_cache(self):
-        with open(self._thought_cache_file, "w", encoding="utf-8") as f:
-            json.dump(self._thought_cache, f)
+        # Atomic (temp+fsync+rename) — a crash mid-write must not corrupt the
+        # dedup cache and trigger duplicate re-ingestion into Notion.
+        _safe_write(self._thought_cache_file, json.dumps(self._thought_cache))
 
     def _query_database(self, filter_obj=None, sorts=None, page_size=100, start_cursor=None):
         """Query the main knowledge base database."""
@@ -289,28 +335,40 @@ class NotionStorage:
         return self._req("PATCH", f"pages/{page_id}", {"properties": properties})
 
     def _replace_page_content(self, page_id, content):
-        """Replace all block children of a page with new content."""
-        # Delete ALL existing blocks (paginate past 100-block limit)
-        has_more = True
+        """Replace all block children of a page with new content.
+
+        Order matters for crash-safety: we (1) record the existing block IDs,
+        (2) append the NEW blocks, then (3) delete the old ones. If the process
+        dies or the API fails between steps, the page is left with old+new
+        content (recoverable) rather than empty. Block IDs are collected with
+        a fresh paginated read *before* any mutation, so a pagination cursor is
+        never reused across deletes (which can skip blocks or 400)."""
+        # 1. Collect existing block IDs (read-only pagination — no mutation).
+        old_ids = []
         start_cursor = None
-        while has_more:
+        while True:
             url = f"blocks/{page_id}/children?page_size=100"
             if start_cursor:
                 url += f"&start_cursor={start_cursor}"
             resp = self._req("GET", url)
-            for block in resp.get("results", []):
-                try:
-                    self._req("DELETE", f"blocks/{block['id']}")
-                except RuntimeError:
-                    pass  # block may already be gone
-            has_more = resp.get("has_more", False)
-            start_cursor = resp.get("next_cursor")
+            old_ids.extend(b["id"] for b in resp.get("results", []) if b.get("id"))
+            if resp.get("has_more"):
+                start_cursor = resp.get("next_cursor")
+            else:
+                break
 
-        # Then append new blocks
+        # 2. Append the new blocks first (non-destructive on failure).
         blocks = _paragraph_blocks(content)
         for i in range(0, len(blocks), 100):
             batch = blocks[i:i + 100]
             self._req("PATCH", f"blocks/{page_id}/children", {"children": batch})
+
+        # 3. Delete the old blocks recorded in step 1.
+        for bid in old_ids:
+            try:
+                self._req("DELETE", f"blocks/{bid}")
+            except RuntimeError:
+                pass  # block may already be gone
 
     def _page_to_thought(self, page):
         """Convert a Notion page to a thought dict."""
@@ -439,17 +497,27 @@ class NotionStorage:
         return thoughts
 
     def get_recent_thoughts(self, canonical_project, limit=20):
-        """Get recent thoughts for a project (for deduplication). Uses local cache first."""
-        # Try local cache for speed
-        cached = [
-            t for t in self._thought_cache
-            if t.get("canonical_project") == canonical_project
-        ]
-        cached.sort(key=lambda t: t.get("created_at", ""), reverse=True)
-        if cached:
-            return cached[:limit]
-        # Fallback to Notion query
-        return self.get_thoughts(canonical_project=canonical_project, limit=limit, order_desc=True)
+        """Get recent thoughts for a project (for deduplication).
+
+        Notion is the source of truth (multiple machines write to it), so query
+        it and merge with the local cache — otherwise a machine that has ever
+        saved a thought for this project would only ever dedup against its own
+        cache and miss thoughts written by other machines."""
+        merged = {}
+        try:
+            for t in self.get_thoughts(canonical_project=canonical_project,
+                                       limit=limit, order_desc=True):
+                if t.get("id"):
+                    merged[t["id"]] = t
+        except RuntimeError:
+            # Notion unreachable — fall back to the local cache alone.
+            pass
+        for t in self._thought_cache:
+            if t.get("canonical_project") == canonical_project and t.get("id"):
+                merged.setdefault(t["id"], t)
+        results = sorted(merged.values(),
+                         key=lambda t: t.get("created_at", ""), reverse=True)
+        return results[:limit]
 
     def update_thought(self, thought_id, updates):
         """Update a thought's properties by its Notion page ID."""
@@ -526,12 +594,14 @@ class NotionStorage:
         page_type = "me" if slug == "me" else "project"
 
         if results:
-            # Update existing page
+            # Update existing page. Replace content FIRST, then bump the Version
+            # property — so a failure mid-replace never leaves the page claiming
+            # version N+1 with empty/partial body.
             page_id = results[0]["id"]
+            self._replace_page_content(page_id, content)
             self._update_page(page_id, {
                 "Version": {"number": version},
             })
-            self._replace_page_content(page_id, content)
         else:
             # Create new page
             props = {
@@ -620,7 +690,31 @@ class NotionStorage:
                 }
             })
 
+    def save_aliases(self, aliases):
+        """Upsert the full alias list (interface parity with MarkdownStorage)."""
+        for a in aliases:
+            alias = a.get("alias")
+            if alias:
+                self.save_alias(alias, a.get("canonical_slug", ""))
+
     # ─── Status & Sync ───
+
+    def read_status(self):
+        """Read the status page content as text (empty string if absent)."""
+        filter_obj = {
+            "and": [
+                {"property": "Title", "title": {"equals": "status"}},
+                {"property": "Type", "select": {"equals": "status"}},
+            ]
+        }
+        try:
+            resp = self._query_database(filter_obj, page_size=1)
+        except RuntimeError:
+            return ""
+        results = resp.get("results", [])
+        if not results:
+            return ""
+        return _read_blocks(self.notion_key, results[0]["id"])
 
     def write_status(self, content):
         """Write the status page (Type=status, Title=status)."""
@@ -679,6 +773,8 @@ class NotionStorage:
         return {"processed_sessions": {}, "last_cross_reference": 0}
 
     def save_state(self, state):
-        """Save ingestion state to local JSON."""
-        with open(self.state_file, "w", encoding="utf-8") as f:
-            json.dump(state, f, indent=2)
+        """Save ingestion state to local JSON (atomic: temp+fsync+rename).
+
+        A crash mid-write must not truncate the state file — that would reset
+        ingest state and re-ingest every historical session into Notion."""
+        _safe_write(self.state_file, json.dumps(state, indent=2))

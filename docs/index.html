@@ -192,7 +192,7 @@
           </svg>
         </button>
       </div>
-      <p class="text-xs text-surface-600 mt-4">One command. Bring your own API key. macOS, Linux &amp; Windows.</p>
+      <p class="text-xs text-surface-600 mt-4">One command. Bring your own API key. macOS &amp; Linux. <span class="text-surface-700">Windows: see the README for the PowerShell installer.</span></p>
     </div>
   </section>
 
@@ -313,6 +313,12 @@ Done. 269 sessions, 1226 thoughts, 31 project pages.
           <span class="px-3 py-1.5 rounded-md bg-surface-200 border border-white/5 text-xs font-mono text-surface-800">Claude Cowork</span>
           <span class="px-3 py-1.5 rounded-md bg-surface-200 border border-white/5 text-xs font-mono text-surface-800">OpenAI Codex</span>
           <span class="px-3 py-1.5 rounded-md bg-surface-200 border border-white/5 text-xs font-mono text-surface-800">Google Antigravity</span>
+          <span class="px-3 py-1.5 rounded-md bg-surface-200 border border-white/5 text-xs font-mono text-surface-800">Cursor</span>
+          <span class="px-3 py-1.5 rounded-md bg-surface-200 border border-white/5 text-xs font-mono text-surface-800">GitHub Copilot</span>
+          <span class="px-3 py-1.5 rounded-md bg-surface-200 border border-white/5 text-xs font-mono text-surface-800">Cline</span>
+          <span class="px-3 py-1.5 rounded-md bg-surface-200 border border-white/5 text-xs font-mono text-surface-800">Continue.dev</span>
+          <span class="px-3 py-1.5 rounded-md bg-surface-200 border border-white/5 text-xs font-mono text-surface-800">Aider</span>
+          <span class="px-3 py-1.5 rounded-md bg-surface-200 border border-white/5 text-xs font-mono text-surface-800">OpenCode</span>
         </div>
       </div>
     </div>
@@ -494,7 +500,7 @@ Done. 269 sessions, 1226 thoughts, 31 project pages.
   <section id="models" class="py-24 sm:py-32 fade-section">
     <div class="max-w-4xl mx-auto px-6">
       <h2 class="text-3xl sm:text-4xl font-bold text-white mb-4 text-center">You pick the model</h2>
-      <p class="text-surface-800 text-center mb-12 max-w-2xl mx-auto">16 models across Anthropic, OpenAI, and Google. Run <code class="font-mono text-purple-400 text-sm">compare</code> to benchmark them on your own sessions &mdash; it tests extraction quality, generates sample wiki pages, and an AI judge grades each model. You choose both extraction and merge models.</p>
+      <p class="text-surface-800 text-center mb-12 max-w-2xl mx-auto">15 models across Anthropic, OpenAI, and Google. Run <code class="font-mono text-purple-400 text-sm">compare</code> to benchmark them on your own sessions &mdash; it tests extraction quality, generates sample wiki pages, and an AI judge grades each model. You choose both extraction and merge models.</p>
 
       <!-- Benchmark table -->
       <div class="rounded-xl border border-white/5 bg-surface-200 overflow-hidden mb-8">
@@ -773,7 +779,7 @@ gyrus init --clone &lt;your-repo-url&gt;</pre>
             <svg class="faq-chevron w-5 h-5 text-surface-700 shrink-0 transition-transform duration-200" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"></polyline></svg>
           </button>
           <div class="faq-answer px-6">
-            <p class="text-sm text-surface-800 pb-4 leading-relaxed">Gyrus currently supports Claude Code, Claude Cowork, OpenAI Codex, and Google Antigravity. More tools added on request&thinsp;&mdash;&thinsp;each one just needs a session reader (~30 lines of Python). Contributions welcome.</p>
+            <p class="text-sm text-surface-800 pb-4 leading-relaxed">Gyrus currently supports 10 AI coding tools: Claude Code, Claude Cowork, OpenAI Codex, Google Antigravity, Cursor, GitHub Copilot, Cline, Continue.dev, Aider, and OpenCode. More tools added on request&thinsp;&mdash;&thinsp;each one just needs a session reader (~30 lines of Python). Contributions welcome.</p>
           </div>
         </div>
 
@@ -783,7 +789,7 @@ gyrus init --clone &lt;your-repo-url&gt;</pre>
             <svg class="faq-chevron w-5 h-5 text-surface-700 shrink-0 transition-transform duration-200" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"></polyline></svg>
           </button>
           <div class="faq-answer px-6">
-            <p class="text-sm text-surface-800 pb-4 leading-relaxed">Gyrus runs entirely on your machine by default. Sessions are sent to your chosen LLM API for extraction (same as using any AI tool), but your knowledge base stays local as plain markdown files. Cross-machine sync is handled by a <strong class="text-white">private GitHub repo you own</strong>&thinsp;&mdash;&thinsp;your data never touches any third-party cloud.</p>
+            <p class="text-sm text-surface-800 pb-4 leading-relaxed">Gyrus runs entirely on your machine by default. Sessions are sent to your chosen LLM API for extraction (same as using any AI tool), but your knowledge base stays local as plain markdown files. Cross-machine sync is handled by a <strong class="text-white">private GitHub repo you own</strong>&thinsp;&mdash;&thinsp;no Gyrus servers ever see your data, and nothing leaves your machine unless you opt in.</p>
           </div>
         </div>
 

@@ -10,7 +10,7 @@ Knowledge pages are local markdown files by default.
 https://gyrus.sh
 """
 
-__version__ = "2026.06.09.4"
+__version__ = "2026.07.04.1"
 
 import argparse
 import atexit
@@ -44,11 +44,45 @@ for _stream in (sys.stdout, sys.stderr):
 # ─── Lockfile (prevents concurrent ingest runs) ───
 
 def _lock_path():
-    """Get lock file path — always local, never in synced folder."""
+    """Get lock file path — always local, never in synced folder.
+
+    Honors $GYRUS_LOCK_DIR so tests (and unusual setups) can sandbox the lock
+    instead of touching the shared machine-wide one."""
     import tempfile
-    lock_dir = Path(tempfile.gettempdir()) / "gyrus"
+    override = os.environ.get("GYRUS_LOCK_DIR")
+    lock_dir = Path(override) if override else Path(tempfile.gettempdir()) / "gyrus"
     lock_dir.mkdir(parents=True, exist_ok=True)
     return lock_dir / ".gyrus.lock"
+
+
+# A run can legitimately take a long time (a first-run backlog of hundreds of
+# sessions extracted through a local LLM is easily an hour). Only treat a lock
+# as abandoned after 4h — and refresh its timestamp during long runs so a
+# still-live run is never mistaken for a stale one.
+_LOCK_STALE_SECONDS = 4 * 3600
+
+
+def _pid_alive(pid):
+    """Best-effort liveness check for a PID on this machine."""
+    if not pid:
+        return False
+    try:
+        os.kill(int(pid), 0)
+    except ProcessLookupError:
+        return False
+    except (PermissionError, OSError):
+        return True  # Exists but owned by another user / can't signal.
+    except (ValueError, TypeError):
+        return False
+    return True
+
+
+def _write_lock(lock_path):
+    lock_path.write_text(json.dumps({
+        "machine": socket.gethostname(),
+        "pid": os.getpid(),
+        "time": time.time(),
+    }), encoding="utf-8")
 
 
 def _acquire_lock(base_dir):
@@ -62,10 +96,18 @@ def _acquire_lock(base_dir):
             lock_data = json.loads(lock_path.read_text(encoding="utf-8"))
             lock_age = time.time() - lock_data.get("time", 0)
             lock_machine = lock_data.get("machine", "unknown")
-            # Stale lock (older than 30 minutes) — steal it
-            if lock_age > 1800:
+            lock_pid = lock_data.get("pid")
+            same_machine = lock_machine == socket.gethostname()
+            if lock_age > _LOCK_STALE_SECONDS:
+                # Past the hard cap — steal regardless (guards against a lock
+                # whose PID was recycled by an unrelated process).
                 print(f"  Stale lock from {lock_machine} ({lock_age/60:.0f}m ago) — overriding")
+            elif same_machine and lock_pid is not None and not _pid_alive(lock_pid):
+                # Same machine and the owner is gone — steal immediately.
+                print(f"  Dead lock from {lock_machine} (pid {lock_pid}) — overriding")
             else:
+                # Live PID (or a recent lock from another machine) — respect it,
+                # even for a long-running ingest (refreshed timestamps keep it live).
                 print(f"  Another Gyrus instance is running on {lock_machine} "
                       f"({lock_age/60:.0f}m ago). Skipping.")
                 return False
@@ -73,25 +115,53 @@ def _acquire_lock(base_dir):
             pass  # Corrupt or inaccessible lock — override it
 
     try:
-        lock_path.write_text(json.dumps({
-            "machine": socket.gethostname(),
-            "pid": os.getpid(),
-            "time": time.time(),
-        }), encoding="utf-8")
-        atexit.register(lambda: lock_path.unlink(missing_ok=True))
+        _write_lock(lock_path)
+        atexit.register(lambda: _release_lock(base_dir))
     except OSError:
         pass  # Can't write lock — proceed anyway
     return True
 
 
-def _release_lock(base_dir):
-    """Release the lockfile."""
+def _refresh_lock():
+    """Re-stamp our lock's timestamp so a long-running ingest is not mistaken
+    for a stale lock by a concurrently-firing cron run. Only rewrites the lock
+    if we still own it. Best-effort; never raises."""
+    lock_path = _lock_path()
     try:
-        _lock_path().unlink(missing_ok=True)
+        data = json.loads(lock_path.read_text(encoding="utf-8"))
+        if data.get("pid") == os.getpid():
+            _write_lock(lock_path)
+    except (json.JSONDecodeError, IOError, OSError):
+        pass
+
+
+def _release_lock(base_dir):
+    """Release the lockfile, but only if we still own it — never delete a lock
+    that a stolen/concurrent run now holds."""
+    lock_path = _lock_path()
+    try:
+        data = json.loads(lock_path.read_text(encoding="utf-8"))
+        if data.get("pid") not in (os.getpid(), None):
+            return  # Owned by another process — leave it alone.
+    except (json.JSONDecodeError, IOError, OSError):
+        pass  # Unreadable — fall through and best-effort unlink.
+    try:
+        lock_path.unlink(missing_ok=True)
     except OSError:
         pass
 
 from storage import MarkdownStorage, _safe_write as _atomic_write
+
+_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+
+
+def _is_valid_slug(slug):
+    """A safe project slug: lowercase alnum + dashes, no path separators.
+
+    Guards every place a slug becomes a filesystem path so a value derived
+    from untrusted transcript/LLM output can't traverse (``../``) out of the
+    projects directory."""
+    return bool(slug) and isinstance(slug, str) and bool(_SLUG_RE.match(slug))
 
 _SYSTEM = platform.system()
 _MACHINE = socket.gethostname()
@@ -489,10 +559,13 @@ def _extract_repo_name(workspace_folder):
             folder = folder[idx + len(marker):]
             break
     else:
-        # No known marker found — might be just "-Users-username"
-        if not any(c.isalpha() for c in folder.replace("-", "")):
+        # No known marker found. If what's left is a bare username with no
+        # further path segment (e.g. "-Users-alice" → "alice"), this is a
+        # home-directory session with no specific repo — don't invent a
+        # project named after the user.
+        if "-" not in folder:
             return ""
-        # Use the whole remaining string
+        # Otherwise use the whole remaining string.
         pass
 
     if not folder:
@@ -768,7 +841,12 @@ def find_aider_sessions(state):
                 continue
             seen.add(md_file)
             mtime = os.path.getmtime(md_file)
-            session_id = f"aider-{Path(md_file).parent.name}"
+            parent = Path(md_file).parent
+            # Disambiguate by full path — two checkouts with the same basename
+            # (~/code/app and ~/Documents/app) would otherwise share a state
+            # key and one would permanently shadow the other.
+            path_hash = hashlib.sha1(str(parent).encode()).hexdigest()[:8]
+            session_id = f"aider-{parent.name}-{path_hash}"
             if mtime > state["processed_sessions"].get(f"aider:{session_id}", 0):
                 sessions.append({
                     "type": "aider", "path": md_file,
@@ -864,7 +942,11 @@ def extract_claude_code_conversation(path, max_chars=30000):
                 try:
                     entry = json.loads(line.strip())
                     msg_type = entry.get("type", "")
-                    if msg_type not in ("human", "assistant"):
+                    # Current Claude Code transcripts label user turns "user";
+                    # older ones used "human". Keep both so user prompts,
+                    # decisions, and tool_result blocks (which live inside
+                    # user-type rows) reach the extractor.
+                    if msg_type not in ("user", "human", "assistant"):
                         continue
                     message = entry.get("message", {})
                     role = message.get("role", msg_type)
@@ -1303,12 +1385,16 @@ def _call_anthropic(model, messages, max_tokens, api_key, temperature=0):
 
 def _call_openai(model, messages, max_tokens, api_key, temperature=0):
     """Call OpenAI Chat Completions API."""
-    body = json.dumps({
+    payload = {
         "model": model,
         "max_completion_tokens": max_tokens,
-        "temperature": temperature,
         "messages": messages,
-    }).encode()
+    }
+    # o-series and GPT-5 reasoning models reject any temperature other than the
+    # default (1) with HTTP 400, so only send the field for models that accept it.
+    if not re.match(r"^(o\d|gpt-5)", model):
+        payload["temperature"] = temperature
+    body = json.dumps(payload).encode()
 
     req = Request(
         "https://api.openai.com/v1/chat/completions",
@@ -1514,7 +1600,8 @@ def call_llm(prompt, role="extract", max_tokens=4096, model_override=None):
     if not api_key and provider != "local":
         raise ValueError(
             f"No API key for provider '{provider}'. "
-            f"Set --{provider}-key or {provider.upper()}_API_KEY environment variable."
+            f"Add {provider.upper()}_API_KEY to ~/.gyrus/.env "
+            f"(or export it as an environment variable)."
         )
 
     messages = [{"role": "user", "content": prompt}]
@@ -1530,15 +1617,21 @@ def call_llm(prompt, role="extract", max_tokens=4096, model_override=None):
     if not caller:
         raise ValueError(f"Unknown provider: {provider}")
 
-    # Retry on transient errors (500, 502, 503, 529, timeouts)
+    # Retry on transient errors (429 rate limits, 5xx, timeouts, overloaded).
     for attempt in range(3):
         try:
             return caller(model_id, messages, max_tokens, api_key)
         except Exception as e:
-            err_str = str(e)
-            retriable = any(code in err_str for code in ["500", "502", "503", "529", "timed out"])
+            err_str = str(e).lower()
+            rate_limited = "429" in err_str or "too many requests" in err_str
+            retriable = rate_limited or any(
+                s in err_str for s in
+                ["408", "500", "502", "503", "504", "529",
+                 "timed out", "overloaded"]
+            )
             if retriable and attempt < 2:
-                time.sleep(2 ** attempt)  # 1s, 2s backoff
+                # Rate-limit windows rarely clear in 1-2s, so back off harder.
+                time.sleep(15 * (attempt + 1) if rate_limited else 2 ** attempt)
                 continue
             raise
 
@@ -1556,8 +1649,18 @@ def _strip_json_fences(text):
     return text.strip()
 
 
+# Sentinel returned by call_claude when extraction *failed* (API/parse error),
+# as opposed to succeeding with an empty thought list. The ingest loop must not
+# mark a failed session as processed, or a transient provider outage would
+# permanently skip the whole backlog.
+EXTRACTION_FAILED = object()
+
+
 def call_claude(text, anthropic_key, workspace="", repo_groups=None):
-    """Extract thoughts — uses configured extraction model."""
+    """Extract thoughts — uses configured extraction model.
+
+    Returns a list of thought dicts on success (possibly empty), or the
+    EXTRACTION_FAILED sentinel if the LLM call or response parsing errored."""
     # Build workspace context header
     workspace_header = ""
     if workspace:
@@ -1587,18 +1690,29 @@ def call_claude(text, anthropic_key, workspace="", repo_groups=None):
                     thoughts = []
             else:
                 thoughts = []
-        # Normalize: some models return strings instead of objects
+        # Normalize: some models return strings instead of objects, and small
+        # local models emit near-miss schemas (missing/non-string 'content').
+        # Only keep thoughts with usable string content so a malformed row can
+        # never crash a later consumer (storage.save_thoughts, dedup, digests).
         normalized = []
         for t in thoughts:
             if isinstance(t, dict):
-                normalized.append(t)
+                c = t.get("content")
+                if isinstance(c, (int, float)) and not isinstance(c, bool):
+                    c = str(c)
+                    t["content"] = c
+                if isinstance(c, str) and len(c.strip()) > 10:
+                    normalized.append(t)
             elif isinstance(t, str) and len(t) > 10:
                 normalized.append({"content": t, "project": None, "tags": [], "kind": "project"})
         return normalized
     except (OSError, json.JSONDecodeError, KeyError, IndexError, ValueError) as e:
         # OSError covers HTTPError, URLError, and socket timeouts alike.
+        # Return a sentinel (not []) so the ingest loop can tell "extraction
+        # failed" apart from "session had no thoughts" and avoid permanently
+        # marking a failed session as processed (retries it next run instead).
         print(f"  LLM extraction error: {e}")
-        return []
+        return EXTRACTION_FAILED
 
 
 def call_sonnet(prompt, anthropic_key, max_tokens=8192):
@@ -1737,9 +1851,11 @@ def resolve_aliases(thoughts, store, repo_groups=None):
             # (We're guaranteed to have a project here: the `if not project:`
             # branch at the top of the loop `continue`s before we get here.)
             slug = project.lower().replace(" ", "-")
-            slug = "".join(c for c in slug if c.isalnum() or c == "-")
-            # Never create UUID slugs — skip if the result looks like a UUID
-            if _uuid_re.match(slug):
+            slug = "".join(c for c in slug if c.isalnum() or c == "-").strip("-")
+            # Skip empty slugs (symbol-only names like "++" or "???") and
+            # UUID-looking slugs — persisting either creates a permanently
+            # broken alias that misroutes all future thoughts for this name.
+            if not slug or _uuid_re.match(slug):
                 continue
             t["canonical_project"] = slug
             aliases[project] = slug
@@ -2042,13 +2158,17 @@ def run_cross_reference_scan(store, anthropic_key, new_thoughts=None):
                 projects = f.get("projects", [])
                 print(f"      [{ftype}] {', '.join(projects)}: {desc[:80]}")
 
-                # Save as cross-cutting thought
+                # Save as cross-cutting thought. Include skipped/processed so
+                # get_thoughts(skipped=False) doesn't filter these out (a
+                # missing key would compare None != False and drop the row).
                 store.save_thought({
                     "content": f"[{ftype}] {desc}",
                     "source": "gyrus",
                     "session_id": "cross-reference-scan",
                     "project": None,
                     "tags": ["cross-reference", ftype] + projects,
+                    "skipped": False,
+                    "processed": False,
                     "created_at": datetime.now(timezone.utc).isoformat(),
                 })
         else:
@@ -2064,11 +2184,17 @@ def _parse_status_overrides(store):
     Format: each line like `- **project-slug**: active | ...` or `- **project-slug**: killed`
     The first word after the colon is the status override.
     """
-    status_path = store.base_dir / "status.md" if hasattr(store, "base_dir") else Path.home() / ".gyrus" / "status.md"
+    # Read through the storage interface so overrides work on the Notion
+    # backend too (where status lives in a Notion page, not a local status.md).
     overrides = {}
-    if not status_path.exists():
+    if hasattr(store, "read_status"):
+        status_text = store.read_status()
+    else:
+        status_path = store.base_dir / "status.md" if hasattr(store, "base_dir") else Path.home() / ".gyrus" / "status.md"
+        status_text = status_path.read_text(encoding="utf-8") if status_path.exists() else ""
+    if not status_text:
         return overrides
-    for line in status_path.read_text(encoding="utf-8").splitlines():
+    for line in status_text.splitlines():
         line = line.strip()
         if not line.startswith("- **"):
             continue
@@ -2299,6 +2425,18 @@ def _git_attach_head_to_default(base_dir):
     # Make sure refs/remotes/origin/<default> exists locally before we point at it
     _git_run(["fetch", "origin", "--quiet"], base_dir, timeout=30)
     default = _git_default_remote_branch(base_dir)
+    # If a local <default> branch already exists (e.g. the user manually
+    # detached HEAD but the branch still holds unpushed commits), attach to it
+    # with `switch` instead of `checkout -B origin/<default>` — the latter would
+    # reset the branch and discard those commits.
+    rc_have, _, _ = _git_run(
+        ["rev-parse", "--verify", "--quiet", f"refs/heads/{default}"],
+        base_dir, timeout=5,
+    )
+    if rc_have == 0:
+        rc_sw, _, _ = _git_run(["checkout", default], base_dir, timeout=10)
+        if rc_sw == 0:
+            return True, default
     rc, _, err = _git_run(
         ["checkout", "-B", default, f"origin/{default}"],
         base_dir, timeout=15,
@@ -2353,7 +2491,38 @@ def _git_commit_push(base_dir, message, quiet=True):
         if not ok_attach:
             return False, f"detached HEAD: {branch_or_msg}"
         # Continue with the attach result; pushes below will resolve cleanly.
-    _git_run(["add", "-A"], base_dir, timeout=15)
+    # Defense in depth: the only thing keeping .env (API keys) and per-machine
+    # state out of the repo is .gitignore. If the repo was wired up manually
+    # (git init + remote add, no gitignore), recreate it before staging so a
+    # `git add -A` can never commit secrets.
+    gitignore = Path(base_dir) / ".gitignore"
+    if not gitignore.exists():
+        try:
+            gitignore.write_text(_DEFAULT_GITIGNORE, encoding="utf-8")
+        except OSError:
+            pass
+    # Stage everything except sensitive/per-machine files, belt-and-suspenders
+    # even if .gitignore is somehow stale. config.json is per-machine (model
+    # choice, local endpoint, and any digest credentials) — never sync it.
+    _git_run(["add", "-A", "--",
+              ":!.env", ":!config.json", ":!.ingest-state.json",
+              ":!ingest.log", ":!.gyrus.lock"],
+             base_dir, timeout=15)
+    # If .env was already tracked (committed before this guard existed), untrack
+    # it and warn loudly rather than pushing the key again.
+    rc_tracked, tracked, _ = _git_run(
+        ["ls-files", ".env"], base_dir, timeout=5,
+    )
+    if tracked.strip():
+        _git_run(["rm", "--cached", "--quiet", "--", ".env"], base_dir, timeout=10)
+        print("  ⚠️  .env was tracked in git — untracking it now. Your API keys "
+              "may already be in git history; rotate them and consider "
+              "rewriting history (git filter-repo).")
+    # Quietly untrack config.json on repos that synced it before it became
+    # per-machine (keeps the local file, just stops syncing model/creds).
+    rc_cfg, cfg_tracked, _ = _git_run(["ls-files", "config.json"], base_dir, timeout=5)
+    if cfg_tracked.strip():
+        _git_run(["rm", "--cached", "--quiet", "--", "config.json"], base_dir, timeout=10)
     rc, staged, _ = _git_run(
         ["diff", "--cached", "--name-only"], base_dir, timeout=10,
     )
@@ -2396,6 +2565,54 @@ def _git_commit_push(base_dir, message, quiet=True):
     return True, f"pushed {n_files} file(s)"
 
 
+# Files that, if present at the repo root, get imported/executed by the very
+# next `gyrus` run (the wrapper runs ingest.py with cwd == the synced repo, so
+# the repo root is first on sys.path). The knowledge repo holds DATA only —
+# anyone with push access to it must not thereby gain code execution on every
+# synced machine. These are neutralized after each pull.
+_DANGEROUS_SYNCED_NAMES = {
+    "pyproject.toml", "uv.toml", "uv.lock", ".python-version",
+    "setup.py", "setup.cfg", "sitecustomize.py", "usercustomize.py",
+    "conftest.py",
+}
+
+
+def _neutralize_synced_code(base_dir):
+    """Quarantine any executable/config code files that arrived via sync.
+
+    A tracked root-level *.py or build-config file in the knowledge repo is
+    almost certainly a code-injection attempt (or accident): Python would
+    import it ahead of the stdlib on the next run. Rename it out of import
+    range and warn. The gyrus modules themselves are gitignored, so a legit
+    data repo has none of these tracked."""
+    base = Path(base_dir)
+    rc, listed, _ = _git_run(["ls-files", "--", "*.py", "*.toml", ".python-version",
+                              "setup.cfg", "*.pth"], base, timeout=10)
+    if rc != 0 or not listed.strip():
+        return
+    flagged = []
+    for rel in listed.splitlines():
+        rel = rel.strip()
+        if not rel or "/" in rel:
+            continue  # Only root-level files are on sys.path[0].
+        if rel.endswith((".py", ".pth")) or rel in _DANGEROUS_SYNCED_NAMES:
+            flagged.append(rel)
+    for rel in flagged:
+        src = base / rel
+        if not src.exists():
+            continue
+        dest = base / f"{rel}.UNTRUSTED"
+        try:
+            os.replace(src, dest)
+        except OSError:
+            continue
+    if flagged:
+        print("  🚨 SECURITY: the synced repo contained executable/config files "
+              f"({', '.join(flagged)}) that gyrus would have run. They were "
+              "renamed to *.UNTRUSTED and NOT executed. Someone with push "
+              "access to your knowledge repo may be attempting code injection.")
+
+
 def _autosync_pull(base_dir):
     """Quiet pull on every run. Prints a single line if something happened."""
     if not _git_remote_url(base_dir):
@@ -2403,6 +2620,7 @@ def _autosync_pull(base_dir):
     ok, msg = _git_pull(base_dir)
     if ok and msg == "pulled":
         print("  ↻ pulled latest from origin")
+        _neutralize_synced_code(base_dir)
     elif not ok:
         print(f"  ⚠️  git pull failed ({msg}) — continuing with local state")
 
@@ -2576,18 +2794,26 @@ def _doctor_check_env(base_dir):
 
 
 def _doctor_check_sources():
-    """Check that at least one AI-tool session source is reachable."""
+    """Check that at least one AI-tool session source is reachable.
+
+    Uses the real session finders (with an empty state so every session
+    counts) so doctor and ingest can never disagree — each tool stores
+    sessions at a different depth/format (Codex 4 levels deep, Cursor as
+    state.vscdb, Antigravity as .md/.txt), which a single glob can't match."""
+    empty = {"processed_sessions": {}}
+    finders = {
+        "claude-code": find_claude_code_sessions,
+        "cowork": find_cowork_sessions,
+        "codex": find_codex_sessions,
+        "antigravity": find_antigravity_sessions,
+        "cursor": find_cursor_sessions,
+    }
     total = 0
     hits = []
-    for name in ("claude-code", "cowork", "codex", "antigravity", "cursor"):
-        base = PATHS.get(name)
-        if not base or not Path(base).exists():
-            continue
-        # Count *.jsonl files two levels deep (don't recurse into everything)
+    for name, finder in finders.items():
         try:
-            cnt = len(list(Path(base).glob("*/*.jsonl")))
-            cnt += len(list(Path(base).glob("*/*/*.jsonl")))
-        except OSError:
+            cnt = len(finder(empty))
+        except Exception:
             cnt = 0
         if cnt:
             hits.append(f"{name} ({cnt})")
@@ -3006,7 +3232,8 @@ storage_notion.py
 eval_prompts.py
 model-comparison.html
 
-# per-machine
+# per-machine (model choice, local endpoint, digest creds — NOT shared)
+config.json
 .ingest-state.json
 ingest.log
 latest-digest.md
@@ -3068,10 +3295,10 @@ def run_init(clone_url=None, location=None):
         return _init_clone(clone_url, location)
 
     default_loc = Path.home() / "gyrus-local"
-    loc = Path(location) if location else Path(
+    loc = (Path(location) if location else Path(
         _prompt(f"  (1/4) Storage location  [{default_loc}]: ",
                 str(default_loc))
-    ).expanduser()
+    )).expanduser()
 
     provider = _detect_cloud_sync(loc)
     if provider:
@@ -3545,6 +3772,12 @@ def _llm_suggest_merges(pages, existing_cluster_slugs=None):
         fragments = s.get("fragments", [])
         if not canonical or not fragments:
             continue
+        # The canonical target is written verbatim into aliases.json and used
+        # to build a `<slug>.md` file path. Reject anything that isn't a clean
+        # slug so a prompt-injected value like "../../.claude/CLAUDE" can't
+        # traverse out of projects/ and overwrite arbitrary files.
+        if not _is_valid_slug(canonical):
+            continue
         # Only accept fragments that actually exist as project slugs
         frags_ok = [f for f in fragments
                     if f in eligible_slugs and f != canonical]
@@ -3706,6 +3939,19 @@ def run_merge(store, slugs, yes=False):
         print(f"  nothing to merge (all source slugs equal '{into}')")
         return 0
 
+    # The target becomes a page path; reject anything that isn't a clean slug.
+    if not _is_valid_slug(into):
+        print(f"  invalid target slug: {into!r} (expected lowercase letters, "
+              f"digits, and dashes)")
+        return 2
+
+    # Merging is destructive (rewrites aliases + thoughts, deletes pages).
+    # Never auto-confirm in a non-interactive context — require --yes there.
+    if not yes and not sys.stdin.isatty():
+        print("  Refusing a destructive merge without --yes in a "
+              "non-interactive session.")
+        return 1
+
     print()
     print(f"  🔀 Merge into '{into}':")
     for s in from_slugs:
@@ -3751,6 +3997,21 @@ def run_merge(store, slugs, yes=False):
             print("  Aborted.")
             return 1
 
+    # Hold the ingest lock while rewriting aliases/thoughts so a concurrent
+    # cron ingest can't interleave writes to the same JSONL files.
+    if not _acquire_lock(store.base_dir):
+        print("  Another Gyrus run holds the lock — try again shortly.")
+        return 1
+
+    try:
+        return _run_merge_locked(store, into, from_slugs, aliases, thoughts_dir,
+                                 projects_dir, affected_pages)
+    finally:
+        _release_lock(store.base_dir)
+
+
+def _run_merge_locked(store, into, from_slugs, aliases, thoughts_dir,
+                      projects_dir, affected_pages):
     # 1. Rewrite aliases.json
     changed_aliases = 0
     for a in aliases:
@@ -3846,13 +4107,19 @@ def run_models(base_dir, yes=False):
     print(f"    extract: {_label(current_extract)}")
     print(f"    merge:   {_label(current_merge)}")
 
-    # What keys does the user have?
+    # What keys does the user have? Check both ~/.gyrus/.env and the process
+    # environment — env-var users have no .env file but are fully configured.
     env_file = base_dir / ".env"
     env_text = env_file.read_text(encoding="utf-8") if env_file.exists() else ""
+
+    def _has(*names):
+        return (any(f"{n}=" in env_text for n in names)
+                or any(os.environ.get(n) for n in names))
+
     has_key = {
-        "anthropic": "ANTHROPIC_API_KEY=" in env_text,
-        "openai":    "OPENAI_API_KEY=" in env_text,
-        "google":    "GEMINI_API_KEY=" in env_text or "GOOGLE_API_KEY=" in env_text,
+        "anthropic": _has("ANTHROPIC_API_KEY"),
+        "openai":    _has("OPENAI_API_KEY"),
+        "google":    _has("GEMINI_API_KEY", "GOOGLE_API_KEY"),
     }
 
     # Cloud options
@@ -4342,7 +4609,13 @@ def send_digest_email(digest, digest_config, base_dir):
         return
 
     if provider == "resend":
-        api_key = digest_config.get("resend_api_key") or os.environ.get("RESEND_API_KEY")
+        # Prefer the environment: config.json is per-machine but a credential
+        # belongs in ~/.gyrus/.env, not config.json.
+        api_key = os.environ.get("RESEND_API_KEY") or digest_config.get("resend_api_key")
+        if digest_config.get("resend_api_key"):
+            print("  ⚠️  resend_api_key found in config.json — move it to "
+                  "~/.gyrus/.env as RESEND_API_KEY (config.json is not synced, "
+                  "but .env keeps credentials out of config files entirely).")
         if not api_key:
             print("  Digest email skipped: no RESEND_API_KEY")
             return
@@ -4412,7 +4685,10 @@ def _send_smtp(config, to_email, digest):
     smtp_host = config.get("smtp_host", "smtp.gmail.com")
     smtp_port = config.get("smtp_port", 587)
     smtp_user = config.get("smtp_user", "")
-    smtp_pass = config.get("smtp_pass") or os.environ.get("SMTP_PASSWORD", "")
+    smtp_pass = os.environ.get("SMTP_PASSWORD") or config.get("smtp_pass") or ""
+    if config.get("smtp_pass"):
+        print("  ⚠️  smtp_pass found in config.json — move it to ~/.gyrus/.env "
+              "as SMTP_PASSWORD.")
 
     if not smtp_user or not smtp_pass:
         print("  Digest email skipped: no SMTP credentials")
@@ -4448,6 +4724,27 @@ def _load_config(store):
         except (json.JSONDecodeError, IOError):
             pass
     return {}
+
+
+def _resolve_store(args, env_base, parser):
+    """Build the storage backend selected by --storage, honoring NOTION_* env.
+
+    Used by the early subcommand handlers so they operate on the store the
+    user actually chose instead of always defaulting to local markdown."""
+    if args.storage == "notion":
+        try:
+            from storage_notion import NotionStorage
+        except ImportError:
+            parser.error("Notion storage requires storage_notion.py. "
+                         "Download it from https://github.com/prismindanalytics/gyrus")
+        notion_key = args.notion_key or os.environ.get("NOTION_API_KEY")
+        if not notion_key:
+            parser.error("--notion-key or NOTION_API_KEY required for Notion storage")
+        notion_db = args.notion_db or os.environ.get("NOTION_DB_ID")
+        if not notion_db:
+            parser.error("--notion-db or NOTION_DB_ID required for Notion storage")
+        return NotionStorage(notion_key, notion_db, args.notion_aliases_db)
+    return MarkdownStorage(base_dir=str(env_base))
 
 
 def self_update(base_dir=None):
@@ -4517,21 +4814,36 @@ def self_update(base_dir=None):
 
     print(f"  Updating: v{__version__} -> v{remote_version}")
 
-    # Write ingest.py (already downloaded)
-    target = files["ingest.py"]
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(remote_content, encoding="utf-8")
-    print(f"  Updated {target}")
-
-    # Download remaining files
-    for fname, target in list(files.items())[1:]:
+    # Fetch ALL files into memory first, then validate, then install
+    # atomically — so an interrupted or partial update can never leave a
+    # truncated ingest.py that the next cron run fails on, nor a mismatched
+    # mix of new ingest.py + old storage.py.
+    downloaded = {"ingest.py": remote_content}
+    for fname in list(files)[1:]:
         try:
-            content = _fetch(fname)
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(content, encoding="utf-8")
-            print(f"  Updated {target}")
+            downloaded[fname] = _fetch(fname)
         except Exception as e:
-            print(f"  Warning: could not update {fname}: {e}")
+            print(f"  Update aborted: could not download {fname} ({e}) — "
+                  f"keeping current install.")
+            return False
+
+    # Validate every Python file parses before writing anything.
+    import ast as _ast
+    for fname, content in downloaded.items():
+        if fname.endswith(".py"):
+            try:
+                _ast.parse(content, fname)
+            except SyntaxError as e:
+                print(f"  Update aborted: downloaded {fname} is not valid "
+                      f"Python ({e}) — keeping current install.")
+                return False
+
+    # Install atomically (temp file + rename per file).
+    for fname, content in downloaded.items():
+        target = files[fname]
+        target.parent.mkdir(parents=True, exist_ok=True)
+        _atomic_write(target, content)
+        print(f"  Updated {target}")
 
     print(f"  Done! Updated to v{remote_version or 'latest'}")
     return True
@@ -4548,7 +4860,15 @@ def compare_models(keys, base_dir, file_config=None,
 
     file_config = file_config or {}
     store = MarkdownStorage(base_dir=str(base_dir))
-    state = store.load_state()
+    # Sample from ALL sessions, not just unprocessed ones — otherwise after the
+    # first ingest every session is marked processed and the benchmark reports
+    # "No sessions found to test with."
+    state = {"processed_sessions": {}}
+
+    # Honor the configured local endpoint so `gyrus compare` works for users
+    # whose Ollama/LM Studio server isn't on the default port.
+    if file_config.get("local_base_url"):
+        _config["local_base_url"] = file_config["local_base_url"]
 
     # Determine available models per provider
     available = []
@@ -5299,6 +5619,11 @@ def main():
     # Bare --merge (no slugs) triggers auto-suggest mode.
     # Add --llm to also query the LLM for semantic suggestions (one API call).
     if args.merge is not None:
+        if args.storage == "notion":
+            # run_merge rewrites local JSONL/page files directly via base_dir,
+            # which the Notion backend never reads — it would silently do
+            # nothing to the user's Notion data. Refuse rather than mislead.
+            parser.error("--merge is not supported with --storage=notion")
         store = MarkdownStorage(base_dir=str(env_base))
         if len(args.merge) == 0:
             if args.llm:
@@ -5325,9 +5650,15 @@ def main():
                     args.merge_model or file_config.get("merge_model")
                     or DEFAULT_MERGE_MODEL
                 )
-                if not _config["keys"]:
+                if file_config.get("local_base_url"):
+                    _config["local_base_url"] = file_config["local_base_url"]
+                # Local models need no key — only require one if the configured
+                # extract model actually resolves to a cloud provider.
+                uses_local = _resolve_model(_config["extract_model"])["provider"] == "local"
+                if not _config["keys"] and not uses_local:
                     print("  ⚠️  --llm requires an API key "
-                          "(ANTHROPIC_API_KEY, OPENAI_API_KEY, or GEMINI_API_KEY)")
+                          "(ANTHROPIC_API_KEY, OPENAI_API_KEY, or GEMINI_API_KEY) "
+                          "or a local model configured as extract_model")
                     sys.exit(1)
             sys.exit(run_merge_suggest(store, yes=args.yes, llm=args.llm))
         sys.exit(run_merge(store, args.merge, yes=args.yes))
@@ -5343,7 +5674,7 @@ def main():
         keys = {k: v for k, v in keys.items() if v}
         if not keys and not args.local_only:
             parser.error("At least one API key required (or --local-only with a running Ollama/LM Studio). "
-                         "Use --anthropic-key, --openai-key, or --google-key.")
+                         "Add ANTHROPIC_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY to ~/.gyrus/.env.")
         file_config = _load_config(type("S", (), {"base_dir": env_base})())
         compare_models(keys, env_base, file_config,
                        local_only=args.local_only, cloud_only=args.cloud_only)
@@ -5351,7 +5682,7 @@ def main():
 
     # Handle --review-status early
     if args.review_status:
-        store = MarkdownStorage(base_dir=str(env_base))
+        store = _resolve_store(args, env_base, parser)
         review_project_status(store)
         if not args.no_autosync:
             _autosync_push(env_base,
@@ -5366,7 +5697,7 @@ def main():
 
     # Handle --digest early
     if args.digest:
-        store = MarkdownStorage(base_dir=str(env_base))
+        store = _resolve_store(args, env_base, parser)
         file_config = _load_config(type("S", (), {"base_dir": env_base})())
         # Load recent thoughts (last 24h)
         all_thoughts = store.get_thoughts(skipped=False, order_desc=True, limit=500)
@@ -5398,12 +5729,17 @@ def main():
 
     # Handle --sync-context early
     if args.sync_context:
-        store = MarkdownStorage(base_dir=str(env_base))
+        store = _resolve_store(args, env_base, parser)
         sync_tool_context(store)
         sys.exit(0)
 
-    # Handle --eval, --eval-curate, --eval-save-prompt early
-    if args.eval or args.eval_curate or args.eval_save_prompt:
+    # Handle --eval, --eval-curate, --eval-save-prompt early. Include the eval
+    # modifier flags (--eval-compare/-regression/-fixture/-deep) so passing one
+    # alone runs the eval instead of silently falling through to a full paid
+    # ingestion run.
+    if (args.eval or args.eval_curate or args.eval_save_prompt
+            or args.eval_compare or args.eval_regression
+            or args.eval_fixture or args.eval_deep):
         from eval_prompts import run_eval, run_curate, save_prompt_version
         file_config = _load_config(type("S", (), {"base_dir": env_base})())
         # Set up keys — read directly from .env since os.environ.setdefault may not have overridden
@@ -5491,9 +5827,11 @@ def main():
     merge_is_local = _resolve_model(merge_model)["provider"] == "local"
     all_local = extract_is_local and merge_is_local
     if not any([anthropic_key, openai_key, google_key]) and not all_local:
-        parser.error("At least one API key is required, OR configure both "
-                     "extract_model and merge_model as local models in config.json. "
-                     "Use --anthropic-key, --openai-key, or --google-key.")
+        parser.error(
+            "No API key found. Run `gyrus init` to set up, or add "
+            "ANTHROPIC_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY to "
+            f"{env_base / '.env'} (or configure both extract_model and "
+            "merge_model as local models in config.json).")
 
     # Set global config
     _config["extract_model"] = extract_model
@@ -5653,16 +5991,38 @@ def main():
         elif choice == "2":
             # Fork to background
             log_file = store.base_dir / "ingest.log" if hasattr(store, 'base_dir') else Path.home() / ".gyrus" / "ingest.log"
-            # Re-run self in background
+            # Re-run self in background. Strip any --*-key flags (and their
+            # values) from the re-exec argv so API keys don't sit in the argv
+            # of a long-lived background process (visible to `ps aux`). The
+            # child auto-loads ~/.gyrus/.env and inherits our environment, so
+            # pass any flag-supplied keys through the environment instead.
             import subprocess
+            _key_flags = {"--anthropic-key": "ANTHROPIC_API_KEY",
+                          "--openai-key": "OPENAI_API_KEY",
+                          "--google-key": "GEMINI_API_KEY",
+                          "--notion-key": "NOTION_API_KEY"}
+            child_env = dict(os.environ)
             cmd = [sys.executable, __file__]
-            # Pass through all original args
-            for arg in sys.argv[1:]:
+            orig = sys.argv[1:]
+            i = 0
+            while i < len(orig):
+                arg = orig[i]
+                flag = arg.split("=", 1)[0]
+                if flag in _key_flags:
+                    if "=" in arg:
+                        child_env[_key_flags[flag]] = arg.split("=", 1)[1]
+                        i += 1
+                    else:
+                        if i + 1 < len(orig):
+                            child_env[_key_flags[flag]] = orig[i + 1]
+                        i += 2
+                    continue
                 cmd.append(arg)
+                i += 1
             print(f"  Starting background ingestion...")
             print(f"  Progress: tail -f {log_file}")
             with open(log_file, "a", encoding="utf-8") as lf:
-                subprocess.Popen(cmd, stdout=lf, stderr=lf,
+                subprocess.Popen(cmd, stdout=lf, stderr=lf, env=child_env,
                                  start_new_session=True)
             print(f"  Knowledge pages will appear in: {store.base_dir / 'projects'}/")
             _release_lock(store.base_dir if hasattr(store, 'base_dir') else Path.home() / ".gyrus")
@@ -5721,6 +6081,7 @@ def main():
     total = len(all_sessions)
     _start_time = time.time()
     _completed = [0]  # mutable for closure
+    _failed = [0]     # sessions whose extraction errored (retried next run)
 
     def _progress_line(i, source, session_id, detail=""):
         elapsed = time.time() - _start_time
@@ -5745,12 +6106,19 @@ def main():
                     _, thoughts = future.result()
                 except Exception as e:
                     print(_progress_line(_completed[0], source, session["session_id"], f"Error: {e}"))
-                    thoughts = []
+                    thoughts = EXTRACTION_FAILED
+
+                if thoughts is EXTRACTION_FAILED:
+                    # Extraction errored (provider down, bad key, parse failure).
+                    # Do NOT mark processed — retry this session next run.
+                    _failed[0] += 1
+                    continue
 
                 if not thoughts:
                     state["processed_sessions"][session["state_key"]] = session["mtime"]
                     if not args.dry_run and _completed[0] % 10 == 0:
                         store.save_state(state)  # checkpoint: crash ≠ re-extract everything
+                        _refresh_lock()
                     continue
 
                 print(_progress_line(_completed[0], source, session["session_id"],
@@ -5778,6 +6146,7 @@ def main():
                 state["processed_sessions"][session["state_key"]] = session["mtime"]
                 if not args.dry_run and _completed[0] % 10 == 0:
                     store.save_state(state)  # checkpoint: crash ≠ re-extract everything
+                    _refresh_lock()
     else:
         # Sequential extraction (single worker)
         for idx, session in enumerate(all_sessions):
@@ -5795,6 +6164,14 @@ def main():
             workspace = session.get("workspace", "")
             thoughts = call_claude(text, anthropic_key, workspace=workspace,
                                    repo_groups=repo_groups)
+
+            if thoughts is EXTRACTION_FAILED:
+                # Extraction errored — leave the session unprocessed so it is
+                # retried next run instead of being silently lost.
+                print(" extraction failed (will retry next run)")
+                _failed[0] += 1
+                continue
+
             print(f" {len(thoughts)} thoughts")
 
             if thoughts and not args.dry_run:
@@ -5819,30 +6196,52 @@ def main():
                 state["processed_sessions"][session["state_key"]] = session["mtime"]
                 if (idx + 1) % 10 == 0:
                     store.save_state(state)  # checkpoint: crash ≠ re-extract everything
+                    _refresh_lock()
 
     if not args.dry_run:
         store.save_state(state)
 
+    if _failed[0]:
+        print(f"\n  ⚠️  {_failed[0]} session(s) failed extraction "
+              f"(e.g. provider unreachable, bad key, rate limit). "
+              f"They were left unprocessed and will be retried next run.")
+
+    # Reload thoughts from previous runs whose merge failed or was rejected —
+    # they stay processed=False, and nothing else ever re-merges them, so their
+    # knowledge would silently never reach a page. Dedupe by id against this
+    # run's batch. They already carry resolved metadata, so they skip Phase 1.
+    leftover_thoughts = []
+    if not args.dry_run:
+        batch_ids = {t.get("id") for t in batch_thoughts}
+        for t in store.get_thoughts(processed=False, skipped=False):
+            if t.get("id") and t["id"] not in batch_ids:
+                leftover_thoughts.append(t)
+        if leftover_thoughts:
+            print(f"  Reloading {len(leftover_thoughts)} unmerged thought(s) "
+                  f"from previous runs")
+
     # ── Step 2: Knowledge pipeline ──
-    if batch_thoughts and not args.dry_run:
+    if (batch_thoughts or leftover_thoughts) and not args.dry_run:
         print(f"\n{'='*50}")
         print(f"Knowledge Pipeline: {len(batch_thoughts)} new thoughts")
         print(f"{'='*50}")
 
-        # Phase 1: Normalize
+        # Phase 1: Normalize (new thoughts only — leftovers already resolved)
         print("\nPhase 1: Normalizing...")
         batch_thoughts = resolve_aliases(batch_thoughts, store,
                                          repo_groups=file_config.get("repo_groups"))
         batch_thoughts = deduplicate_thoughts(batch_thoughts, store)
         batch_thoughts = persist_thought_metadata(batch_thoughts, store)
 
+        all_pending = batch_thoughts + leftover_thoughts
+
         # Classify thoughts into three buckets by kind
-        active_thoughts = [t for t in batch_thoughts
+        active_thoughts = [t for t in all_pending
                            if not t.get("skipped") and t.get("canonical_project")]
-        idea_thoughts = [t for t in batch_thoughts
+        idea_thoughts = [t for t in all_pending
                          if not t.get("skipped") and not t.get("canonical_project")
                          and t.get("kind") == "idea"]
-        meta_thoughts = [t for t in batch_thoughts
+        meta_thoughts = [t for t in all_pending
                          if not t.get("skipped") and not t.get("canonical_project")
                          and t.get("kind") != "idea"]
 
