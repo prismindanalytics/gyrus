@@ -10,7 +10,7 @@ Knowledge pages are local markdown files by default.
 https://gyrus.sh
 """
 
-__version__ = "2026.07.04.1"
+__version__ = "2026.07.04.2"
 
 import argparse
 import atexit
@@ -320,12 +320,23 @@ RULES:
 2. ONLY state what the thoughts explicitly say. Never infer, assume, or embellish details that aren't in the input.
 3. If a thought contradicts existing content, note the contradiction with dates — don't silently overwrite.
 4. Use dates from the thoughts' timestamps, not today's date.
-5. If a section has no relevant information, leave it minimal rather than inventing content.
-6. "Key Decisions" and "Timeline & History" are append-only — never remove entries.
-7. Mark the status based on the most recent evidence. If there's no recent activity, mark as dormant.
-8. PRESERVE EXISTING WORDING VERBATIM. When re-emitting content from the current page, reproduce it character-for-character — do not paraphrase, restructure, or "improve" lines. Only modify a line if a new thought directly contradicts or supersedes it. This keeps pages stable across runs and across different merge models.
+5. "Key Decisions" and "Timeline & History" are append-only — never remove entries.
+6. Mark the status based on the most recent evidence. If there's no recent activity, mark as dormant.
+7. PRESERVE EXISTING WORDING VERBATIM. When re-emitting content from the current page, reproduce it character-for-character — do not paraphrase, restructure, or "improve" lines. Only modify a line if a new thought directly contradicts or supersedes it. This keeps pages stable across runs and across different merge models.
 
-Output the COMPLETE updated page in this markdown structure:
+STRUCTURE — READ CAREFULLY (this is the most common failure):
+Your output MUST contain ALL NINE section headings below, spelled exactly, in this
+exact order, on EVERY run. This is required even when a section is sparse or empty.
+- NEVER delete, rename, merge, or reorder a heading.
+- NEVER fold one section's content into another (do NOT dump everything into ## Overview).
+- If a section has no information yet, KEEP its `## Heading` line and write exactly
+  `_None recorded yet._` as its body. Do not invent content to fill it.
+- Every content line must stay under the correct heading (decisions under ## Key
+  Decisions, events under ## Timeline & History, etc.).
+A correct page always has nine `## ` headings. An output with fewer than nine is wrong
+and will be rejected.
+
+Output the COMPLETE updated page in EXACTLY this structure:
 
 # ProjectName
 
@@ -337,21 +348,21 @@ Last activity: YYYY-MM-DD | Machine: machine-name
 What this project does, who it's for, and why it exists. Write based on evidence from the thoughts, not assumptions. 1-3 paragraphs.
 
 ## Architecture & Technical Stack
-Languages, frameworks, infrastructure, key technical decisions. Only include details mentioned in the thoughts.
+Languages, frameworks, infrastructure, key technical decisions. Only include details mentioned in the thoughts. If none, write `_None recorded yet._`
 
 ## Business Model & Market
-Revenue model, pricing, target audience — only if discussed in the thoughts.
+Revenue model, pricing, target audience — only if discussed in the thoughts. If none, write `_None recorded yet._`
 
 ## Key Decisions
 Chronological log of significant decisions. Append-only.
 - [YYYY-MM-DD] Decision description (source: tool-name)
 
 ## Open Questions
-Unresolved questions from the thoughts.
+Unresolved questions from the thoughts. If none, write `_None recorded yet._`
 - Question text (raised: YYYY-MM-DD)
 
 ## Connections & Dependencies
-How this project relates to other projects.
+How this project relates to other projects. If none, write `_None recorded yet._`
 - [Entity]: Relationship description
 
 ## Timeline & History
@@ -359,7 +370,7 @@ Chronological record of significant events. Append-only.
 - [YYYY-MM-DD] What happened (source: tool-name)
 
 ## Current Sprint / Next Steps
-What's actively being worked on, based on the most recent thoughts.
+What's actively being worked on, based on the most recent thoughts. If none, write `_None recorded yet._`
 
 After the page, on its own line, output:
 CHANGE_SUMMARY: one sentence describing what changed
@@ -1582,7 +1593,11 @@ def call_llm(prompt, role="extract", max_tokens=4096, model_override=None):
     """Unified LLM call. Role is 'extract' or 'merge' — picks the configured model."""
     model_name = model_override or (_config["extract_model"] if role == "extract" else _config["merge_model"])
     if role == "merge":
-        max_tokens = max(max_tokens, 8192)
+        # A merge must re-emit the ENTIRE existing page plus additions. Large,
+        # active pages (30 KB+) exceed an 8 K-token budget and get truncated —
+        # the output loses sections and the trailing CHANGE_SUMMARY, which then
+        # fails validation. Give merges a wide output budget.
+        max_tokens = max(max_tokens, 16384)
 
     # Track usage
     if role == "extract":
@@ -1715,7 +1730,7 @@ def call_claude(text, anthropic_key, workspace="", repo_groups=None):
         return EXTRACTION_FAILED
 
 
-def call_sonnet(prompt, anthropic_key, max_tokens=8192):
+def call_sonnet(prompt, anthropic_key, max_tokens=16384):
     """Merge knowledge — uses configured merge model."""
     return call_llm(prompt, role="merge", max_tokens=max_tokens)
 
