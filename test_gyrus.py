@@ -777,6 +777,10 @@ class TestGitHelpers(unittest.TestCase):
     def test_sync_path_allows_run_log(self):
         self.assertTrue(_sync_path_allowed("runs.jsonl"))
 
+    def test_sync_path_allows_managed_codex_instructions(self):
+        self.assertTrue(_sync_path_allowed("skills/codex/gyrus-instructions.md"))
+        self.assertFalse(_sync_path_allowed("skills/codex/other.md"))
+
     def test_is_repo_true_after_git_init(self):
         import subprocess
         subprocess.run(["git", "init", "--quiet"], cwd=self.tmpdir, check=True)
