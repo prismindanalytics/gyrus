@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.6
+
+### Added
+- Import Claude Code auto-memory (`~/.claude/projects/*/memory/*.md`) as a session source: distilled `user`/`feedback` facts feed `me.md` and `project` facts feed the matching page, re-read only when a fact file changes. Exclude with `"claude-memory"` in `excluded_tools`.
+
 ## 0.3.0 — 2026-07-09
 
 **Public-readiness, safer ingestion, and a shared Claude/Codex handoff command.**

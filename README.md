@@ -222,7 +222,7 @@ SMTP_PASSWORD=...             # only if email digests use SMTP
 |-----|---------|-------------|
 | `extract_model` | `gpt-4.1-mini` | Model for extracting thoughts from sessions |
 | `merge_model` | `sonnet` | Model for merging thoughts into knowledge pages (stronger) |
-| `excluded_tools` | `[]` | Tools to skip during ingestion (e.g. `["antigravity"]`) |
+| `excluded_tools` | `[]` | Tools to skip during ingestion (e.g. `["antigravity"]`). Valid keys include the 10 session tools plus `claude-memory` (Claude Code auto-memory) |
 | `repo_groups` | `{}` | Map repo folder names to canonical project names (e.g. `{"backend": "myapp", "frontend": "myapp"}`) |
 | `allow_public_sync` | `false` | Explicitly permit syncing a GitHub repository marked public (private is strongly recommended) |
 | `parallel_extractions` | `4` | Number of parallel extraction workers |
@@ -312,6 +312,8 @@ Gyrus automatically finds session files for each tool. You don't need to configu
 | Continue.dev | `~/.continue/sessions/` | `~/.continue/sessions/` | `%USERPROFILE%\.continue\sessions\` |
 | Aider | `.aider.chat.history.md` under common project folders | same | same |
 | OpenCode | `~/.local/share/opencode/storage/session/` | `~/.local/share/opencode/storage/session/` | `%USERPROFILE%\.local\share\opencode\storage\session\` |
+
+Beyond raw sessions, Gyrus also imports **Claude Code auto-memory** — the distilled fact files Claude Code curates under `~/.claude/projects/*/memory/*.md`. `user`/`feedback` facts feed your `me.md`; `project` facts feed the matching project page. Each file is re-read only when it changes (exclude with `"claude-memory"` in `excluded_tools`).
 
 If a tool isn't installed, Gyrus skips it silently — no errors, no cost.
 

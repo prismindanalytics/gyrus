@@ -10,7 +10,7 @@ Knowledge pages are local markdown files by default.
 https://gyrus.sh
 """
 
-__version__ = "0.3.5"
+__version__ = "0.3.6"
 
 import argparse
 import atexit
@@ -1011,6 +1011,68 @@ def find_opencode_sessions(state):
     return sessions
 
 
+def _memory_fact_type(path):
+    """Read the frontmatter `type:` of a Claude auto-memory fact file (or '').
+
+    Handles both top-level `type:` and the common nested form under a
+    `metadata:` block (indented), while not matching `node_type:` etc."""
+    try:
+        with open(path, encoding="utf-8", errors="ignore") as f:
+            head = f.read(1500)
+    except OSError:
+        return ""
+    m = re.search(r"^[ \t]*type:[ \t]*([a-z]+)", head, re.MULTILINE)
+    return m.group(1).strip() if m else ""
+
+
+def find_claude_memory_sessions(state):
+    """Find Claude Code auto-memory fact files (~/.claude/projects/*/memory/*.md).
+
+    These are already-distilled facts the coding agent curated (user identity,
+    preferences/feedback, project facts). We route them through the normal
+    extraction pipeline as pseudo-sessions so mtime-dedup, project resolution,
+    and merging all apply for free — re-imported only when a fact file changes.
+
+    A project hint is passed for project/reference facts so they land on the
+    right page; user/feedback facts get no hint so they flow to me.md."""
+    sessions = []
+    base = _HOME / ".claude" / "projects"
+    if not base.is_dir():
+        return sessions
+    user_seg = _HOME.name
+    for md in base.glob("*/memory/*.md"):
+        if md.name == "MEMORY.md":
+            continue  # index of links, not a fact
+        try:
+            mtime = md.stat().st_mtime
+        except OSError:
+            continue
+        state_key = f"claude-memory:{md}"
+        if mtime <= state["processed_sessions"].get(state_key, 0):
+            continue
+        ftype = _memory_fact_type(md)
+        if ftype in ("user", "feedback"):
+            workspace = ""  # cross-project → me.md
+        else:
+            enc = md.parent.parent.name  # encoded workspace dir
+            hint = _extract_repo_name(enc)
+            # Strip a leading "<username>-" the marker heuristic can leave on
+            # non-standard paths (e.g. -Users-haohu-peerbasis → peerbasis).
+            if user_seg and hint.startswith(user_seg + "-"):
+                hint = hint[len(user_seg) + 1:]
+            workspace = hint
+        # Distinguishing stem first + a short path hash, so files from different
+        # project dirs never collapse to the same session_id under truncation.
+        path_hash = hashlib.sha1(str(md).encode()).hexdigest()[:6]
+        sessions.append({
+            "type": "claude-memory", "path": str(md),
+            "session_id": f"memory-{md.stem}-{path_hash}"[:60],
+            "mtime": mtime, "state_key": state_key,
+            "workspace": workspace,
+        })
+    return sessions
+
+
 # ─── Session Extraction ───
 
 
@@ -1285,6 +1347,34 @@ def extract_opencode_conversation(path, max_chars=30000):
     except Exception:
         pass
     return _truncate_conversation("\n".join(lines), max_chars)
+
+
+def extract_claude_memory(path, max_chars=30000):
+    """Return a Claude auto-memory fact file as extraction input.
+
+    Frontmatter (name/description/type) is surfaced as a short header so the
+    extractor knows what it's reading; the fact body follows. These files are
+    already distilled, so extraction mostly just re-tags them into thoughts."""
+    try:
+        raw = Path(path).read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return ""
+    name = ""
+    description = ""
+    body = raw
+    m = re.match(r"^---\s*\n(.*?)\n---\s*\n?(.*)$", raw, re.DOTALL)
+    if m:
+        front, body = m.group(1), m.group(2)
+        nm = re.search(r"^name:\s*(.+)$", front, re.MULTILINE)
+        dm = re.search(r"^description:\s*(.+)$", front, re.MULTILINE)
+        name = nm.group(1).strip() if nm else ""
+        description = dm.group(1).strip() if dm else ""
+    header = "Curated memory note"
+    if name:
+        header += f" — {name}"
+    if description:
+        header += f"\n{description}"
+    return f"{header}\n\n{body.strip()}"[:max_chars]
 
 
 def extract_cowork_conversation(path, output_dir=None, max_chars=30000,
@@ -6411,7 +6501,8 @@ def main():
         find_cline_sessions(state) +
         find_continue_sessions(state) +
         find_aider_sessions(state) +
-        find_opencode_sessions(state)
+        find_opencode_sessions(state) +
+        find_claude_memory_sessions(state)
     )
     all_sessions.sort(
         key=lambda s: (s.get("mtime", 0), s.get("type", ""),
@@ -6524,6 +6615,7 @@ def main():
         "continue": lambda s: extract_continue_conversation(s["path"]),
         "aider": lambda s: extract_aider_conversation(s["path"]),
         "opencode": lambda s: extract_opencode_conversation(s["path"]),
+        "claude-memory": lambda s: extract_claude_memory(s["path"]),
     }
 
     def extract_text(session):

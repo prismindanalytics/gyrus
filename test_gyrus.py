@@ -14,9 +14,12 @@ from pathlib import Path
 from unittest.mock import patch, MagicMock
 from datetime import datetime, timezone
 
+import ingest
 from storage import MarkdownStorage
 from storage_notion import NotionStorage
 from ingest import (
+    extract_claude_memory,
+    find_claude_memory_sessions,
     extract_claude_code_conversation,
     extract_codex_conversation,
     extract_cowork_conversation,
@@ -622,6 +625,62 @@ class TestToolMemoryFiles(unittest.TestCase):
         result = find_tool_memory_files(max_chars=100)
         total = sum(len(content) for _, content in result)
         self.assertLessEqual(total, 100 + 3000)  # Allow some slack for first file
+
+
+class TestClaudeMemoryImport(unittest.TestCase):
+    """Import of Claude Code auto-memory fact files (~/.claude/projects/*/memory)."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self._orig_home = ingest._HOME
+        ingest._HOME = self.tmp
+        # Build a fake auto-memory tree: one user fact, one project fact, and a
+        # MEMORY.md index that must be ignored.
+        mem = self.tmp / ".claude" / "projects" / "-Users-haohu-Documents-GitHub-nerve" / "memory"
+        mem.mkdir(parents=True)
+        (mem / "MEMORY.md").write_text("- [x](user_hao.md) — index line\n", encoding="utf-8")
+        # user fact with NESTED metadata.type (the common Claude Code format)
+        (mem / "user_hao.md").write_text(
+            "---\nname: Hao\ndescription: Solo founder\nmetadata:\n"
+            "  node_type: memory\n  type: user\n---\n\n"
+            "Hao runs a multi-venture portfolio.\n", encoding="utf-8")
+        # project fact with top-level type (older format)
+        (mem / "project_arch.md").write_text(
+            "---\nname: Arch\ndescription: Stack notes\ntype: project\n---\n\n"
+            "Nerve uses Telegram + Cloudflare Worker + Supabase.\n", encoding="utf-8")
+
+    def tearDown(self):
+        ingest._HOME = self._orig_home
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_finds_fact_files_excluding_index(self):
+        sessions = find_claude_memory_sessions({"processed_sessions": {}})
+        names = sorted(Path(s["path"]).name for s in sessions)
+        self.assertEqual(names, ["project_arch.md", "user_hao.md"])
+        self.assertTrue(all(s["type"] == "claude-memory" for s in sessions))
+
+    def test_routing_by_type(self):
+        sessions = find_claude_memory_sessions({"processed_sessions": {}})
+        ws = {Path(s["path"]).name: s["workspace"] for s in sessions}
+        # user/feedback facts have no project hint (flow to me.md)…
+        self.assertEqual(ws["user_hao.md"], "")
+        # …project facts carry the derived repo name.
+        self.assertEqual(ws["project_arch.md"], "nerve")
+
+    def test_mtime_dedup(self):
+        sessions = find_claude_memory_sessions({"processed_sessions": {}})
+        self.assertEqual(len(sessions), 2)
+        # Once every fact's mtime is recorded, nothing is re-imported.
+        state = {"processed_sessions": {s["state_key"]: s["mtime"] + 1 for s in sessions}}
+        self.assertEqual(find_claude_memory_sessions(state), [])
+
+    def test_extractor_surfaces_frontmatter(self):
+        p = self.tmp / ".claude" / "projects" / "-Users-haohu-Documents-GitHub-nerve" / "memory" / "user_hao.md"
+        text = extract_claude_memory(str(p))
+        self.assertIn("Hao", text)
+        self.assertIn("Solo founder", text)
+        self.assertIn("multi-venture portfolio", text)
+        self.assertNotIn("type: user", text)  # frontmatter fence stripped
 
 
 class TestMainCLI(unittest.TestCase):
