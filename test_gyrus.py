@@ -766,6 +766,14 @@ class TestGitHelpers(unittest.TestCase):
         self.assertTrue(_sync_path_allowed("./.gitignore"))
         self.assertFalse(_sync_path_allowed("./ingest.py"))
 
+    def test_sync_path_allows_markdown_backup_snapshots(self):
+        self.assertTrue(_sync_path_allowed(
+            "projects.gemma-backfill-2026-05-14/abs-walk-spike.md"
+        ))
+        self.assertFalse(_sync_path_allowed(
+            "projects.gemma-backfill-2026-05-14/run.py"
+        ))
+
     def test_is_repo_true_after_git_init(self):
         import subprocess
         subprocess.run(["git", "init", "--quiet"], cwd=self.tmpdir, check=True)

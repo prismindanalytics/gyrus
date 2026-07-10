@@ -10,7 +10,7 @@ Knowledge pages are local markdown files by default.
 https://gyrus.sh
 """
 
-__version__ = "0.3.1"
+__version__ = "0.3.2"
 
 import argparse
 import atexit
@@ -2826,7 +2826,11 @@ def _sync_path_allowed(path):
     if len(parts) != 2:
         return False
     parent, filename = parts
-    if parent == "projects":
+    # Older local knowledge bases may retain inert Markdown snapshots in
+    # directories such as `projects.gemma-backfill-2026-05-14/`. Keep those
+    # historical pages syncable, while still rejecting every non-Markdown
+    # artifact and executable path.
+    if parent == "projects" or parent.startswith("projects."):
         return filename.endswith(".md") and not filename.startswith(".")
     if parent == "thoughts":
         return bool(re.fullmatch(r"\d{4}-\d{2}-\d{2}\.jsonl", filename))
