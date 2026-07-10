@@ -10,7 +10,7 @@ Knowledge pages are local markdown files by default.
 https://gyrus.sh
 """
 
-__version__ = "0.3.2"
+__version__ = "0.3.3"
 
 import argparse
 import atexit
@@ -2808,7 +2808,7 @@ def _git_attach_head_to_default(base_dir):
 
 _SYNC_ROOT_FILES = {
     ".gitignore", "aliases.json", "config.json", "status.md",
-    "cross-cutting.md", "me.md", "ideas.md",
+    "cross-cutting.md", "me.md", "ideas.md", "runs.jsonl",
 }
 
 

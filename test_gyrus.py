@@ -774,6 +774,9 @@ class TestGitHelpers(unittest.TestCase):
             "projects.gemma-backfill-2026-05-14/run.py"
         ))
 
+    def test_sync_path_allows_run_log(self):
+        self.assertTrue(_sync_path_allowed("runs.jsonl"))
+
     def test_is_repo_true_after_git_init(self):
         import subprocess
         subprocess.run(["git", "init", "--quiet"], cwd=self.tmpdir, check=True)
