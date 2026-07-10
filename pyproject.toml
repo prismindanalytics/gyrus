@@ -1,10 +1,10 @@
 [project]
 name = "gyrus"
-# Date-based, kept in lockstep with ingest.py __version__ by .githooks/pre-commit
-version = "2026.07.04.2"
+version = "0.3.0"
 description = "Your AI tools don't talk to each other. Gyrus fixes that."
 readme = "README.md"
-license = {text = "MIT"}
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.10"
 authors = [
     {name = "Prismind Analytics", email = "hello@prismindanalytics.com"},
@@ -13,8 +13,11 @@ keywords = ["ai", "knowledge-base", "developer-tools", "llm", "productivity"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Software Development :: Documentation",
 ]
 
@@ -29,14 +32,9 @@ Issues = "https://github.com/prismindanalytics/gyrus/issues"
 [project.scripts]
 gyrus = "ingest:main"
 
-[build-system]
-requires = ["setuptools>=64"]
-build-backend = "setuptools.build_meta"
-
-# The project is a flat set of top-level modules, not a package. Tell
-# setuptools exactly which modules to ship — otherwise auto-discovery builds an
-# empty wheel (it mistakes the gitignored legacy src/ dir for a src-layout), so
-# `pip install .` / `uv tool install` / `uv run gyrus` crash with
-# ModuleNotFoundError: No module named 'ingest'.
 [tool.setuptools]
-py-modules = ["ingest", "storage", "storage_notion", "eval_prompts", "benchmark_models"]
+py-modules = ["ingest", "storage", "storage_notion", "eval_prompts"]
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"

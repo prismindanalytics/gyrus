@@ -4,7 +4,7 @@
 
 **Your AI tools don't talk to each other. Gyrus fixes that.**
 
-You use Claude Code, Cowork, Codex, Antigravity — maybe all in the same day. Each one starts from zero. None of them know what you decided in the others. Your strategic thinking is scattered across dozens of sessions on multiple machines.
+You use Claude Code, Cowork, Codex, Antigravity, Cursor, Copilot, or another coding agent — maybe several in the same day. Each one starts from zero. None of them know what you decided in the others. Your strategic thinking is scattered across dozens of sessions on multiple machines.
 
 Gyrus reads all your AI tool sessions, extracts the important stuff, and builds a knowledge base that gets smarter every hour. Every tool, every machine, same brain.
 
@@ -12,7 +12,7 @@ Gyrus reads all your AI tool sessions, extracts the important stuff, and builds 
 curl -fsSL https://gyrus.sh/install | bash
 ```
 
-One command. One API key. That's it.
+One command. Use a local model or bring an API key. That's it.
 
 ---
 
@@ -84,24 +84,24 @@ This is what Gyrus builds automatically from your scattered AI sessions. Pages a
 
 ```
 Your AI tools                          Your knowledge base
-┌─────────────────┐                    ┌─────────────────────┐
-│ Claude Code      │──┐                │ ~/.gyrus/projects/  │
-│ Claude Cowork    │──┤  Gyrus         │   beacon.md         │
-│ OpenAI Codex     │──┤────────────▶   │   atlas.md     │
-│ Google Antigrav. │──┘  Extract       │   wanderly.md      │
-│ (any machine)    │     → Merge       │ ~/.gyrus/me.md      │
-│                  │                   │ ~/.gyrus/status.md  │
-└─────────────────┘                    └─────────────────────┘
+┌─────────────────┐                    ┌────────────────────────┐
+│ Claude / Cowork  │──┐                │ ~/.gyrus/projects/     │
+│ Codex / Cursor   │──┤  Gyrus         │   beacon.md            │
+│ Copilot / Cline  │──┤────────────▶   │   me.md                │
+│ Aider / others   │──┘  Extract       │   ideas.md             │
+│ (any machine)    │     → Merge       │ ~/.gyrus/status.md     │
+│                  │                   │ ~/.gyrus/cross-cutting.md│
+└─────────────────┘                    └────────────────────────┘
 ```
 
-1. **Scans** sessions from 10 AI coding tools: Claude Code, Claude Cowork, OpenAI Codex, Google Antigravity, Cursor, GitHub Copilot, Cline, Continue.dev, Aider, and OpenCode — with more added on request
+1. **Scans** sessions from 10 AI coding tools: Claude Code, Claude Cowork, OpenAI Codex, Google Antigravity, Cursor, GitHub Copilot, Cline, Continue.dev, Aider, and OpenCode
 2. **Extracts** strategic decisions, insights, status changes (GPT-4.1 Mini by default — run `gyrus compare` to benchmark on your data)
 3. **Resolves** project names ("Pulse App" = "pulse" = "Pulse") via fuzzy matching
 4. **Deduplicates** across sessions and machines
 5. **Merges** new knowledge into existing wiki pages (stronger model — Sonnet by default)
 6. **Refines** — each merge pass makes pages deeper, not just longer (knowledge compounds)
 
-No database. No cloud account. No signup. Just markdown files on your machine.
+No database or Gyrus account. Use a local model for a fully local workflow, or connect the cloud LLM provider you choose. The knowledge base itself remains plain markdown on your machine unless you enable sync.
 
 ---
 
@@ -111,7 +111,7 @@ After install, Gyrus creates:
 
 ```
 ~/.gyrus/
-  config.json          # Your settings (models, sync frequency) — per-machine, not synced
+  config.json          # Non-secret settings (models, exclusions, sync options)
   .env                 # API keys (auto-loaded by ingest.py)
   ingest.py            # The ingestion script (runs via cron)
   storage.py           # Storage adapter
@@ -135,7 +135,7 @@ After install, Gyrus creates:
 
 **thoughts/** — Raw extracted thoughts before merging. JSONL format, one file per day. Useful for debugging or reviewing what was extracted.
 
-**me.md** — Personal memory: your working patterns, tool preferences, recurring strategies. Things that aren't about a specific project but about how you work.
+**me.md** — Personal memory: your working patterns, tool preferences, recurring strategies. Things that aren't about a specific project but about how you work. Personal profiling is opt-in (`enable_personal_profile` in `config.json`).
 
 **ideas.md** — Standalone ideas, brainstorms, and opportunities that don't belong to an existing project yet. Ideas that graduate into real projects get their own page.
 
@@ -169,12 +169,14 @@ cd gyrus; .\install.ps1
 
 ### What the installer does
 
-1. Asks for API keys (Anthropic, OpenAI, Google — Enter to skip any; at least one required)
-2. Lets you choose a storage location (default `~/gyrus-local/`, symlinked to `~/.gyrus`)
-3. Offers GitHub sync — creates a private repo via `gh` for cross-machine sync
-4. Lets you choose ingest frequency (hourly by default, or 30 min / 4h / 12h / daily)
-4. Installs skills for your AI tools (`/gyrus` command for Claude Code)
-5. **Immediately scans all existing sessions and builds your knowledge base**
+1. Installs an isolated, uv-managed Python runtime
+2. Lets you choose a storage location (default `~/gyrus-local/`, linked from `~/.gyrus`)
+3. Installs the Gyrus scripts and `gyrus` command
+4. Lets you choose a local model or a cloud provider; cloud credentials are stored in `.env`
+5. Offers GitHub sync by creating or cloning a private repository via `gh`
+6. Installs context skills/instructions for detected AI tools
+7. Configures the ingest schedule (hourly by default, or 30 min / 4h / 12h / daily)
+8. Scans existing sessions and optionally builds your knowledge base immediately
 
 ### Choose Your Models
 
@@ -187,10 +189,11 @@ Gyrus works with any supported LLM. Configure anytime in `~/.gyrus/config.json`:
 }
 ```
 
-**Available models (15):**
+**Available model presets (26, plus any `local:<model-tag>`):**
 - **Anthropic:** `haiku` (Claude Haiku 4.5), `sonnet` (Claude Sonnet 4.6), `opus` (Claude Opus 4.6)
 - **OpenAI:** `gpt-4.1-mini`, `gpt-4.1-nano`, `gpt-4.1`, `gpt-5.4-mini`, `gpt-5.4-nano`, `gpt-5.4`, `gpt-5.4-pro`, `o3`, `o4-mini`
 - **Google:** `gemini-flash` (Gemini 3 Flash), `gemini-lite` (Gemini 3.1 Flash Lite), `gemini-pro` (Gemini 3.1 Pro)
+- **Local catalog:** `gemma4-e2b`, `gemma4-e4b`, `qwen3.5-9b`, `gemma4-26b`, `qwen3.6-35b`, `llama3.3`, `qwen3`, `qwen3-coder`, `deepseek-v3`, `gpt-oss`, `gemma3`
 
 Or pass any raw model ID (e.g. `claude-sonnet-4-20250514`).
 
@@ -200,7 +203,9 @@ Or pass any raw model ID (e.g. `claude-sonnet-4-20250514`).
 {
   "extract_model": "gpt-4.1-mini",
   "merge_model": "sonnet",
-  "excluded_tools": []
+  "excluded_tools": [],
+  "redact_sensitive_data": true,
+  "enable_personal_profile": false
 }
 ```
 
@@ -209,20 +214,30 @@ API keys go in `~/.gyrus/.env` (not config.json):
 ANTHROPIC_API_KEY=sk-ant-...
 OPENAI_API_KEY=sk-...
 GEMINI_API_KEY=AI...
+RESEND_API_KEY=re_...          # only if email digests use Resend
+SMTP_PASSWORD=...             # only if email digests use SMTP
 ```
 
 | Key | Default | Description |
 |-----|---------|-------------|
 | `extract_model` | `gpt-4.1-mini` | Model for extracting thoughts from sessions |
 | `merge_model` | `sonnet` | Model for merging thoughts into knowledge pages (stronger) |
-| `excluded_tools` | `[]` | Tools to skip during ingestion (e.g. `["antigravity"]`). Valid keys: `claude-code`, `cowork`, `antigravity`, `codex`, `cursor`, `copilot`, `cline`, `continue`, `aider`, `opencode` |
+| `excluded_tools` | `[]` | Tools to skip during ingestion (e.g. `["antigravity"]`) |
 | `repo_groups` | `{}` | Map repo folder names to canonical project names (e.g. `{"backend": "myapp", "frontend": "myapp"}`) |
+| `allow_public_sync` | `false` | Explicitly permit syncing a GitHub repository marked public (private is strongly recommended) |
 | `parallel_extractions` | `4` | Number of parallel extraction workers |
+| `redact_sensitive_data` | `true` | Redact common credentials before model calls |
+| `include_tool_memory` | `false` | Opt in to scoped repo memory/rules as attribution reference |
+| `include_global_memory` | `false` | Also include global tool guidance when memory context is enabled |
+| `include_cowork_outputs` | `false` | Opt in to Cowork output artifacts (may contain arbitrary data) |
+| `enable_personal_profile` | `false` | Allow meta/work-style thoughts to populate `me.md` |
 | `digest.enabled` | `false` | Enable daily digest after each ingestion run |
 | `digest.email` | — | Email address to send digest to |
 | `digest.provider` | `"resend"` | Email provider: `"resend"` or `"smtp"` |
+| `digest.from_email` | `"digest@gyrus.sh"` | Sender address for Resend |
+| `digest.smtp_host` / `smtp_port` / `smtp_user` | Gmail defaults | Non-secret SMTP connection settings |
 
-Digest credentials go in `~/.gyrus/.env`, **not** config.json — set `RESEND_API_KEY` (Resend provider) or `SMTP_PASSWORD` (SMTP provider).
+Keep provider credentials in `.env`, not `config.json`, because `config.json` is included when Git sync is enabled.
 
 **Recommendation:** Run `gyrus compare` to benchmark on your own data. It tests all available models, generates sample wiki pages, and an AI judge grades quality. You choose both extraction and merge models.
 
@@ -233,6 +248,7 @@ Digest credentials go in `~/.gyrus/.env`, **not** config.json — set `RESEND_AP
 | `gyrus init` | First-time setup wizard (storage, API key, GitHub, cron) |
 | `gyrus init --clone <url>` | Second-machine setup — pulls an existing knowledge base |
 | `gyrus doctor` | Diagnose ingest health (storage, sync, backlog, API keys) |
+| `gyrus context --cwd PATH` | Print bounded, shared project context for Claude/Codex handoffs |
 | `gyrus models` | Show current extract/merge models, list cloud + local options, switch interactively |
 | `gyrus doctor --fix` | Same, plus auto-patch safe things: stale locks, missing cron, dataless files, git init/sync |
 | `gyrus sync` | Manually pull + push the GitHub remote |
@@ -246,10 +262,12 @@ Digest credentials go in `~/.gyrus/.env`, **not** config.json — set `RESEND_AP
 | `gyrus eval` | Run prompt quality eval against golden fixtures |
 | `gyrus curate` | Create golden test fixtures from real sessions |
 | `gyrus update` | Update Gyrus code to the latest version from GitHub |
-| `--dry-run` | Run extraction without saving (for testing) |
+| `--dry-run` | Run extraction without saving; it still sends eligible text to the configured model |
 | `--backfill` | Rebuild knowledge pages from existing thoughts |
 | `--no-autosync` | Skip the automatic git pull/push this run |
 | `--base-dir PATH` | Use a custom base directory (default: `~/.gyrus`) |
+
+`gyrus context` is intentionally read-only and does not pull from GitHub or call a model; run normal ingestion first when you need to refresh a synced page.
 
 ---
 
@@ -264,7 +282,7 @@ Gyrus is ruthlessly selective. From a 2-hour coding session, it might extract 2-
 | "Position as real-time analytics layer for YC batch" | "Yes", "OK", "let me check" |
 | "Pricing: Free (3 reviews), Pro $4.99/mo" | CSS changes and config tweaks |
 
-Non-project knowledge (your working patterns, tool preferences, cross-cutting insights) goes into `~/.gyrus/me.md` — a personal memory page that also compounds over time.
+Non-project knowledge (your working patterns, tool preferences, cross-cutting insights) goes into `~/.gyrus/me.md` when personal profiling is enabled.
 
 Standalone ideas and brainstorms go into `~/.gyrus/ideas.md` — a living idea backlog. When an idea graduates into a real project, it gets its own page.
 
@@ -289,10 +307,10 @@ Gyrus automatically finds session files for each tool. You don't need to configu
 | Codex | `~/.codex/sessions/` | `~/.codex/sessions/` | `%USERPROFILE%\.codex\sessions\` |
 | Antigravity | `~/.gemini/antigravity/brain/` | `~/.gemini/antigravity/brain/` | `%USERPROFILE%\.gemini\antigravity\brain\` |
 | Cursor | `~/Library/Application Support/Cursor/User/workspaceStorage/` | `~/.config/Cursor/User/workspaceStorage/` | `%APPDATA%\Cursor\User\workspaceStorage\` |
-| GitHub Copilot (VS Code) | `~/Library/Application Support/Code/User/workspaceStorage/` | `~/.config/Code/User/workspaceStorage/` | `%APPDATA%\Code\User\workspaceStorage\` |
-| Cline (VS Code) | `~/Library/Application Support/Code/User/globalStorage/saoudrizwan.claude-dev/tasks/` | `~/.config/Code/User/globalStorage/saoudrizwan.claude-dev/tasks/` | `%APPDATA%\Code\User\globalStorage\saoudrizwan.claude-dev\tasks\` |
+| GitHub Copilot | `~/Library/Application Support/Code/User/workspaceStorage/` | `~/.config/Code/User/workspaceStorage/` | `%APPDATA%\Code\User\workspaceStorage\` |
+| Cline | `~/Library/Application Support/Code/User/globalStorage/saoudrizwan.claude-dev/tasks/` | `~/.config/Code/User/globalStorage/saoudrizwan.claude-dev/tasks/` | `%APPDATA%\Code\User\globalStorage\saoudrizwan.claude-dev\tasks\` |
 | Continue.dev | `~/.continue/sessions/` | `~/.continue/sessions/` | `%USERPROFILE%\.continue\sessions\` |
-| Aider | `.aider.chat.history.md` under `~/Documents`, `~/Projects`, `~/repos`, `~/code`, `~/dev`, `~/src` | same | same (`%USERPROFILE%\...`) |
+| Aider | `.aider.chat.history.md` under common project folders | same | same |
 | OpenCode | `~/.local/share/opencode/storage/session/` | `~/.local/share/opencode/storage/session/` | `%USERPROFILE%\.local\share\opencode\storage\session\` |
 
 If a tool isn't installed, Gyrus skips it silently — no errors, no cost.
@@ -353,8 +371,8 @@ curl -fsSL https://gyrus.sh/install | bash
 gyrus init --clone github.com/you/gyrus-knowledge
 ```
 
-**What's synced:** `projects/`, `thoughts/`, `aliases.json`, `status.md`, `skills/`.
-**What's not:** `.env` (secrets), `config.json` (per-machine: model choice, local endpoint), `ingest.py` and other code (managed by `gyrus update`), `.ingest-state.json` and `ingest.log` (per-machine state).
+**What's synced:** `projects/`, `thoughts/`, `aliases.json`, `status.md`, `config.json`, `skills/`.
+**What's not:** `.env` (secrets), `ingest.py` and other code (managed by `gyrus update`), `.ingest-state.json` and `ingest.log` (per-machine state).
 
 **Prefer not to use git?** Gyrus still works fully local — just skip step 3 of the installer. You can enable GitHub sync any time with `gyrus init`.
 
@@ -480,7 +498,7 @@ gyrus doctor
 
 | Component | Cost |
 |-----------|------|
-| Thought extraction (gpt-4.1-mini) | ~$0.01 per session |
+| Thought extraction (Haiku) | ~$0.01 per session |
 | Knowledge merging (Sonnet) | ~$0.05 per project page update |
 | Typical monthly (active user) | **~$5–15/month** |
 | Cloud accounts needed | **Zero** |
@@ -515,9 +533,7 @@ Get a daily email summarizing what changed across your projects:
 }
 ```
 
-The API key goes in `~/.gyrus/.env`, not config.json — set `RESEND_API_KEY=re_...` for Resend, or `SMTP_PASSWORD=...` for SMTP.
-
-The digest runs automatically after each ingestion. Generate one on demand with `gyrus digest`. Supports Resend (recommended) and SMTP (Gmail, etc.).
+Put `RESEND_API_KEY=re_...` in `~/.gyrus/.env`. For SMTP, keep the password in `SMTP_PASSWORD` and put only the host, port, and username in `config.json`. The digest runs automatically after each ingestion. Generate one on demand with `gyrus digest`.
 
 ---
 
@@ -557,10 +573,10 @@ Those store extracted facts in vector databases. Gyrus maintains human-readable 
 Those are static instruction files you write manually. Gyrus automatically extracts and maintains knowledge from your actual work sessions.
 
 **Does it work with [tool X]?**
-Currently supports 10 AI coding tools: Claude Code, Claude Cowork, OpenAI Codex, Google Antigravity, Cursor, GitHub Copilot, Cline, Continue.dev, Aider, and OpenCode. More tools added on request — if a tool writes session files to disk, adding support is ~30 lines of Python.
+Currently supports Claude Code, Claude Cowork, OpenAI Codex, Google Antigravity, Cursor, GitHub Copilot, Cline, Continue.dev, Aider, and OpenCode. If another tool writes sessions to disk, open a feature request with an anonymized format sample.
 
 **Will it read my private conversations?**
-Gyrus runs locally on your machine by default. Session data is sent to your chosen LLM API for extraction/merging (same as using any AI tool), but your knowledge base stays as local markdown files. Nothing leaves your machine unless you opt in — cross-machine sync is handled by a **private GitHub repo** you own (recommended), or via Notion (optional adapter).
+Gyrus reads supported session files locally. With a local LLM, session content stays on your machine. With a cloud model, relevant session text and knowledge-page content are sent to the provider you configure for extraction and merging. Enabling GitHub sync uploads the knowledge base to a private repository you own; using the Notion adapter sends stored content to Notion. Gyrus itself has no hosted account or telemetry service.
 
 **Can I edit the wiki pages manually?**
 Yes. Gyrus reads the existing page before each merge, so your manual edits are preserved and built upon.
@@ -580,7 +596,9 @@ Yes. Gyrus reads the existing page before each merge, so your manual edits are p
   cat ~/.gyrus/.env
   # Should show: ANTHROPIC_API_KEY=sk-ant-...
   ```
-- Or pass it directly: `ingest.py --anthropic-key sk-ant-...`
+- Or pass it directly: `ingest.py --anthropic-key sk-ant-...` (prefer the
+  environment or `.env`; command-line keys can be exposed in shell history
+  and process listings)
 
 **Cron job isn't running**
 - Check it exists: `crontab -l | grep gyrus`
@@ -595,7 +613,7 @@ Yes. Gyrus reads the existing page before each merge, so your manual edits are p
     {"alias": "Pulse App", "canonical_slug": "pulse"}
   ]
   ```
-- Gyrus also auto-resolves via fuzzy matching (>75% similarity)
+- Gyrus also auto-resolves via fuzzy matching (>80% similarity)
 
 **Knowledge page has stale info**
 - Edit the page directly — Gyrus will preserve your changes on the next merge
@@ -658,7 +676,7 @@ find_newtool_sessions(state) +
 "newtool": lambda s: extract_newtool_conversation(s["path"]),
 ```
 
-**4. Test** — run with `--dry-run` to verify sessions are found without making API calls.
+**4. Test** — run with `--dry-run` to verify extraction without writing files (it can still incur model cost; use local models for a no-cloud preview).
 
 PRs welcome.
 

@@ -1,34 +1,24 @@
 # Changelog
 
-Gyrus now uses a date-based version scheme (`2026.MM.DD.N`). Entries below the
-`## 2026.06.09.4` line are historical semver releases, kept for reference.
+## 0.3.0 — 2026-07-09
 
-## 2026.06.09.4 — 2026-06-09
+**Public-readiness, safer ingestion, and a shared Claude/Codex handoff command.**
 
-**Hardening pass — installer robustness, secret-handling, storage atomicity, cross-platform fixes.**
-
-### Changed
-- Installers no longer pass API keys as command-line flags — credentials are written
-  to `~/.gyrus/.env` instead of appearing in process lists or shell history.
-- Ingest state is checkpointed every 10 sessions, so an interrupted run doesn't
-  reprocess (and re-pay for) work already done.
-- Deploy is gated on the test suite — a failing test blocks release.
-- Pages, `aliases.json`, and `.ingest-state.json` are written atomically
-  (temp file + rename) to prevent partial/corrupt writes.
-- All cloud API calls now have timeouts; error catches widened to `OSError`.
-- All text file I/O uses UTF-8 explicitly.
+### Added
+- `gyrus context --cwd <repo>` emits the same bounded, freshness-aware project context for Claude and Codex.
+- Context output includes clearly labeled pending extracted evidence when a merge is still in progress.
+- Modern Claude Code/Codex transcript parsing, duplicate-turn suppression, and head/tail context bounding.
+- Validated merge output with append-only history preservation and retryable pending thoughts.
+- Secret redaction, scoped opt-in memory-file context, local-profile opt-in, atomic private storage, and sync allowlisting.
+- Packaged wheel/sdist metadata and a contributor guide.
 
 ### Fixed
-- `sync` and `doctor` self-heal a detached or unborn git `HEAD`.
-- `self_update` uses the GitHub API to bypass stale raw-CDN caches, and is
-  otherwise hardened against partial updates.
-- Interactive `gh login` + retry when a private-repo clone fails on auth.
-
-### Docs
-- Documentation audit: corrected supported-tool count (10), model count (15),
-  default extract model (`gpt-4.1-mini`), fuzzy-match threshold (75%), Windows
-  session paths (`%USERPROFILE%`), and clarified that `config.json` is
-  per-machine (never synced) while all credentials live in `~/.gyrus/.env`.
+- Failed model calls no longer advance session checkpoints.
+- `me.md` and `ideas.md` are stored at the documented knowledge-base root, with legacy reads supported.
+- Fully local extraction/merge configurations now pass startup validation.
+- Installed CLI supports documented subcommands (`gyrus doctor`, `gyrus context`, etc.).
+- Codex global instructions target `$CODEX_HOME/AGENTS.md` on all platforms.
+- Notion special pages and thought deduplication now match the local adapter's behavior.
 
 ## 0.2.0 — 2026-04-19
 
