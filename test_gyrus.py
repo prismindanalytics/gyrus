@@ -190,6 +190,19 @@ class TestMarkdownStorage(unittest.TestCase):
         self.assertNotIn("cross-cutting", slugs)
         self.assertNotIn("me", slugs)
 
+    def test_get_all_pages_ignores_recovery_artifacts(self):
+        (self.store.projects_dir / "example.bak.md").write_text(
+            "# Old snapshot", encoding="utf-8"
+        )
+        (self.store.projects_dir / "example.failed-merge.20260710-120000.md").write_text(
+            "# Rejected response", encoding="utf-8"
+        )
+        (self.store.projects_dir / "live-project.md").write_text(
+            "# Live project", encoding="utf-8"
+        )
+        pages = self.store.get_all_pages()
+        self.assertEqual([page["slug"] for page in pages], ["live-project"])
+
     def test_aliases(self):
         self.assertEqual(self.store.get_aliases(), [])
 
