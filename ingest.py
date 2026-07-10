@@ -2814,7 +2814,12 @@ _SYNC_ROOT_FILES = {
 
 def _sync_path_allowed(path):
     """Return whether a repo path is inert Gyrus data safe to sync."""
-    normalized = str(path).replace("\\", "/").lstrip("./")
+    normalized = str(path).replace("\\", "/")
+    # Remove only explicit `./` path prefixes. ``lstrip('./')`` would also
+    # strip the leading dot from legitimate allowlisted files such as
+    # `.gitignore` and incorrectly reject an otherwise safe knowledge repo.
+    while normalized.startswith("./"):
+        normalized = normalized[2:]
     if normalized in _SYNC_ROOT_FILES:
         return True
     parts = normalized.split("/")
