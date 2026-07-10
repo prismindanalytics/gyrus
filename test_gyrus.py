@@ -41,6 +41,7 @@ from ingest import (
     _read_text_safe,
     _git_is_repo,
     _git_remote_url,
+    _sync_path_allowed,
     _git_pull,
     _git_commit_push,
     _doctor_check_storage,
@@ -759,6 +760,11 @@ class TestGitHelpers(unittest.TestCase):
         ok, msg = _git_commit_push(self.tmpdir, "test")
         self.assertTrue(ok)
         self.assertEqual(msg, "no remote")
+
+    def test_sync_path_preserves_dotfiles(self):
+        self.assertTrue(_sync_path_allowed(".gitignore"))
+        self.assertTrue(_sync_path_allowed("./.gitignore"))
+        self.assertFalse(_sync_path_allowed("./ingest.py"))
 
     def test_is_repo_true_after_git_init(self):
         import subprocess
