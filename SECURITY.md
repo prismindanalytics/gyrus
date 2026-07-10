@@ -2,9 +2,12 @@
 
 ## How Gyrus handles your data
 
-- **Local by default.** Your knowledge base is plain markdown files on your machine (`~/.gyrus/`). Nothing leaves your machine unless you explicitly opt in to sync. The opt-in channels are: a private GitHub repo you own (recommended, set up via `gyrus init` — auto pull/push on every run), or the optional Notion adapter. Your `~/.gyrus/.env` secrets and per-machine state (`config.json`, `.ingest-state.json`) are gitignored and never synced.
-- **LLM API calls.** Session text is sent to your configured LLM provider (Anthropic, OpenAI, or Google) for extraction and merging. This is the same data flow as using those AI tools directly.
-- **API keys.** Stored in `~/.gyrus/.env` with 600 permissions (owner-only read/write). Never committed to git, never logged.
+- **Local knowledge base.** Gyrus stores generated thoughts and pages as files under `~/.gyrus/` (normally linked to `~/gyrus-local/`). It does not operate a hosted account or telemetry service.
+- **Model data flow.** With a local model, session and knowledge-base content stays on your machine. With Anthropic, OpenAI, or Google models, relevant session text and existing page content are sent to the provider you configure for extraction and merging. Review that provider's data policy before use.
+- **Optional sync and storage.** GitHub sync uploads the knowledge-base files and non-secret configuration to a private repository you own. The Notion adapter sends stored content to Notion. Neither integration is required.
+- **Secrets.** Put API keys and mail credentials in `~/.gyrus/.env`, not `config.json`. The installers restrict this file to the current user and generated Git repositories ignore it. Do not commit or share `.env`.
+- **Redaction and sync guards.** Common API-token, private-key, authorization-header, and URL-credential patterns are redacted before model calls by default (`redact_sensitive_data: true`). Git sync stages only documented knowledge-base paths and refuses public GitHub repositories unless `allow_public_sync` is explicitly enabled. Redaction is a defense-in-depth measure, not a guarantee that sensitive chat content is safe to upload.
+- **Session sensitivity.** AI transcripts and generated pages can contain source code, customer information, or credentials copied into a chat. Review the supported session locations and exclude tools you do not want Gyrus to process.
 
 ## Reporting a vulnerability
 
@@ -14,9 +17,7 @@ We will acknowledge receipt within 48 hours and aim to release a fix within 7 da
 
 ## Supported versions
 
-Gyrus uses a date-based version scheme (`2026.MM.DD.N`). The latest date-based release is the supported version — update with `gyrus update` to stay current.
-
 | Version | Supported |
 |---------|-----------|
-| Latest date-based release (`2026.MM.DD.N`) | Yes |
-| Older date-based releases | Update with `gyrus update` |
+| 0.3.x   | Yes       |
+| 0.2.x and earlier | No |

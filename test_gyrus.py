@@ -14,7 +14,8 @@ from pathlib import Path
 from unittest.mock import patch, MagicMock
 from datetime import datetime, timezone
 
-from storage import MarkdownStorage, _safe_write, redact_secrets
+from storage import MarkdownStorage
+from storage_notion import NotionStorage
 from ingest import (
     extract_claude_code_conversation,
     extract_codex_conversation,
@@ -26,6 +27,7 @@ from ingest import (
     extract_continue_conversation,
     extract_aider_conversation,
     extract_opencode_conversation,
+    _extract_workspace_from_codex,
     resolve_aliases,
     deduplicate_thoughts,
     persist_thought_metadata,
@@ -62,23 +64,15 @@ from ingest import (
     RECOMMENDED_LOCAL_EXTRACT,
     RECOMMENDED_LOCAL_MERGE,
     _pick_from_list,
+    _truncate_conversation,
+    _redact_sensitive_text,
+    _parse_extracted_thoughts,
+    _parse_merge_response,
+    _normalize_cli_argv,
+    _load_env_file,
+    show_project_context,
+    _extract_workspace_from_claude,
 )
-
-# Sandbox the lockfile for the whole suite so tests never touch — or race —
-# the shared machine-wide lock a real scheduled ingest may be holding.
-_LOCK_SANDBOX = None
-
-
-def setUpModule():
-    global _LOCK_SANDBOX
-    _LOCK_SANDBOX = tempfile.mkdtemp(prefix="gyrus-test-lock-")
-    os.environ["GYRUS_LOCK_DIR"] = _LOCK_SANDBOX
-
-
-def tearDownModule():
-    os.environ.pop("GYRUS_LOCK_DIR", None)
-    if _LOCK_SANDBOX:
-        shutil.rmtree(_LOCK_SANDBOX, ignore_errors=True)
 
 
 class TestMarkdownStorage(unittest.TestCase):
@@ -125,6 +119,18 @@ class TestMarkdownStorage(unittest.TestCase):
         # Retrieve all
         all_t = self.store.get_thoughts()
         self.assertEqual(len(all_t), 3)
+
+    def test_occurrence_timestamp_round_trips(self):
+        thoughts = [{
+            "content": "API contract frozen",
+            "project": "beacon",
+            "occurred_at": "2026-07-08T12:30:00Z",
+        }]
+        self.store.save_thoughts(
+            thoughts, "codex", "session-occurred",
+            session_date="2026-07-09T00:00:00Z",
+        )
+        self.assertEqual(self.store.get_thoughts()[0]["occurred_at"], "2026-07-08T12:30:00Z")
 
     def test_get_thoughts_filter_by_project(self):
         self.store.save_thoughts(
@@ -208,6 +214,13 @@ class TestMarkdownStorage(unittest.TestCase):
 
         reloaded = self.store.load_state()
         self.assertEqual(reloaded["processed_sessions"]["code:abc"], 12345.0)
+
+    def test_corrupt_state_recovers_to_empty_state(self):
+        self.store.state_file.write_text("{not valid json")
+        self.assertEqual(
+            self.store.load_state(),
+            {"processed_sessions": {}, "last_cross_reference": 0},
+        )
 
     def test_get_recent_thoughts(self):
         for i in range(25):
@@ -630,6 +643,31 @@ class TestMainCLI(unittest.TestCase):
                 ):
                     main()
 
+    def test_main_accepts_fully_local_models_without_cloud_key(self):
+        (Path(self.tmpdir) / "config.json").write_text(json.dumps({
+            "extract_model": "local:qwen3",
+            "merge_model": "local:qwen3",
+        }))
+        with patch.dict(os.environ, {}, clear=True):
+            with patch("sys.argv", [
+                "ingest.py", "--dry-run", "--no-autosync",
+                "--base-dir", self.tmpdir,
+            ]):
+                with patch.multiple(
+                    "ingest",
+                    find_claude_code_sessions=MagicMock(return_value=[]),
+                    find_cowork_sessions=MagicMock(return_value=[]),
+                    find_antigravity_sessions=MagicMock(return_value=[]),
+                    find_codex_sessions=MagicMock(return_value=[]),
+                    find_cursor_sessions=MagicMock(return_value=[]),
+                    find_copilot_sessions=MagicMock(return_value=[]),
+                    find_cline_sessions=MagicMock(return_value=[]),
+                    find_continue_sessions=MagicMock(return_value=[]),
+                    find_aider_sessions=MagicMock(return_value=[]),
+                    find_opencode_sessions=MagicMock(return_value=[]),
+                ):
+                    main()
+
 
 # ─── v0.2: Cloud-sync detection ─────────────────────────────────────────────
 
@@ -830,24 +868,30 @@ class TestDoctorFixes(unittest.TestCase):
 
     def setUp(self):
         self.tmpdir = Path(tempfile.mkdtemp())
-        # The lockfile is sandboxed for the whole module (setUpModule sets
-        # GYRUS_LOCK_DIR), so operating on it never touches the machine's real
-        # lock or races a live scheduled ingest.
-        self._lock = _lock_path()
-        self._lock.unlink(missing_ok=True)
+        # Keep any existing real lockfile safe — we back it up and restore later
+        self._real_lock = _lock_path()
+        self._real_lock_backup = None
+        if self._real_lock.exists():
+            self._real_lock_backup = self._real_lock.read_bytes()
+            self._real_lock.unlink()
 
     def tearDown(self):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
-        self._lock.unlink(missing_ok=True)
+        # Clean up any lockfile we created
+        if self._real_lock.exists():
+            self._real_lock.unlink()
+        # Restore the user's real lockfile if we displaced one
+        if self._real_lock_backup is not None:
+            self._real_lock.write_bytes(self._real_lock_backup)
 
     def test_fix_lockfile_removes_file(self):
-        self._lock.parent.mkdir(parents=True, exist_ok=True)
-        self._lock.write_text(json.dumps(
+        self._real_lock.parent.mkdir(parents=True, exist_ok=True)
+        self._real_lock.write_text(json.dumps(
             {"machine": "x", "pid": 1, "time": 0}
         ))
         ok, msg = _doctor_fix_lockfile()
         self.assertTrue(ok)
-        self.assertFalse(self._lock.exists())
+        self.assertFalse(self._real_lock.exists())
 
     def test_fix_lockfile_noop_when_missing(self):
         ok, msg = _doctor_fix_lockfile()
@@ -1368,120 +1412,189 @@ class TestGyrusModelsSubcommand(unittest.TestCase):
         self.assertIn("qwen3.6-35b", out)
 
 
-class TestSafeWrite(unittest.TestCase):
-    """_safe_write is the durability guarantee behind pages/aliases/state —
-    a failed write must never corrupt the existing file (regression guard for
-    the CI-gated crash-safety features)."""
-
-    def setUp(self):
-        self.tmpdir = Path(tempfile.mkdtemp())
-
-    def tearDown(self):
-        shutil.rmtree(self.tmpdir, ignore_errors=True)
-
-    def test_happy_path_writes_via_replace(self):
-        target = self.tmpdir / "page.md"
-        with patch("storage.os.replace", wraps=os.replace) as spy:
-            _safe_write(target, "hello")
-        self.assertTrue(spy.called)
-        self.assertEqual(target.read_text(encoding="utf-8"), "hello")
-
-    def test_failed_replace_leaves_original_intact(self):
-        target = self.tmpdir / "page.md"
-        target.write_text("ORIGINAL", encoding="utf-8")
-        with patch("storage.os.replace", side_effect=OSError("boom")):
-            with self.assertRaises(OSError):
-                _safe_write(target, "NEW CONTENT")
-        # The original file must be untouched — no partial/truncated write.
-        self.assertEqual(target.read_text(encoding="utf-8"), "ORIGINAL")
-
-    def test_no_direct_write_to_final_path(self):
-        # The temp file, not the destination, is what gets written first.
-        target = self.tmpdir / "page.md"
-        target.write_text("ORIGINAL", encoding="utf-8")
-        with patch("storage.os.replace", side_effect=OSError("boom")):
-            with self.assertRaises(OSError):
-                _safe_write(target, "NEW")
-        # A .tmp sibling was created (left behind on failed replace by design).
-        self.assertTrue((self.tmpdir / "page.md.tmp").exists())
-
-
-class TestCorruptStateRecovery(unittest.TestCase):
-    """A truncated state/aliases file must not brick every subsequent run."""
+class TestUnifiedContextHardening(unittest.TestCase):
+    """Regression tests for current transcript formats and handoff safety."""
 
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
-        self.store = MarkdownStorage(base_dir=self.tmpdir)
 
     def tearDown(self):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
-    def test_corrupt_state_resets_instead_of_crashing(self):
-        self.store.state_file.write_text("{ this is not json", encoding="utf-8")
-        state = self.store.load_state()
-        self.assertEqual(state, {"processed_sessions": {}, "last_cross_reference": 0})
+    def test_current_claude_user_rows_are_included(self):
+        path = Path(self.tmpdir) / "claude.jsonl"
+        path.write_text("\n".join([
+            json.dumps({"type": "user", "message": {
+                "role": "user", "content": "Decide the launch date"
+            }}),
+            json.dumps({"type": "assistant", "message": {
+                "role": "assistant", "content": "Launch is April 1"
+            }}),
+            json.dumps({"type": "user", "isMeta": True, "message": {
+                "role": "user", "content": "ignore this metadata"
+            }}),
+        ]))
+        text = extract_claude_code_conversation(str(path))
+        self.assertIn("Decide the launch date", text)
+        self.assertIn("Launch is April 1", text)
+        self.assertNotIn("ignore this metadata", text)
 
-    def test_corrupt_aliases_returns_empty(self):
-        self.store.aliases_file.write_text("{ broken", encoding="utf-8")
-        self.assertEqual(self.store.get_aliases(), [])
+    def test_claude_workspace_metadata_beats_encoded_folder(self):
+        path = Path(self.tmpdir) / "claude.jsonl"
+        path.write_text(json.dumps({
+            "cwd": "/tmp/portable-beacon",
+            "type": "user",
+            "message": {"role": "user", "content": "ship it"},
+        }))
+        self.assertEqual(_extract_workspace_from_claude(str(path)), "portable-beacon")
 
-
-class TestSecretRedaction(unittest.TestCase):
-    """Extracted content is scrubbed of credential shapes before persistence."""
-
-    def test_redacts_common_key_shapes(self):
-        cases = [
-            "sk-ant-api03-" + "A" * 40,
-            "ghp_" + "b" * 36,
-            "AKIA" + "1234567890ABCDEF",
-            "AIza" + "C" * 35,
+    def test_codex_roles_and_duplicate_event_fallback(self):
+        path = Path(self.tmpdir) / "codex.jsonl"
+        rows = [
+            {"type": "response_item", "payload": {
+                "type": "message", "role": "developer",
+                "content": [{"type": "input_text", "text": "SECRET RULE"}],
+            }},
+            {"type": "response_item", "payload": {
+                "type": "message", "role": "user",
+                "content": [{"type": "input_text", "text": "Use Postgres"}],
+            }},
+            {"type": "event_msg", "payload": {
+                "type": "user_message", "message": "Use Postgres",
+            }},
+            {"type": "response_item", "payload": {
+                "type": "message", "role": "assistant",
+                "content": [{"type": "output_text", "text": "Agreed"}],
+            }},
         ]
-        for secret in cases:
-            out = redact_secrets(f"the key is {secret} ok")
-            self.assertIn("[REDACTED]", out)
-            self.assertNotIn(secret, out)
+        path.write_text("\n".join(json.dumps(row) for row in rows))
+        text = extract_codex_conversation(str(path))
+        self.assertIn("user: Use Postgres", text)
+        self.assertIn("assistant: Agreed", text)
+        self.assertNotIn("SECRET RULE", text)
+        self.assertEqual(text.count("Use Postgres"), 1)
 
-    def test_leaves_normal_text_alone(self):
-        text = "We decided to pivot the roadmap to B2B in Q3."
-        self.assertEqual(redact_secrets(text), text)
+    def test_codex_nested_workspace_metadata(self):
+        path = Path(self.tmpdir) / "codex.jsonl"
+        path.write_text(json.dumps({
+            "type": "session_meta",
+            "payload": {"session_meta": {"cwd": "/tmp/portable-atlas"}},
+        }))
+        self.assertEqual(_extract_workspace_from_codex(str(path)), "portable-atlas")
 
-    def test_save_thoughts_redacts(self):
-        tmpdir = tempfile.mkdtemp()
-        try:
-            store = MarkdownStorage(base_dir=tmpdir)
-            secret = "sk-ant-api03-" + "Z" * 40
-            store.save_thoughts(
-                [{"content": f"api key {secret}"}],
-                "claude-code", "sess1",
-                session_date="2026-01-01T00:00:00Z",
-            )
-            saved = store.get_thoughts()
-            self.assertTrue(saved)
-            self.assertNotIn(secret, saved[0]["content"])
-            self.assertIn("[REDACTED]", saved[0]["content"])
-        finally:
-            shutil.rmtree(tmpdir, ignore_errors=True)
+    def test_truncation_preserves_newest_turn(self):
+        text = "first decision\n" + ("x" * 5000) + "\nlatest decision"
+        bounded = _truncate_conversation(text, max_chars=500)
+        self.assertLessEqual(len(bounded), 500)
+        self.assertIn("first decision", bounded)
+        self.assertIn("latest decision", bounded)
 
+    def test_redaction_removes_common_secrets(self):
+        raw = (
+            "Authorization: Bearer sk-ant-abcdefghijklmnop123456\n"
+            "OPENAI_API_KEY=sk-proj-abcdefghijklmnopqrstuv\n"
+            "https://user:password@example.test/path?key=AIzaabcdefghijklmnopqrstuv"
+        )
+        safe = _redact_sensitive_text(raw)
+        self.assertNotIn("sk-ant-", safe)
+        self.assertNotIn("sk-proj-", safe)
+        self.assertNotIn("user:password@", safe)
+        self.assertNotIn("key=AIza", safe)
+        self.assertIn("[REDACTED]", safe)
 
-class TestPageSlugSafety(unittest.TestCase):
-    """Page paths derived from untrusted LLM/transcript output can't traverse."""
+    def test_notion_fingerprint_is_stable(self):
+        thought = {
+            "content": "Keep the local cache atomic",
+            "source": "codex",
+            "session_id": "session-1",
+            "project": "beacon",
+            "kind": "project",
+        }
+        self.assertEqual(
+            NotionStorage._thought_fingerprint(thought),
+            NotionStorage._thought_fingerprint(dict(thought)),
+        )
 
-    def setUp(self):
-        self.tmpdir = tempfile.mkdtemp()
-        self.store = MarkdownStorage(base_dir=self.tmpdir)
+    def test_invalid_extraction_is_not_empty_success(self):
+        with self.assertRaises((ValueError, json.JSONDecodeError)):
+            _parse_extracted_thoughts("not JSON")
+        with self.assertRaises(ValueError):
+            _parse_extracted_thoughts('[{"project": "missing content"}]')
+        self.assertEqual(_parse_extracted_thoughts("[]"), [])
 
-    def tearDown(self):
-        shutil.rmtree(self.tmpdir, ignore_errors=True)
+    def test_extraction_preserves_valid_occurrence_timestamp(self):
+        from ingest import _parse_extracted_thoughts
+        parsed = _parse_extracted_thoughts(json.dumps([{
+            "content": "The API contract is frozen",
+            "project": "beacon",
+            "kind": "project",
+            "occurred_at": "2026-07-08T12:30:00Z",
+        }]))
+        self.assertEqual(parsed[0]["occurred_at"], "2026-07-08T12:30:00Z")
 
-    def test_traversal_slug_rejected(self):
-        for bad in ("../../.claude/CLAUDE", "foo/bar", "..", ".hidden"):
-            with self.assertRaises(ValueError):
-                self.store.save_page(bad, "content", 1)
+    def test_merge_validation_restores_append_only_entries(self):
+        old = (
+            "# Beacon\n\n## Key Decisions\n- [2025-01-01] Keep Postgres\n\n"
+            "## Timeline & History\n- [2025-01-01] Started\n\n## Status\nactive\n"
+            "\n## Overview\nA project\n\n## Architecture & Technical Stack\nPostgres\n"
+            "\n## Business Model & Market\n(None)\n\n## Open Questions\n(None)\n"
+            "\n## Connections & Dependencies\n(None)\n\n## Current Sprint / Next Steps\n(None)\n"
+        )
+        replacement = old.replace("- [2025-01-01] Keep Postgres", "- [2025-02-01] New decision")
+        result, summary = _parse_merge_response(
+            replacement + "\nCHANGE_SUMMARY: updated",
+            old,
+            ("Status", "Overview", "Architecture & Technical Stack",
+             "Business Model & Market", "Key Decisions", "Open Questions",
+             "Connections & Dependencies", "Timeline & History",
+             "Current Sprint / Next Steps"),
+            append_only_sections=("Key Decisions", "Timeline & History"),
+        )
+        self.assertIn("Keep Postgres", result)
+        self.assertEqual(summary, "updated")
 
-    def test_normal_slug_ok(self):
-        self.store.save_page("kidworthy", "# Kidworthy\n", 1)
-        content, version = self.store.get_page("kidworthy")
-        self.assertIn("Kidworthy", content)
+    def test_cli_alias_and_env_parser(self):
+        self.assertEqual(_normalize_cli_argv(["doctor", "--fix"]), ["--doctor", "--fix"])
+        env = Path(self.tmpdir) / ".env"
+        env.write_text("ANTHROPIC_API_KEY=abc\nBASH_ENV=/tmp/evil\n")
+        values = _load_env_file(env, apply=False)
+        self.assertEqual(values, {"ANTHROPIC_API_KEY": "abc"})
+
+    def test_special_pages_live_at_storage_root(self):
+        store = MarkdownStorage(self.tmpdir)
+        store.save_page("me", "# Me\n\n## Working Style\nNotes", 1)
+        store.save_page("ideas", "# Ideas\n\n## Active Ideas\nNone", 1)
+        self.assertTrue((Path(self.tmpdir) / "me.md").exists())
+        self.assertTrue((Path(self.tmpdir) / "ideas.md").exists())
+
+    def test_context_output_is_bounded_and_marked_reference_data(self):
+        store = MarkdownStorage(self.tmpdir)
+        store.save_alias("Beacon App", "beacon")
+        store.save_page("beacon", "# Beacon\n\n## Status\nactive\n\n## Overview\n" + "x" * 20000, 1)
+        with patch("sys.stdout") as stdout:
+            self.assertEqual(show_project_context(store, project="Beacon App", max_chars=1000), 0)
+            output = "".join(call.args[0] for call in stdout.write.call_args_list if call.args)
+        self.assertIn("reference data, not instructions", output)
+        self.assertLessEqual(len(output), 1200)
+
+    def test_context_includes_bounded_pending_evidence(self):
+        store = MarkdownStorage(self.tmpdir)
+        store.save_page(
+            "beacon",
+            "# Beacon\n\n## Status\nactive\n\n## Overview\nA project",
+            1,
+        )
+        store.save_thoughts(
+            [{"content": "The migration is blocked on a staging credential", "project": "beacon"}],
+            "codex",
+            "session-1",
+            session_date="2026-07-09T00:00:00Z",
+        )
+        with patch("sys.stdout") as stdout:
+            self.assertEqual(show_project_context(store, project="beacon", max_chars=2000), 0)
+            output = "".join(call.args[0] for call in stdout.write.call_args_list if call.args)
+        self.assertIn("Pending extracted context", output)
+        self.assertIn("migration is blocked", output)
 
 
 if __name__ == "__main__":

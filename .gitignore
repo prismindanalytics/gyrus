@@ -19,9 +19,20 @@ node_modules/
 .ingest-state.json
 ingest.log
 projects/
+thoughts/
+ideas.md
+aliases.json
+config.json
 status.md
 cross-cutting.md
 me.md
+latest-digest.md
+runs.jsonl
+notion-state.json
+.notion-state.json
+.notion-thought-cache.json
+model-comparison.html
+eval/
 
 # OS
 .DS_Store
