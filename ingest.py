@@ -10,7 +10,7 @@ Knowledge pages are local markdown files by default.
 https://gyrus.sh
 """
 
-__version__ = "0.3.6"
+__version__ = "2026.07.15.2"
 
 import argparse
 import atexit
@@ -1622,9 +1622,17 @@ def _resolve_model(name_or_id):
 
 
 def _llm_timeout(default=120):
-    """Return a bounded model request timeout from non-secret config."""
+    """Return a bounded model request timeout from non-secret config.
+
+    ``llm_timeout_seconds`` is an explicit override that applies to every
+    provider. While it is unset each caller keeps its own ``default``, so local
+    inference can wait far longer than a remote API round-trip.
+    """
+    value = _config.get("llm_timeout_seconds")
+    if value is None:
+        value = default
     try:
-        value = float(_config.get("llm_timeout_seconds", default))
+        value = float(value)
     except (TypeError, ValueError):
         value = default
     return max(5, min(value, 600))
@@ -1830,7 +1838,9 @@ _config = {
     # Anything OpenAI-compatible works (LM Studio, llama.cpp, MLX, vLLM).
     "local_base_url": None,
     "redact_sensitive_data": True,
-    "llm_timeout_seconds": 120,
+    # None leaves each caller's own default in force (120s for remote APIs,
+    # 600s for local inference). A value here overrides every provider.
+    "llm_timeout_seconds": None,
     "enable_personal_profile": False,
 }
 
@@ -1871,6 +1881,18 @@ _COST_PER_CALL = {
     "gemini-lite": 0.001,    # free tier
     "gemini-pro": 0.05,      # $1.25/$10 per MTok
 }
+
+
+def _cost_per_call(model_name, default):
+    """Estimated USD for one call to ``model_name``.
+
+    Local models run on the user's own hardware and cost nothing. Without this
+    they miss the table above and fall through to the cloud ``default``, which
+    bills a free run at API rates.
+    """
+    if _resolve_model(model_name)["provider"] == "local":
+        return 0.0
+    return _COST_PER_CALL.get(model_name, default)
 
 
 def call_llm(prompt, role="extract", max_tokens=4096, model_override=None):
@@ -3212,18 +3234,16 @@ def _doctor_check_dataless(base_dir):
 
 def _doctor_check_schedule():
     """Detect whether an hourly cron or launchd job is set up for gyrus."""
-    import subprocess
-    try:
-        ct = subprocess.run(["crontab", "-l"], capture_output=True,
-                            text=True, timeout=5)
-        cron_has_gyrus = "gyrus" in (ct.stdout or "") or "ingest.py" in (ct.stdout or "")
-    except (subprocess.SubprocessError, FileNotFoundError):
-        cron_has_gyrus = False
-    launchagents = Path.home() / "Library" / "LaunchAgents"
-    launchd_files = []
-    if launchagents.exists():
-        launchd_files = [f.name for f in launchagents.iterdir()
-                         if "gyrus" in f.name.lower()]
+    cron_has_gyrus = _has_gyrus_cron()
+    launchd_files = _gyrus_launchd_jobs()
+    if cron_has_gyrus and launchd_files:
+        # Both wake on the hour: one takes the lock and the other burns a run
+        # for nothing. Reporting whichever matched first hides the clash.
+        return ("warn", "schedule",
+                f"cron and launchd ({', '.join(launchd_files)}) both run gyrus hourly",
+                "keep one — `crontab -e` to drop the cron line, or "
+                f"`launchctl bootout gui/$(id -u) "
+                f"~/Library/LaunchAgents/{launchd_files[0]}`")
     if cron_has_gyrus:
         return ("ok", "schedule", "hourly cron configured", None)
     if launchd_files:
@@ -3475,6 +3495,9 @@ def _doctor_fix_schedule():
     import subprocess
     if _has_gyrus_cron():
         return True, "cron already configured"
+    launchd_files = _gyrus_launchd_jobs()
+    if launchd_files:
+        return True, f"launchd already runs gyrus ({', '.join(launchd_files)})"
     gyrus_bin = _which("gyrus") or str(Path.home() / ".local" / "bin" / "gyrus")
     cron_line = f"0 * * * * {gyrus_bin} >/dev/null 2>&1"
     try:
@@ -3996,9 +4019,32 @@ def _has_gyrus_cron():
     return "gyrus" in text or "ingest.py" in text
 
 
+def _gyrus_launchd_jobs():
+    """Return the names of any launchd agents that also run gyrus.
+
+    Nothing here installs one, but setup scripts and users do. A launchd agent
+    alongside a cron entry means two ingests wake on the hour and race for the
+    lock, so both schedulers have to be consulted before adding either.
+    """
+    launchagents = Path.home() / "Library" / "LaunchAgents"
+    if not launchagents.exists():
+        return []
+    try:
+        return sorted(f.name for f in launchagents.iterdir()
+                      if "gyrus" in f.name.lower())
+    except OSError:
+        return []
+
+
 def _init_cron():
     """Add `0 * * * * gyrus` to the current user's crontab."""
     import subprocess
+    launchd_files = _gyrus_launchd_jobs()
+    if launchd_files:
+        print(f"    ✓ launchd already runs gyrus hourly "
+              f"({', '.join(launchd_files)})")
+        print("       skipping cron so the two don't race")
+        return
     gyrus_bin = _which("gyrus") or str(Path.home() / ".local" / "bin" / "gyrus")
     cron_line = f"0 * * * * {gyrus_bin} >/dev/null 2>&1"
     try:
@@ -4822,7 +4868,14 @@ def _write_status_md(store, pages, statuses, recency, manual_overrides=None):
 
 def _save_run_log(store, sessions, thoughts, cost):
     """Append a structured entry to the run log."""
-    base = store.base_dir if hasattr(store, "base_dir") else Path.home() / ".gyrus"
+    # ``base_dir`` may still be the ``~/.gyrus`` symlink, while the containment
+    # guard compares against the resolved root. Anchor to the same canonical
+    # directory the guard uses, exactly as MarkdownStorage does for every other
+    # managed child.
+    root = getattr(store, "_root_dir", None)
+    base = root or (
+        store.base_dir if hasattr(store, "base_dir") else Path.home() / ".gyrus"
+    )
     log_path = base / "runs.jsonl"
 
     # Count by tool
@@ -4858,7 +4911,6 @@ def _save_run_log(store, sessions, thoughts, cost):
         "merge_model": _config.get("merge_model", ""),
     }
 
-    root = getattr(store, "_root_dir", None)
     _safe_append(
         log_path, json.dumps(entry, default=str) + "\n", root=root
     )
@@ -5581,7 +5633,7 @@ def compare_models(keys, base_dir, file_config=None,
         except Exception:
             elapsed = time.time() - t0
             thoughts = []
-        cost = _COST_PER_CALL.get(model_name, 0.01)
+        cost = _cost_per_call(model_name, 0.01)
         return model_name, session_idx, thoughts, elapsed, cost
 
     with ThreadPoolExecutor(max_workers=8) as executor:
@@ -6432,9 +6484,7 @@ def main():
     _config["redact_sensitive_data"] = (
         file_config.get("redact_sensitive_data", True) is not False
     )
-    _config["llm_timeout_seconds"] = file_config.get(
-        "llm_timeout_seconds", 120
-    )
+    _config["llm_timeout_seconds"] = file_config.get("llm_timeout_seconds")
     _config["enable_personal_profile"] = (
         file_config.get("enable_personal_profile", False) is True
     )
@@ -6850,18 +6900,19 @@ def main():
             if digest_config.get("email"):
                 send_digest_email(digest, digest_config, store.base_dir if hasattr(store, "base_dir") else Path.home() / ".gyrus")
             # Always save to file
-            digest_path = (store.base_dir if hasattr(store, "base_dir") else Path.home() / ".gyrus") / "latest-digest.md"
-            _safe_write(
-                digest_path, digest,
-                root=getattr(store, "_root_dir", None),
+            digest_root = getattr(store, "_root_dir", None)
+            digest_base = digest_root or (
+                store.base_dir if hasattr(store, "base_dir") else Path.home() / ".gyrus"
             )
+            digest_path = digest_base / "latest-digest.md"
+            _safe_write(digest_path, digest, root=digest_root)
             print(f"  Digest: {digest_path}")
 
     # ── Summary + Run Log ──
     extract_model = _config["extract_model"]
     merge_model = _config["merge_model"]
-    extract_cost = _usage["extract_calls"] * _COST_PER_CALL.get(extract_model, 0.01)
-    merge_cost = _usage["merge_calls"] * _COST_PER_CALL.get(merge_model, 0.03)
+    extract_cost = _usage["extract_calls"] * _cost_per_call(extract_model, 0.01)
+    merge_cost = _usage["merge_calls"] * _cost_per_call(merge_model, 0.03)
     total_cost = extract_cost + merge_cost
 
     print(f"\nDone. Processed {len(all_sessions)} sessions, "
