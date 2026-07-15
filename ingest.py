@@ -10,7 +10,7 @@ Knowledge pages are local markdown files by default.
 https://gyrus.sh
 """
 
-__version__ = "2026.07.15.2"
+__version__ = "2026.07.15.3"
 
 import argparse
 import atexit
@@ -1621,6 +1621,15 @@ def _resolve_model(name_or_id):
     return {"provider": "anthropic", "model": name_or_id}
 
 
+class _LLMBudgetExceeded(Exception):
+    """A local model was still generating when its time budget ran out.
+
+    Distinct from a connectivity failure: the server answered and worked for
+    the whole budget. The prompt is deterministic, so re-sending it burns the
+    same time to fail the same way — callers must not retry this.
+    """
+
+
 def _llm_timeout(default=120):
     """Return a bounded model request timeout from non-secret config.
 
@@ -1770,8 +1779,10 @@ def _call_local(model, messages, max_tokens, api_key, temperature=0):
     # Local inference can be slow (first token generation, large context) —
     # give it room but cap at 10 minutes so a wedged server doesn't hang
     # ingest forever.
+    timeout = _llm_timeout(default=600)
+    started = time.monotonic()
     try:
-        with urlopen(req, timeout=_llm_timeout(default=600)) as resp:
+        with urlopen(req, timeout=timeout) as resp:
             data = json.loads(resp.read())
             return data["choices"][0]["message"]["content"]
     except HTTPError as e:
@@ -1784,6 +1795,15 @@ def _call_local(model, messages, max_tokens, api_key, temperature=0):
             e.headers, None,
         ) from e
     except (OSError, TimeoutError) as e:
+        if time.monotonic() - started >= timeout * 0.9:
+            # The server answered and generated for the whole budget, so this
+            # is not a connectivity problem: pointing at `ollama serve` would
+            # send the reader chasing a healthy server.
+            raise _LLMBudgetExceeded(
+                f"{model} did not finish within {timeout:.0f}s. The prompt is "
+                "unchanged on a retry, so raise config.llm_timeout_seconds or "
+                "shrink the page instead."
+            ) from e
         raise HTTPError(
             f"{base_url}/chat/completions", 503,
             f"couldn't reach local LLM server at {base_url}: {e}. "
@@ -1943,6 +1963,11 @@ def call_llm(prompt, role="extract", max_tokens=4096, model_override=None):
     for attempt in range(3):
         try:
             return caller(model_id, messages, max_tokens, api_key)
+        except _LLMBudgetExceeded:
+            # Deterministic: the same prompt would consume the same budget and
+            # fail again. Three attempts here cost 30 minutes of GPU for
+            # nothing.
+            raise
         except Exception as e:
             err_str = str(e).lower()
             status = getattr(e, "code", None)
