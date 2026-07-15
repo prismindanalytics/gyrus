@@ -10,7 +10,7 @@ Knowledge pages are local markdown files by default.
 https://gyrus.sh
 """
 
-__version__ = "2026.07.15.3"
+__version__ = "2026.07.15.4"
 
 import argparse
 import atexit
@@ -1758,11 +1758,29 @@ def _call_local(model, messages, max_tokens, api_key, temperature=0):
     endpoint via config.local_base_url or $GYRUS_LOCAL_BASE_URL.
     """
     base_url = _local_base_url().rstrip("/")
+
+    # Disable reasoning on thinking-tuned models (Qwen3.x, DeepSeek-R1) so the
+    # final answer lands in `content` instead of the model burning the entire
+    # token budget on an internal monologue — `max_tokens` bounds reasoning and
+    # content together, so a thinking merge starves the page it is supposed to
+    # emit. The canonical OpenAI-compat knob is `reasoning_effort: "none"`;
+    # re-verified on qwen3.5:27b under Ollama 0.30.10, where "reply OK" costs
+    # 2 completion tokens with it and 120 without. (The body-level
+    # `think: false` only works on Ollama's native `/api/chat`, not
+    # `/v1/chat/completions`.) The `/no_think` system directive is a
+    # Qwen-specific belt-and-suspenders for servers that don't honor
+    # `reasoning_effort` (older Ollama, some llama.cpp / MLX); non-thinking
+    # models treat it as ignorable text.
+    if not (messages and messages[0].get("role") == "system"
+            and "/no_think" in messages[0].get("content", "")):
+        messages = [{"role": "system", "content": "/no_think"}] + list(messages)
+
     body = json.dumps({
         "model": model,
         "max_tokens": max_tokens,
         "temperature": temperature,
         "messages": messages,
+        "reasoning_effort": "none",
     }).encode()
 
     req = Request(
