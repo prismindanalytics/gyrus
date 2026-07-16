@@ -438,8 +438,8 @@ brew install ollama          # macOS
 # or: curl -fsSL https://ollama.com/install.sh | sh   # Linux
 
 # 2. Pull models (extraction wants fast + JSON-compliant; merge wants reasoning)
-ollama pull qwen3            # 8B general-purpose, ~5 GB, great at JSON
-ollama pull qwen3:32b        # 32B reasoning, ~20 GB — good merge model
+ollama pull qwen3.5:9b       # ~6 GB, strong JSON compliance — extraction
+ollama pull gemma4:26b       # ~18 GB reasoning — merge
 
 # 3. Start the server (or leave it running)
 ollama serve &
@@ -452,8 +452,8 @@ gyrus init
 
 ```json
 {
-  "extract_model": "local:qwen3:7b",
-  "merge_model":   "local:qwen3:32b",
+  "extract_model": "local:qwen3.5:9b",
+  "merge_model":   "local:gemma4:26b",
   "local_base_url": "http://localhost:11434/v1"
 }
 ```
@@ -479,7 +479,7 @@ gyrus compare      # auto-benchmarks your installed local models vs cloud
 
 ```json
 {
-  "extract_model": "local:qwen3:7b",
+  "extract_model": "local:qwen3.5:9b",
   "merge_model":   "sonnet"
 }
 ```
@@ -500,11 +500,11 @@ gyrus doctor
 
 | Component | Cost |
 |-----------|------|
-| Thought extraction (Haiku) | ~$0.01 per session |
-| Knowledge merging (Sonnet) | ~$0.05 per project page update |
+| Thought extraction (GPT-4.1-mini default) | ~$0.01 per session |
+| Knowledge merging (Sonnet default) | ~$0.05 per project page update |
 | Typical monthly (active user) | **~$5–15/month** |
 | Cloud accounts needed | **Zero** |
-| **Fully local** (Ollama + qwen3) | **$0/month** — see "Local LLMs" above |
+| **Fully local** (Ollama + qwen3.5 / gemma4) | **$0/month** — see "Local LLMs" above |
 
 ---
 
