@@ -1,6 +1,6 @@
 #!/bin/bash
 # Auto-bump version in ingest.py on every commit that includes it.
-# Format: YYYY.MM.DD.N (N increments per day)
+# Format: YYYY.M.D.N (N increments per day)
 #
 # Enable with: git config core.hooksPath .githooks
 set -euo pipefail
@@ -14,7 +14,11 @@ case $'\n'"$STAGED_FILES"$'\n' in
   *) exit 0 ;;                        # not in this commit, skip
 esac
 
-TODAY=$(date +%Y.%m.%d)
+# No zero padding: PEP 440 normalizes "2026.07.16" to "2026.7.16" in the built
+# metadata, so a padded version makes the packaging check's
+# `importlib.metadata.version("gyrus") == ingest.__version__` fail for every
+# month and day below ten. `%-m`/`%-d` are honored by both GNU and BSD date.
+TODAY=$(date +%Y.%-m.%-d)
 # Compute the bump from the STAGED blob, not the worktree, so unstaged edits to
 # ingest.py aren't silently pulled into the commit.
 STAGED_INGEST=$(git show :ingest.py)
@@ -38,10 +42,13 @@ bump_in_index() {
   local staged new hash
   staged=$(git show ":$path")
   new=$(printf '%s\n' "$staged" | sed "$pattern")
-  hash=$(printf '%s' "$new" | git hash-object -w --stdin)
+  # `$(...)` strips trailing newlines, including the one printf just added, so
+  # re-add it here. Using printf '%s' drops the newline every text file needs
+  # from both the blob and the worktree, on every commit that bumps.
+  hash=$(printf '%s\n' "$new" | git hash-object -w --stdin)
   git update-index --cacheinfo 100644,"$hash","$path"
   # Keep the worktree file in sync (portable in-place edit, no BSD/GNU split).
-  printf '%s' "$new" > "$path"
+  printf '%s\n' "$new" > "$path"
 }
 
 bump_in_index ingest.py "s/__version__ = \".*\"/__version__ = \"$NEW_VERSION\"/"

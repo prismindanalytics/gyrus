@@ -10,7 +10,7 @@ Knowledge pages are local markdown files by default.
 https://gyrus.sh
 """
 
-__version__ = "0.3.6"
+__version__ = "2026.7.16.2"
 
 import argparse
 import atexit
@@ -299,7 +299,8 @@ RULES:
 9. Record only durable technical context, not command-by-command implementation details.
 10. "Current Sprint / Next Steps" contains only explicit unfinished work. Remove an item when new evidence says it is complete, while retaining the completion in history.
 11. Avoid duplicate facts and preserve source/date provenance on decisions and history.
-12. Return the complete Markdown page with no code fence or preamble.
+12. CONSOLIDATE prose as you integrate. When new evidence extends, refines, or supersedes a statement already on the page, rewrite that statement in place — never append another clause to it. Narrative sections describe the CURRENT state, not the history of how the page was edited: a paragraph that has grown into a chain of "Recently... Additionally... Furthermore... Most recently..." must be collapsed into what it now means. This does not loosen rule 7 — Key Decisions and Timeline & History stay append-only.
+13. Return the complete Markdown page with no code fence or preamble.
 
 STRUCTURE — READ CAREFULLY:
 Your output MUST contain ALL NINE section headings below, spelled exactly, in
@@ -393,6 +394,7 @@ INSTRUCTIONS:
 3. Update sections as understanding deepens — especially Working Style and Strategic Patterns.
 4. If thoughts reveal cross-project strategies, recurring decision patterns, or personal preferences, capture them.
 5. Tools & Machines should track which AI tools and machines are actively being used.
+6. CONSOLIDATE as you integrate. When a thought extends, refines, or supersedes something already on the page, rewrite that statement in place — never append another clause to it. Working Style, Strategic Patterns, and Cross-Project Themes describe how this person works NOW, not the history of how that understanding arrived. A paragraph that has grown into a chain of "Recently... Additionally... Furthermore... Most recently..." must be collapsed into what it now means. Recurring Decisions is the only log here.
 
 Output the COMPLETE updated page:
 
@@ -451,6 +453,7 @@ INSTRUCTIONS:
 4. If an idea has clearly evolved into an active project (you see it in the thoughts with a project name), mark it as "→ Became [project-name]" and move it to the Graduated section.
 5. Group related ideas under themes when natural clusters emerge.
 6. Keep the energy of the original brainstorm — don't over-formalize.
+7. CONSOLIDATE as you integrate. When a new idea refines or supersedes an existing entry, rewrite that entry in place rather than appending another clause to it. The backlog describes the ideas as they stand now, not the history of how each was rephrased.
 
 Output the COMPLETE updated page:
 
@@ -1621,10 +1624,27 @@ def _resolve_model(name_or_id):
     return {"provider": "anthropic", "model": name_or_id}
 
 
+class _LLMBudgetExceeded(Exception):
+    """A local model was still generating when its time budget ran out.
+
+    Distinct from a connectivity failure: the server answered and worked for
+    the whole budget. The prompt is deterministic, so re-sending it burns the
+    same time to fail the same way — callers must not retry this.
+    """
+
+
 def _llm_timeout(default=120):
-    """Return a bounded model request timeout from non-secret config."""
+    """Return a bounded model request timeout from non-secret config.
+
+    ``llm_timeout_seconds`` is an explicit override that applies to every
+    provider. While it is unset each caller keeps its own ``default``, so local
+    inference can wait far longer than a remote API round-trip.
+    """
+    value = _config.get("llm_timeout_seconds")
+    if value is None:
+        value = default
     try:
-        value = float(_config.get("llm_timeout_seconds", default))
+        value = float(value)
     except (TypeError, ValueError):
         value = default
     return max(5, min(value, 600))
@@ -1741,11 +1761,29 @@ def _call_local(model, messages, max_tokens, api_key, temperature=0):
     endpoint via config.local_base_url or $GYRUS_LOCAL_BASE_URL.
     """
     base_url = _local_base_url().rstrip("/")
+
+    # Disable reasoning on thinking-tuned models (Qwen3.x, DeepSeek-R1) so the
+    # final answer lands in `content` instead of the model burning the entire
+    # token budget on an internal monologue — `max_tokens` bounds reasoning and
+    # content together, so a thinking merge starves the page it is supposed to
+    # emit. The canonical OpenAI-compat knob is `reasoning_effort: "none"`;
+    # re-verified on qwen3.5:27b under Ollama 0.30.10, where "reply OK" costs
+    # 2 completion tokens with it and 120 without. (The body-level
+    # `think: false` only works on Ollama's native `/api/chat`, not
+    # `/v1/chat/completions`.) The `/no_think` system directive is a
+    # Qwen-specific belt-and-suspenders for servers that don't honor
+    # `reasoning_effort` (older Ollama, some llama.cpp / MLX); non-thinking
+    # models treat it as ignorable text.
+    if not (messages and messages[0].get("role") == "system"
+            and "/no_think" in messages[0].get("content", "")):
+        messages = [{"role": "system", "content": "/no_think"}] + list(messages)
+
     body = json.dumps({
         "model": model,
         "max_tokens": max_tokens,
         "temperature": temperature,
         "messages": messages,
+        "reasoning_effort": "none",
     }).encode()
 
     req = Request(
@@ -1762,8 +1800,10 @@ def _call_local(model, messages, max_tokens, api_key, temperature=0):
     # Local inference can be slow (first token generation, large context) —
     # give it room but cap at 10 minutes so a wedged server doesn't hang
     # ingest forever.
+    timeout = _llm_timeout(default=600)
+    started = time.monotonic()
     try:
-        with urlopen(req, timeout=_llm_timeout(default=600)) as resp:
+        with urlopen(req, timeout=timeout) as resp:
             data = json.loads(resp.read())
             return data["choices"][0]["message"]["content"]
     except HTTPError as e:
@@ -1776,6 +1816,15 @@ def _call_local(model, messages, max_tokens, api_key, temperature=0):
             e.headers, None,
         ) from e
     except (OSError, TimeoutError) as e:
+        if time.monotonic() - started >= timeout * 0.9:
+            # The server answered and generated for the whole budget, so this
+            # is not a connectivity problem: pointing at `ollama serve` would
+            # send the reader chasing a healthy server.
+            raise _LLMBudgetExceeded(
+                f"{model} did not finish within {timeout:.0f}s. The prompt is "
+                "unchanged on a retry, so raise config.llm_timeout_seconds or "
+                "shrink the page instead."
+            ) from e
         raise HTTPError(
             f"{base_url}/chat/completions", 503,
             f"couldn't reach local LLM server at {base_url}: {e}. "
@@ -1830,7 +1879,9 @@ _config = {
     # Anything OpenAI-compatible works (LM Studio, llama.cpp, MLX, vLLM).
     "local_base_url": None,
     "redact_sensitive_data": True,
-    "llm_timeout_seconds": 120,
+    # None leaves each caller's own default in force (120s for remote APIs,
+    # 600s for local inference). A value here overrides every provider.
+    "llm_timeout_seconds": None,
     "enable_personal_profile": False,
 }
 
@@ -1871,6 +1922,18 @@ _COST_PER_CALL = {
     "gemini-lite": 0.001,    # free tier
     "gemini-pro": 0.05,      # $1.25/$10 per MTok
 }
+
+
+def _cost_per_call(model_name, default):
+    """Estimated USD for one call to ``model_name``.
+
+    Local models run on the user's own hardware and cost nothing. Without this
+    they miss the table above and fall through to the cloud ``default``, which
+    bills a free run at API rates.
+    """
+    if _resolve_model(model_name)["provider"] == "local":
+        return 0.0
+    return _COST_PER_CALL.get(model_name, default)
 
 
 def call_llm(prompt, role="extract", max_tokens=4096, model_override=None):
@@ -1921,6 +1984,11 @@ def call_llm(prompt, role="extract", max_tokens=4096, model_override=None):
     for attempt in range(3):
         try:
             return caller(model_id, messages, max_tokens, api_key)
+        except _LLMBudgetExceeded:
+            # Deterministic: the same prompt would consume the same budget and
+            # fail again. Three attempts here cost 30 minutes of GPU for
+            # nothing.
+            raise
         except Exception as e:
             err_str = str(e).lower()
             status = getattr(e, "code", None)
@@ -2316,6 +2384,26 @@ def _parse_merge_response(response_text, existing_content, required_sections,
     return text.rstrip(), summary
 
 
+_MERGE_BUDGET_WARN_RATIO = 0.6
+
+
+def _warn_if_page_near_budget(slug, page_content, max_tokens=16384):
+    """Warn when a page has grown large enough to crowd out its own merge.
+
+    A merge re-emits the whole page, so the page competes with itself for a
+    single ``max_tokens`` budget. Past roughly two thirds of it the model runs
+    out of room, the output lands short, and validation rejects the merge —
+    quietly, leaving a stale page and a ``*.failed-merge.*`` artifact behind.
+    Pages have gone a month without updating this way.
+    """
+    approx = len(page_content) // 4      # ~4 chars/token is close enough to warn on
+    if approx <= max_tokens * _MERGE_BUDGET_WARN_RATIO:
+        return
+    print(f"    ⚠️  '{slug}' is ~{approx:,} tokens — {approx / max_tokens:.0%} of the "
+          f"{max_tokens:,}-token merge budget. A merge re-emits the whole page, "
+          "so it is competing with itself; split or condense it.")
+
+
 def merge_into_knowledge_pages(thoughts_by_project, store, anthropic_key):
     """Phase 2: Merge new thoughts into knowledge pages using Sonnet."""
     for slug in sorted(thoughts_by_project):
@@ -2340,6 +2428,8 @@ def merge_into_knowledge_pages(thoughts_by_project, store, anthropic_key):
             today = known_dates[0] if known_dates else datetime.now().strftime("%Y-%m-%d")
             display_name = slug.replace("-", " ").title()
             page_content = KNOWLEDGE_PAGE_TEMPLATE.format(name=display_name, date=today)
+
+        _warn_if_page_near_budget(slug, page_content)
 
         # Format thoughts for prompt
         thought_lines = []
@@ -2400,6 +2490,8 @@ def merge_into_me_page(thoughts, store, anthropic_key):
     if not page_content:
         page_content = ME_PAGE_TEMPLATE
 
+    _warn_if_page_near_budget("me", page_content)
+
     thought_lines = []
     for t in thoughts:
         machine_tag = f", machine: {t['machine']}" if t.get("machine") else ""
@@ -2449,6 +2541,8 @@ def merge_into_ideas_page(thoughts, store, anthropic_key):
     page_content, version = store.get_page("ideas")
     if not page_content:
         page_content = IDEAS_PAGE_TEMPLATE
+
+    _warn_if_page_near_budget("ideas", page_content)
 
     thought_lines = []
     for t in thoughts:
@@ -3212,18 +3306,16 @@ def _doctor_check_dataless(base_dir):
 
 def _doctor_check_schedule():
     """Detect whether an hourly cron or launchd job is set up for gyrus."""
-    import subprocess
-    try:
-        ct = subprocess.run(["crontab", "-l"], capture_output=True,
-                            text=True, timeout=5)
-        cron_has_gyrus = "gyrus" in (ct.stdout or "") or "ingest.py" in (ct.stdout or "")
-    except (subprocess.SubprocessError, FileNotFoundError):
-        cron_has_gyrus = False
-    launchagents = Path.home() / "Library" / "LaunchAgents"
-    launchd_files = []
-    if launchagents.exists():
-        launchd_files = [f.name for f in launchagents.iterdir()
-                         if "gyrus" in f.name.lower()]
+    cron_has_gyrus = _has_gyrus_cron()
+    launchd_files = _gyrus_launchd_jobs()
+    if cron_has_gyrus and launchd_files:
+        # Both wake on the hour: one takes the lock and the other burns a run
+        # for nothing. Reporting whichever matched first hides the clash.
+        return ("warn", "schedule",
+                f"cron and launchd ({', '.join(launchd_files)}) both run gyrus hourly",
+                "keep one — `crontab -e` to drop the cron line, or "
+                f"`launchctl bootout gui/$(id -u) "
+                f"~/Library/LaunchAgents/{launchd_files[0]}`")
     if cron_has_gyrus:
         return ("ok", "schedule", "hourly cron configured", None)
     if launchd_files:
@@ -3475,6 +3567,9 @@ def _doctor_fix_schedule():
     import subprocess
     if _has_gyrus_cron():
         return True, "cron already configured"
+    launchd_files = _gyrus_launchd_jobs()
+    if launchd_files:
+        return True, f"launchd already runs gyrus ({', '.join(launchd_files)})"
     gyrus_bin = _which("gyrus") or str(Path.home() / ".local" / "bin" / "gyrus")
     cron_line = f"0 * * * * {gyrus_bin} >/dev/null 2>&1"
     try:
@@ -3996,9 +4091,32 @@ def _has_gyrus_cron():
     return "gyrus" in text or "ingest.py" in text
 
 
+def _gyrus_launchd_jobs():
+    """Return the names of any launchd agents that also run gyrus.
+
+    Nothing here installs one, but setup scripts and users do. A launchd agent
+    alongside a cron entry means two ingests wake on the hour and race for the
+    lock, so both schedulers have to be consulted before adding either.
+    """
+    launchagents = Path.home() / "Library" / "LaunchAgents"
+    if not launchagents.exists():
+        return []
+    try:
+        return sorted(f.name for f in launchagents.iterdir()
+                      if "gyrus" in f.name.lower())
+    except OSError:
+        return []
+
+
 def _init_cron():
     """Add `0 * * * * gyrus` to the current user's crontab."""
     import subprocess
+    launchd_files = _gyrus_launchd_jobs()
+    if launchd_files:
+        print(f"    ✓ launchd already runs gyrus hourly "
+              f"({', '.join(launchd_files)})")
+        print("       skipping cron so the two don't race")
+        return
     gyrus_bin = _which("gyrus") or str(Path.home() / ".local" / "bin" / "gyrus")
     cron_line = f"0 * * * * {gyrus_bin} >/dev/null 2>&1"
     try:
@@ -4822,7 +4940,14 @@ def _write_status_md(store, pages, statuses, recency, manual_overrides=None):
 
 def _save_run_log(store, sessions, thoughts, cost):
     """Append a structured entry to the run log."""
-    base = store.base_dir if hasattr(store, "base_dir") else Path.home() / ".gyrus"
+    # ``base_dir`` may still be the ``~/.gyrus`` symlink, while the containment
+    # guard compares against the resolved root. Anchor to the same canonical
+    # directory the guard uses, exactly as MarkdownStorage does for every other
+    # managed child.
+    root = getattr(store, "_root_dir", None)
+    base = root or (
+        store.base_dir if hasattr(store, "base_dir") else Path.home() / ".gyrus"
+    )
     log_path = base / "runs.jsonl"
 
     # Count by tool
@@ -4858,7 +4983,6 @@ def _save_run_log(store, sessions, thoughts, cost):
         "merge_model": _config.get("merge_model", ""),
     }
 
-    root = getattr(store, "_root_dir", None)
     _safe_append(
         log_path, json.dumps(entry, default=str) + "\n", root=root
     )
@@ -5581,7 +5705,7 @@ def compare_models(keys, base_dir, file_config=None,
         except Exception:
             elapsed = time.time() - t0
             thoughts = []
-        cost = _COST_PER_CALL.get(model_name, 0.01)
+        cost = _cost_per_call(model_name, 0.01)
         return model_name, session_idx, thoughts, elapsed, cost
 
     with ThreadPoolExecutor(max_workers=8) as executor:
@@ -6432,9 +6556,7 @@ def main():
     _config["redact_sensitive_data"] = (
         file_config.get("redact_sensitive_data", True) is not False
     )
-    _config["llm_timeout_seconds"] = file_config.get(
-        "llm_timeout_seconds", 120
-    )
+    _config["llm_timeout_seconds"] = file_config.get("llm_timeout_seconds")
     _config["enable_personal_profile"] = (
         file_config.get("enable_personal_profile", False) is True
     )
@@ -6850,18 +6972,19 @@ def main():
             if digest_config.get("email"):
                 send_digest_email(digest, digest_config, store.base_dir if hasattr(store, "base_dir") else Path.home() / ".gyrus")
             # Always save to file
-            digest_path = (store.base_dir if hasattr(store, "base_dir") else Path.home() / ".gyrus") / "latest-digest.md"
-            _safe_write(
-                digest_path, digest,
-                root=getattr(store, "_root_dir", None),
+            digest_root = getattr(store, "_root_dir", None)
+            digest_base = digest_root or (
+                store.base_dir if hasattr(store, "base_dir") else Path.home() / ".gyrus"
             )
+            digest_path = digest_base / "latest-digest.md"
+            _safe_write(digest_path, digest, root=digest_root)
             print(f"  Digest: {digest_path}")
 
     # ── Summary + Run Log ──
     extract_model = _config["extract_model"]
     merge_model = _config["merge_model"]
-    extract_cost = _usage["extract_calls"] * _COST_PER_CALL.get(extract_model, 0.01)
-    merge_cost = _usage["merge_calls"] * _COST_PER_CALL.get(merge_model, 0.03)
+    extract_cost = _usage["extract_calls"] * _cost_per_call(extract_model, 0.01)
+    merge_cost = _usage["merge_calls"] * _cost_per_call(merge_model, 0.03)
     total_cost = extract_cost + merge_cost
 
     print(f"\nDone. Processed {len(all_sessions)} sessions, "
