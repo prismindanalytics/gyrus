@@ -2016,6 +2016,202 @@ class TestExtractionDeadLetter(unittest.TestCase):
             shutil.rmtree(tmpdir)
 
 
+class TestSlugHygiene(unittest.TestCase):
+    """Junk-name rejection, path-segment resolution, and quarantine routing."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.store = MarkdownStorage(base_dir=self.tmpdir)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _page(self, slug):
+        (Path(self.tmpdir) / "projects" / f"{slug}.md").write_text(f"# {slug}\n\nstub\n")
+
+    def test_normalize_preserves_separators(self):
+        self.assertEqual(ingest._normalize_project_slug("calledthird/research/seven-hole-tax"),
+                         "calledthird-research-seven-hole-tax")
+        self.assertEqual(ingest._normalize_project_slug("good/bye_malaria"), "good-bye-malaria")
+        self.assertEqual(ingest._normalize_project_slug("seven-hole-</strong>tax"), "seven-hole-tax")
+
+    def test_normalize_rejects_junk(self):
+        for junk in ("none", "None", "null", "unknown", "untitled", "",
+                     "could-you-please-help-me-sharpen-2",
+                     "can you fix my thing for me please"):
+            self.assertIsNone(ingest._normalize_project_slug(junk), junk)
+
+    def test_normalize_keeps_legit_multiword_names(self):
+        for name in ("same-stuff-different-brain", "goodbye-malaria",
+                     "pitch-tunneling-atlas",
+                     "closing-the-corridor-funding-proposal"):
+            self.assertEqual(ingest._normalize_project_slug(name), name)
+
+    def test_path_project_resolves_by_segment(self):
+        self._page("clickory")
+        thoughts = [{"content": "t", "project": "click/clickory", "kind": "project"}]
+        resolved = resolve_aliases(thoughts, self.store)
+        self.assertEqual(resolved[0]["canonical_project"], "clickory")
+        aliases = {a["alias"]: a["canonical_slug"] for a in self.store.get_aliases()}
+        self.assertEqual(aliases.get("click/clickory"), "clickory")
+
+    def test_path_project_resolves_by_first_segment_alias(self):
+        self.store.save_alias("calledthird", "calledthird-website")
+        thoughts = [{"content": "t", "project": "calledthird/research/new-thing",
+                     "kind": "project"}]
+        resolved = resolve_aliases(thoughts, self.store)
+        self.assertEqual(resolved[0]["canonical_project"], "calledthird-website")
+
+    def test_junk_project_quarantined_not_minted(self):
+        thoughts = [{"content": "t", "project": "could you please help me sharpen 2",
+                     "kind": "project"}]
+        resolved = resolve_aliases(thoughts, self.store)
+        self.assertEqual(resolved[0]["canonical_project"], ingest.UNSORTED_SLUG)
+        self.assertEqual(self.store.get_aliases(), [])
+
+    def test_junk_idea_routes_to_none(self):
+        thoughts = [{"content": "t", "project": "untitled", "kind": "idea"}]
+        resolved = resolve_aliases(thoughts, self.store)
+        self.assertIsNone(resolved[0]["canonical_project"])
+
+    def test_fuzzy_never_attaches_to_junk_canonical(self):
+        self.store.save_alias("could-you-please-help-me-sharpen-2",
+                              "could-you-please-help-me-sharpen-2")
+        thoughts = [{"content": "t", "project": "could-you-prease-help-me-sharpen-2",
+                     "kind": "project"}]
+        resolved = resolve_aliases(thoughts, self.store)
+        self.assertEqual(resolved[0]["canonical_project"], ingest.UNSORTED_SLUG)
+
+    def test_fuzzy_matches_existing_page_slug(self):
+        self._page("clickory")
+        thoughts = [{"content": "t", "project": "clickclickory", "kind": "project"}]
+        resolved = resolve_aliases(thoughts, self.store)
+        self.assertEqual(resolved[0]["canonical_project"], "clickory")
+
+    def test_codex_scratch_workspace_is_dropped(self):
+        self.assertEqual(ingest._workspace_name_from_value(
+            "/Users/x/Documents/Codex/2026-07-28/could-you-please-help-me-sharpen-2"), "")
+        self.assertEqual(ingest._workspace_name_from_value(
+            "/Users/x/Documents/GitHub/nerve"), "nerve")
+
+    def test_extraction_junk_project_words_dropped(self):
+        parsed = ingest._parse_extracted_thoughts(json.dumps([
+            {"content": "a fact", "project": "None", "kind": "project"},
+            {"content": "b fact", "project": "<strong>tax</strong>", "kind": "project"},
+        ]))
+        self.assertIsNone(parsed[0]["project"])
+        self.assertEqual(parsed[1]["project"], "tax")
+
+
+class TestMergeResponseDedup(unittest.TestCase):
+    """Append-only restoration must permit consolidation, not lock in dups."""
+
+    PAGE = (
+        "# P\n\n## Status\nactive | build\n\n## Key Decisions\n"
+        "- [2026-07-01] Chose sqlite over postgres (source: claude-code)\n"
+        "- [2026-07-02] Shipped v1 to TestFlight (source: claude-code)\n"
+        "\n## Timeline & History\n"
+        "- [2026-07-02] Shipped v1 to TestFlight (source: claude-code)\n"
+    )
+
+    def _merge(self, new_text):
+        return ingest._parse_merge_response(
+            new_text + "\nCHANGE_SUMMARY: test",
+            self.PAGE,
+            required_sections=("Status", "Key Decisions", "Timeline & History"),
+            append_only_sections=("Key Decisions", "Timeline & History"),
+        )[0]
+
+    def test_cross_section_duplicate_dropped_keeping_decisions(self):
+        new = (
+            "# P\n\n## Status\nactive | build\n\n## Key Decisions\n"
+            "- [2026-07-01] Chose sqlite over postgres (source: claude-code)\n"
+            "- [2026-07-02] Shipped v1 to TestFlight (source: claude-code)\n"
+            "\n## Timeline & History\n"
+            "- [2026-07-02] Shipped v1 to TestFlight (source: claude-code)\n"
+        )
+        result = self._merge(new)
+        self.assertEqual(result.count("Shipped v1 to TestFlight"), 1)
+        decisions = result.split("## Timeline")[0]
+        self.assertIn("Shipped v1", decisions)
+
+    def test_same_date_paraphrase_not_restored(self):
+        new = (
+            "# P\n\n## Status\nactive | build\n\n## Key Decisions\n"
+            "- [2026-07-01] Chose sqlite over postgres for the store (source: claude-code)\n"
+            "\n## Timeline & History\n"
+            "- [2026-07-02] Shipped v1 to TestFlight (source: claude-code)\n"
+        )
+        result = self._merge(new)
+        # The lightly-reworded decision is accepted; the original not re-added
+        self.assertEqual(result.count("Chose sqlite over postgres"), 1)
+
+    def test_genuinely_dropped_line_still_restored(self):
+        new = (
+            "# P\n\n## Status\nactive | build\n\n## Key Decisions\n"
+            "- [2026-07-03] Something else entirely (source: codex)\n"
+            "\n## Timeline & History\n"
+            "- [2026-07-02] Shipped v1 to TestFlight (source: claude-code)\n"
+        )
+        result = self._merge(new)
+        self.assertIn("Chose sqlite over postgres", result)
+
+
+class TestRunMergeLossless(unittest.TestCase):
+    """run_merge parks pages, carries history, and refuses junk targets."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.store = MarkdownStorage(base_dir=self.tmpdir)
+        (Path(self.tmpdir) / "projects" / "clickory.md").write_text(
+            "# clickory\n\n## Key Decisions\n"
+            "- [2026-07-01] Real decision (source: claude-code)\n"
+            "\n## Timeline & History\n(None recorded)\n"
+        )
+        (Path(self.tmpdir) / "projects" / "clickron.md").write_text(
+            "# clickron\n\n## Key Decisions\n"
+            "- [2026-07-02] Shard decision (source: codex)\n"
+            "\n## Timeline & History\n"
+            "- [2026-07-02] Shard event (source: codex)\n"
+        )
+        (Path(self.tmpdir) / "thoughts" / "2026-07-02.jsonl").write_text(
+            json.dumps({"content": "t", "canonical_project": "clickron",
+                        "merged_into_page": "clickron",
+                        "created_at": "2026-07-02T00:00:00Z"}) + "\n"
+        )
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_merge_parks_and_carries(self):
+        rc = run_merge(self.store, ["clickron", "clickory"], yes=True)
+        self.assertEqual(rc, 0)
+        target = (Path(self.tmpdir) / "projects" / "clickory.md").read_text()
+        self.assertIn("Shard decision", target)
+        self.assertIn("Shard event", target)
+        self.assertIn("Real decision", target)
+        parked = list((Path(self.tmpdir) / "projects").glob("clickron.premerge.*.md"))
+        self.assertEqual(len(parked), 1)
+        self.assertIn("Shard decision", parked[0].read_text())
+        # Parked snapshots are invisible to page discovery
+        slugs = {p["slug"] for p in self.store.get_all_pages()}
+        self.assertEqual(slugs, {"clickory"})
+        # Thought records repointed, including merged_into_page
+        thought = json.loads(
+            (Path(self.tmpdir) / "thoughts" / "2026-07-02.jsonl").read_text())
+        self.assertEqual(thought["canonical_project"], "clickory")
+        self.assertEqual(thought["merged_into_page"], "clickory")
+
+    def test_merge_refuses_junk_target(self):
+        rc = run_merge(self.store, ["clickory", "could-you-please-help-me-sharpen-2"],
+                       yes=True)
+        self.assertEqual(rc, 2)
+
+    def test_merge_into_unsorted_allowed(self):
+        rc = run_merge(self.store, ["clickron", "unsorted"], yes=True)
+        self.assertEqual(rc, 0)
+
+
 class TestStatusNormalization(unittest.TestCase):
     """The status writer/reader vocabulary contract: every word the merge
     models have actually emitted must land in a canonical bucket."""

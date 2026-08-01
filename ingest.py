@@ -10,7 +10,7 @@ Knowledge pages are local markdown files by default.
 https://gyrus.sh
 """
 
-__version__ = "2026.8.1.2"
+__version__ = "2026.8.1.3"
 
 import argparse
 import atexit
@@ -267,6 +267,8 @@ CRITICAL — How to set "project":
 - The "project" field must be the PRODUCT name, not a feature, sub-task, or module name.
 - If working on a feature within a larger product (e.g., adding a dashboard to "Acme App"), use the PRODUCT name ("Acme App"), NOT the feature name ("dashboard").
 - If a WORKSPACE is specified below, use that as the project name unless the conversation is clearly about a DIFFERENT product.
+- If the workspace looks like a scratch/task folder name or a sentence rather than a product name, name the underlying product if the conversation makes it clear; otherwise output null for "project".
+- Never output paths (containing /), the word "none", or the session title as the project.
 
 How to classify "kind":
 - "project": About building or developing a PRODUCT that already has a repo, codebase, or deployment. Active development work on an existing product.
@@ -327,6 +329,7 @@ RULES:
 11. Avoid duplicate facts and preserve source/date provenance on decisions and history.
 12. CONSOLIDATE prose as you integrate. When new evidence extends, refines, or supersedes a statement already on the page, rewrite that statement in place — never append another clause to it. Narrative sections describe the CURRENT state, not the history of how the page was edited: a paragraph that has grown into a chain of "Recently... Additionally... Furthermore... Most recently..." must be collapsed into what it now means. This does not loosen rule 7 — Key Decisions and Timeline & History stay append-only.
 13. Return the complete Markdown page with no code fence or preamble.
+14. An event belongs in EXACTLY ONE of "Key Decisions" or "Timeline & History": choices, tradeoffs, and policies go in Key Decisions; shipped milestones, launches, incidents, and status changes go in Timeline & History. Never record the same fact in both sections, and if an incoming thought is already recorded in one of them, do not add it to the other or re-add it in different words.
 
 STRUCTURE — READ CAREFULLY:
 Your output MUST contain ALL NINE section headings below, spelled exactly, in
@@ -353,7 +356,7 @@ Languages, frameworks, infrastructure, key technical decisions. Only include det
 Revenue model, pricing, target audience — only if discussed in the thoughts.
 
 ## Key Decisions
-Chronological log of significant decisions. Append-only.
+Chronological log of significant decisions — the WHY. Append-only; do not repeat items from Timeline & History.
 - [YYYY-MM-DD] Decision description (source: tool-name)
 
 ## Open Questions
@@ -365,7 +368,7 @@ How this project relates to other projects.
 - [Entity]: Relationship description
 
 ## Timeline & History
-Chronological record of significant events. Append-only.
+Chronological record of significant events — the WHAT and WHEN. Append-only; do not repeat items from Key Decisions.
 - [YYYY-MM-DD] What happened (source: tool-name)
 
 ## Current Sprint / Next Steps
@@ -716,7 +719,16 @@ def _workspace_name_from_value(value):
             normalized = top.replace("\\", "/").rstrip("/")
     if "--claude-worktrees-" in normalized:
         normalized = normalized.split("--claude-worktrees-", 1)[0]
-    return normalized.rsplit("/", 1)[-1]
+    name = normalized.rsplit("/", 1)[-1]
+    # Codex per-task scratch dirs (.../Codex/<YYYY-MM-DD>/<prompt-title>) are
+    # named after the user's prompt, not a product — a workspace header built
+    # from one turns session titles into project names downstream.
+    parts = normalized.split("/")
+    if len(parts) >= 2 and re.fullmatch(r"\d{4}-\d{2}-\d{2}", parts[-2]):
+        return ""
+    if _normalize_project_slug(name) is None:
+        return ""
+    return name
 
 
 def _extract_workspace_from_claude(jsonl_path):
@@ -2088,7 +2100,9 @@ def _parse_extracted_thoughts(response_text):
         if project is not None and not isinstance(project, str):
             project = None
         if isinstance(project, str):
-            project = project.strip()[:200] or None
+            project = re.sub(r"<[^>]+>", "", project).strip()[:200] or None
+            if project and project.lower() in ("none", "null", "n/a", "unknown"):
+                project = None
         kind = item.get("kind")
         if kind not in ("project", "idea", "meta"):
             kind = "project" if project else "meta"
@@ -2206,15 +2220,75 @@ def _clear_extraction_failure(state, session):
 # ─── Knowledge Pipeline ───
 
 
+_UUID_SLUG_RE = re.compile(
+    r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
+
+# Names that mean "no project", however a model phrases them.
+_SLUG_JUNK_NAMES = {
+    "none", "null", "n-a", "na", "unknown", "untitled", "misc", "general",
+    "project", "temp", "scratch", "workspace",
+}
+# Codex-style scratch dirs are named after the user's prompt; a slug that
+# reads like the start of a request is a session title, not a product.
+_SLUG_PROMPT_OPENERS = {
+    "could", "can", "please", "help", "how", "what", "why", "when", "write",
+    "make", "create", "update", "fix", "i", "we", "let", "lets",
+}
+_SLUG_STOPWORDS = {
+    "you", "me", "my", "your", "the", "a", "an", "to", "of", "and", "please",
+    "help", "for", "with", "this", "that", "is", "are", "do", "does",
+}
+# Quarantine page for real project thoughts whose reported name is junk —
+# visible and re-sortable instead of silently minting a garbage page.
+UNSORTED_SLUG = "unsorted"
+
+
+def _normalize_project_slug(project):
+    """Slugify a model-reported project name; None when the name is junk.
+
+    Unlike the historical slugify, separators ('/', '_', '.') become '-'
+    instead of vanishing, so 'calledthird/research/x' can no longer crush
+    into a new 'calledthirdresearchx' identity.
+    """
+    if not isinstance(project, str):
+        return None
+    text = re.sub(r"<[^>]+>", "", project)
+    slug = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+    if not slug or slug in _SLUG_JUNK_NAMES or _UUID_SLUG_RE.match(slug):
+        return None
+    words = slug.split("-")
+    if len(words) >= 5:
+        stop_hits = sum(1 for w in words if w in _SLUG_STOPWORDS)
+        if words[0] in _SLUG_PROMPT_OPENERS or stop_hits >= 3:
+            return None
+    return slug
+
+
+def _fuzzy_slug_match(name, candidates, threshold=0.78):
+    """Best compact-SequenceMatcher match of name against candidate slugs."""
+    compact = name.lower().replace(" ", "").replace("-", "").replace("_", "")
+    best, best_score = None, 0.0
+    for cand in candidates:
+        cand_compact = cand.lower().replace("-", "").replace("_", "")
+        score = SequenceMatcher(None, compact, cand_compact).ratio()
+        if score > best_score:
+            best, best_score = cand, score
+    if best is not None and best_score >= threshold:
+        return best, best_score
+    return None, best_score
+
+
 def resolve_aliases(thoughts, store, repo_groups=None):
     """Phase 1a: Resolve project names to canonical slugs.
 
-    Priority: repo_groups (workspace mapping) > exact alias > fuzzy alias > new slug.
+    Priority: repo_groups (workspace mapping) > exact alias > path segments >
+    fuzzy alias/page > new slug (junk names quarantined, never minted).
     """
     alias_list = store.get_aliases()
     aliases = {a["alias"]: a["canonical_slug"] for a in alias_list}
     repo_groups = repo_groups or {}
-    _uuid_re = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
+    _uuid_re = _UUID_SLUG_RE
+    page_slugs = {p["slug"] for p in store.get_all_pages()}
 
     for t in thoughts:
         project = t.get("project")
@@ -2245,13 +2319,43 @@ def resolve_aliases(thoughts, store, repo_groups=None):
             t["canonical_project"] = aliases[project]
             continue
 
-        # Priority 3: Fuzzy match (skip UUID slugs)
+        # Priority 2.5: Path-like names resolve by segment before any fuzzy
+        # matching — 'calledthird/research/x' belongs to whatever page or
+        # alias 'calledthird' (or 'x') already names.
+        if "/" in project:
+            segments = [project] + [s for s in (project.split("/")[0],
+                                                project.split("/")[-1]) if s]
+            resolved = None
+            for seg in segments:
+                seg_slug = _normalize_project_slug(seg)
+                if not seg_slug:
+                    continue
+                if seg in aliases:
+                    resolved = aliases[seg]
+                elif seg_slug in aliases:
+                    resolved = aliases[seg_slug]
+                elif seg_slug in page_slugs:
+                    resolved = seg_slug
+                if resolved:
+                    break
+            if resolved:
+                t["canonical_project"] = resolved
+                aliases[project] = resolved
+                store.save_alias(project, resolved)
+                print(f"    Path segment: '{project}' -> '{resolved}'")
+                continue
+
+        # Priority 3: Fuzzy match against alias keys and existing page slugs.
+        # Junk canonicals are never valid targets — typo variants must not
+        # pile onto a garbage slug and entrench it.
         best_match = None
         best_score = 0
         project_lower = project.lower().replace(" ", "").replace("-", "").replace("_", "")
-        for alias, slug in aliases.items():
-            if _uuid_re.match(slug):
-                continue  # never match to a UUID slug
+        pool = [(alias, slug) for alias, slug in aliases.items()]
+        pool.extend((slug, slug) for slug in page_slugs)
+        for alias, slug in pool:
+            if _uuid_re.match(slug) or _normalize_project_slug(slug) is None:
+                continue
             alias_lower = alias.lower().replace(" ", "").replace("-", "").replace("_", "")
             score = SequenceMatcher(None, project_lower, alias_lower).ratio()
             if score > best_score:
@@ -2272,10 +2376,15 @@ def resolve_aliases(thoughts, store, repo_groups=None):
             # kidworthy — don't overwrite it with the folder name.
             # (We're guaranteed to have a project here: the `if not project:`
             # branch at the top of the loop `continue`s before we get here.)
-            slug = project.lower().replace(" ", "-")
-            slug = "".join(c for c in slug if c.isalnum() or c == "-")
-            # Never create UUID slugs — skip if the result looks like a UUID
-            if _uuid_re.match(slug):
+            slug = _normalize_project_slug(project)
+            if slug is None:
+                # Junk name. Project-kind thoughts stay visible on a
+                # quarantine page; idea/meta thoughts route to ideas/me.
+                if t.get("kind", "project") == "project":
+                    t["canonical_project"] = UNSORTED_SLUG
+                else:
+                    t["canonical_project"] = None
+                print(f"    ⚠️  Junk project name quarantined: '{project}'")
                 continue
             t["canonical_project"] = slug
             aliases[project] = slug
@@ -2432,19 +2541,46 @@ def _parse_merge_response(response_text, existing_content, required_sections,
     if old_title:
         text = re.sub(r"(?m)^# .+$", old_title.group(0), text, count=1)
 
-    # Restore any append-only entries the model dropped or paraphrased.
+    # Restore append-only entries the model dropped — but let it consolidate:
+    # a bullet is NOT restored when the new page already carries it as an
+    # exact line in a sibling append-only section, or as a same-dated
+    # paraphrase (>= 0.9 similar) in the same section. Anything less similar
+    # is treated as a drop and comes back verbatim.
+    def _norm(line):
+        return re.sub(r"\s+", " ", line.strip())
+
+    def _bullet_date(line):
+        m = re.match(r"-\s*\[(\d{4}-\d{2}-\d{2})\]", line.strip())
+        return m.group(1) if m else None
+
+    sibling_lines = set()
+    for heading in append_only_sections:
+        body = _section_body(text, heading) or ""
+        sibling_lines.update(_norm(l) for l in body.splitlines()
+                             if l.strip().startswith("-"))
+
     for heading in append_only_sections:
         old_body = _section_body(existing_content or "", heading) or ""
         new_body = _section_body(text, heading) or ""
-        new_lines = {re.sub(r"\s+", " ", line.strip())
-                     for line in new_body.splitlines()}
+        new_bullets = [_norm(l) for l in new_body.splitlines()
+                       if l.strip().startswith("-")]
+        new_lines = set(new_bullets)
         missing_lines = []
         for line in old_body.splitlines():
             stripped = line.strip()
             if not stripped.startswith("-"):
                 continue
-            if re.sub(r"\s+", " ", stripped) not in new_lines:
-                missing_lines.append(stripped)
+            normed = _norm(stripped)
+            if normed in new_lines or normed in sibling_lines:
+                continue
+            date = _bullet_date(stripped)
+            if date is not None and any(
+                _bullet_date(nb) == date
+                and SequenceMatcher(None, normed, nb).ratio() >= 0.9
+                for nb in new_bullets
+            ):
+                continue
+            missing_lines.append(stripped)
         if missing_lines:
             repaired = new_body.rstrip()
             if repaired and repaired not in ("(None recorded)", "(None yet.)"):
@@ -2453,6 +2589,25 @@ def _parse_merge_response(response_text, existing_content, required_sections,
                 repaired = ""
             repaired += "\n".join(missing_lines)
             text = _replace_section_body(text, heading, repaired)
+
+    # Drop exact duplicates recorded in more than one append-only section,
+    # keeping the first section's copy (Key Decisions before Timeline).
+    seen_across = set()
+    for heading in append_only_sections:
+        body = _section_body(text, heading)
+        if body is None:
+            continue
+        kept, changed = [], False
+        for line in body.splitlines():
+            normed = _norm(line)
+            if line.strip().startswith("-") and normed in seen_across:
+                changed = True
+                continue
+            if line.strip().startswith("-"):
+                seen_across.add(normed)
+            kept.append(line)
+        if changed:
+            text = _replace_section_body(text, heading, "\n".join(kept).rstrip())
 
     # A Manual Notes section is user-owned and copied byte-for-byte.
     manual = _section_body(existing_content or "", "Manual Notes")
@@ -4497,19 +4652,21 @@ Only suggest HIGH-CONFIDENCE merges. When unsure, omit. Return [] if nothing is 
 Do not include projects that are clearly distinct even if they share domain keywords."""
 
 
-def _llm_suggest_merges(pages, existing_cluster_slugs=None):
+def _llm_suggest_merges(pages, existing_cluster_slugs=None, valid_canonicals=None):
     """Ask the LLM for merge suggestions the heuristic couldn't find.
 
     Returns list of {canonical, fragments, reason}. Skips slugs already
     handled by the prefix/workspace heuristics so the LLM doesn't waste its
-    context re-suggesting what we already know.
+    context re-suggesting what we already know. When ``valid_canonicals`` is
+    given, suggestions whose canonical is not in it are dropped — the model
+    must consolidate onto something that actually exists.
 
     One call. Uses the configured extract model.
     """
     existing = set(existing_cluster_slugs or [])
     eligible = [p for p in pages
                 if p["slug"] not in existing
-                and p["slug"] not in ("ideas", "me", "cross-cutting")]
+                and p["slug"] not in ("ideas", "me", "cross-cutting", UNSORTED_SLUG)]
     if len(eligible) < 2:
         return []
 
@@ -4539,6 +4696,8 @@ def _llm_suggest_merges(pages, existing_cluster_slugs=None):
         canonical = s.get("canonical")
         fragments = s.get("fragments", [])
         if not canonical or not fragments:
+            continue
+        if valid_canonicals is not None and canonical not in valid_canonicals:
             continue
         # Only accept fragments that actually exist as project slugs
         frags_ok = [f for f in fragments
@@ -4594,7 +4753,7 @@ def run_merge_suggest(store, yes=False, llm=False):
         print("  no project pages yet — nothing to suggest")
         return 0
 
-    slugs = sorted({p["slug"] for p in pages})
+    slugs = sorted({p["slug"] for p in pages} - {UNSORTED_SLUG})
     real_repos = _real_repo_names()
     ws_parents = _enumerate_workspace_parents(slugs, real_repos)
     clusters = _detect_slug_clusters(slugs, workspace_parents=ws_parents)
@@ -4606,17 +4765,55 @@ def run_merge_suggest(store, yes=False, llm=False):
             f for frags in clusters.values() for f in frags
         }
         print("  🤖 asking the LLM for additional suggestions…")
-        llm_suggestions = _llm_suggest_merges(pages, existing_cluster_slugs=already)
+        llm_suggestions = _llm_suggest_merges(
+            pages, existing_cluster_slugs=already,
+            valid_canonicals=set(slugs) | real_repos)
 
-    if not clusters and not llm_suggestions:
+    # Junk-identity slugs: mis-extracted names (prompt fragments, 'none',
+    # path crushes ratified by old slugify) that should fold into a real page.
+    handled = set(clusters.keys()) | {f for fr in clusters.values() for f in fr}
+    handled |= {s["canonical"] for s in llm_suggestions}
+    handled |= {f for s in llm_suggestions for f in s["fragments"]}
+    alias_map = {a["alias"]: a["canonical_slug"] for a in store.get_aliases()}
+    page_slug_set = set(slugs)
+    junk_proposals = []
+    for slug in slugs:
+        if slug in handled:
+            continue
+        target = None
+        if _normalize_project_slug(slug) is None:
+            match, _score = _fuzzy_slug_match(slug, page_slug_set - {slug})
+            target = match or UNSORTED_SLUG
+        else:
+            for alias, canonical in alias_map.items():
+                if canonical != slug or "/" not in alias:
+                    continue
+                if _normalize_project_slug(alias) == slug:
+                    continue  # legitimately-normalized name, not a crush
+                first, last = alias.split("/")[0], alias.split("/")[-1]
+                last_slug = _normalize_project_slug(last)
+                first_slug = _normalize_project_slug(first) or ""
+                first_resolved = alias_map.get(first) or alias_map.get(first_slug)
+                if last_slug and last_slug != slug and last_slug in page_slug_set:
+                    target = last_slug
+                elif (first_resolved and first_resolved != slug
+                        and first_resolved in page_slug_set):
+                    target = first_resolved
+                if target:
+                    break
+        if target and target != slug:
+            junk_proposals.append((slug, target))
+
+    if not clusters and not llm_suggestions and not junk_proposals:
         print("  ✨ no fragmented slug clusters detected")
         if not llm:
             print("     try `gyrus merge --llm` for LLM-backed semantic suggestions")
         return 0
 
-    n_clusters = len(clusters) + len(llm_suggestions)
+    n_clusters = len(clusters) + len(llm_suggestions) + len(junk_proposals)
     n_fragments = (sum(len(f) for f in clusters.values()) +
-                   sum(len(s["fragments"]) for s in llm_suggestions))
+                   sum(len(s["fragments"]) for s in llm_suggestions) +
+                   len(junk_proposals))
     print()
     print(f"  🔍 Found {n_clusters} cluster(s), {n_fragments} fragment(s). "
           f"Review each:")
@@ -4672,6 +4869,22 @@ def run_merge_suggest(store, yes=False, llm=False):
             skipped_clusters += 1
         print()
 
+    # Phase 3: junk-identity slugs (default Y — these names are provably
+    # mis-extractions, and run_merge parks the page rather than deleting it)
+    for slug, target in junk_proposals:
+        print(f"  🧹 junk identity: '{slug}' → '{target}'")
+        ans = "y" if yes else _prompt(
+            f"     Merge into '{target}'? [Y/n]: ", "y"
+        ).lower()
+        if ans in ("", "y", "yes"):
+            rc = run_merge(store, [slug, target], yes=True)
+            if rc == 0:
+                total_merged += 1
+        else:
+            print("     skipped")
+            skipped_clusters += 1
+        print()
+
     print(f"  Done. Merged {total_merged} fragment(s); "
           f"skipped {skipped_clusters} cluster(s).")
     if total_merged:
@@ -4704,6 +4917,10 @@ def run_merge(store, slugs, yes=False):
     if not from_slugs:
         print(f"  nothing to merge (all source slugs equal '{into}')")
         return 0
+    if into != UNSORTED_SLUG and _normalize_project_slug(into) is None:
+        print(f"  refusing to merge into junk-classified slug '{into}' — "
+              f"pick a real project name (or '{UNSORTED_SLUG}')")
+        return 2
 
     print()
     print(f"  🔀 Merge into '{into}':")
@@ -4788,6 +5005,9 @@ def run_merge(store, slugs, yes=False):
                     t["canonical_project"] = into
                     rewritten_thoughts += 1
                     touched = True
+                if t.get("merged_into_page") in from_slugs:
+                    t["merged_into_page"] = into
+                    touched = True
                 new_lines.append(json.dumps(t))
             if touched:
                 _safe_write(
@@ -4796,13 +5016,41 @@ def run_merge(store, slugs, yes=False):
                 )
     print(f"    ✓ rewrote {rewritten_thoughts} thought record(s)")
 
-    # 3. Remove orphan project pages
+    # 3. Carry the source pages' append-only history into the target, then
+    # park the source files as .premerge. snapshots — never discard content.
+    target_content, target_version = store.get_page(into)
+    carried = 0
+    if target_content:
+        for p in affected_pages:
+            source_content = _read_text_safe(p) or ""
+            for heading in ("Key Decisions", "Timeline & History"):
+                src_body = _section_body(source_content, heading) or ""
+                dst_body = _section_body(target_content, heading) or ""
+                dst_lines = {re.sub(r"\s+", " ", l.strip())
+                             for l in dst_body.splitlines()}
+                additions = []
+                for line in src_body.splitlines():
+                    stripped = line.strip()
+                    if not stripped.startswith("-"):
+                        continue
+                    if re.sub(r"\s+", " ", stripped) not in dst_lines:
+                        additions.append(stripped)
+                if additions:
+                    repaired = dst_body.rstrip()
+                    repaired = (repaired + "\n") if repaired else ""
+                    target_content = _replace_section_body(
+                        target_content, heading, repaired + "\n".join(additions))
+                    carried += len(additions)
+        if carried:
+            store.save_page(into, target_content, target_version + 1)
+            print(f"    ✓ carried {carried} history bullet(s) into projects/{into}.md")
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     for p in affected_pages:
         try:
-            p.unlink()
-            print(f"    ✓ removed orphan page: projects/{p.name}")
+            p.rename(p.with_name(f"{p.stem}.premerge.{stamp}.md"))
+            print(f"    ✓ parked orphan page: projects/{p.stem}.premerge.{stamp}.md")
         except OSError as e:
-            print(f"    ⚠️  couldn't remove {p.name}: {e}")
+            print(f"    ⚠️  couldn't park {p.name}: {e}")
 
     # 4. Regenerate status.md if possible (best-effort)
     try:

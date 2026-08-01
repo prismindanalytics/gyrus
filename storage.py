@@ -455,7 +455,9 @@ class MarkdownStorage:
             # Historical snapshots and rejected merge responses live beside
             # real pages but are not project slugs. Keep them recoverable
             # without making page discovery fail strict slug validation.
-            if filepath.name.endswith(".bak.md") or ".failed-merge." in filepath.name:
+            if (filepath.name.endswith(".bak.md")
+                    or ".failed-merge." in filepath.name
+                    or ".premerge." in filepath.name):
                 continue
             slug = filepath.stem
             if slug in ("status", "cross-cutting", "me", "ideas"):
