@@ -10,7 +10,7 @@ Knowledge pages are local markdown files by default.
 https://gyrus.sh
 """
 
-__version__ = "2026.8.1.1"
+__version__ = "2026.8.1.2"
 
 import argparse
 import atexit
@@ -321,7 +321,7 @@ RULES:
 5. Preserve manually written or otherwise unsupported existing context unless explicit new evidence supersedes it.
 6. If a section has no relevant information, leave it minimal rather than inventing content.
 7. "Key Decisions" and "Timeline & History" are append-only — never remove entries.
-8. Keep the existing status unless a new thought explicitly changes it. Do not infer "dormant" from elapsed time.
+8. The first word of the Status line MUST be one of: active, paused, dormant, killed, brainstorm, shipped. Update it when the thoughts give evidence — work happening means active; an explicit statement that the project is shipped, paused, or killed changes it accordingly. Never infer "dormant" from elapsed time; recency is handled outside this prompt.
 9. Record only durable technical context, not command-by-command implementation details.
 10. "Current Sprint / Next Steps" contains only explicit unfinished work. Remove an item when new evidence says it is complete, while retaining the completion in history.
 11. Avoid duplicate facts and preserve source/date provenance on decisions and history.
@@ -340,7 +340,7 @@ Output the COMPLETE updated page in this markdown structure:
 # ProjectName
 
 ## Status
-status | stage | Priority: P1/P2/P3 | Division: division-name
+active|paused|dormant|killed|brainstorm|shipped | stage | Priority: P1/P2/P3 | Division: division-name
 Last activity: YYYY-MM-DD | Machine: machine-name
 
 ## Overview
@@ -378,7 +378,7 @@ CHANGE_SUMMARY: one sentence describing what changed
 KNOWLEDGE_PAGE_TEMPLATE = """# {name}
 
 ## Status
-unknown | unknown | Priority: unknown | Division: unknown
+active | unknown | Priority: unknown | Division: unknown
 Last activity: {date}
 
 ## Overview
@@ -2841,6 +2841,47 @@ def run_cross_reference_scan(store, anthropic_key, new_thoughts=None):
         return False
 
 
+# Canonical status vocabulary plus the synonyms models actually emit. The
+# writer (MERGE_PROMPT), the page template, and every reader must agree on
+# this table — pages historically carried free-text like "Prototype" or
+# "BACKLOG" that a 4-word whitelist silently collapsed to unknown.
+_STATUS_CANON = {
+    **dict.fromkeys(
+        ("active", "ongoing", "building", "prototype", "pre-launch", "prelaunch",
+         "mvp", "wip", "development", "launch", "ready", "healthy", "functional",
+         "fully", "operational", "live", "in", "in-progress", "pivot", "beta",
+         "deployed"), "active"),
+    **dict.fromkeys(("shipped", "done", "launched", "complete", "completed"), "shipped"),
+    **dict.fromkeys(
+        ("paused", "backlog", "someday", "later", "planned", "hold", "on-hold",
+         "parked"), "paused"),
+    **dict.fromkeys(("dormant", "stale", "inactive", "frozen"), "dormant"),
+    **dict.fromkeys(
+        ("killed", "dead", "abandoned", "cancelled", "canceled", "archived",
+         "sunset"), "killed"),
+    **dict.fromkeys(("brainstorm", "idea", "ideas", "exploring"), "brainstorm"),
+}
+
+
+def _normalize_status(status_line):
+    """Map the first word of a status line onto the canonical vocabulary."""
+    words = status_line.split("|")[0].strip().split()
+    if not words:
+        return "unknown"
+    return _STATUS_CANON.get(words[0].lower(), "unknown")
+
+
+def _detect_page_status(content):
+    """Read a page's `## Status` section and return its canonical status."""
+    idx = content.find("## Status")
+    if idx < 0:
+        return "unknown"
+    section = content[idx + len("## Status"):]
+    end = section.find("\n##")
+    status_line = section[:end] if end > 0 else section[:120]
+    return _normalize_status(status_line.strip())
+
+
 def _parse_status_overrides(store):
     """Read user-edited status.md for status overrides.
 
@@ -2878,9 +2919,9 @@ def _parse_status_overrides(store):
             slug = line.split("**")[1]
             rest = line.split("**: ", 1)[1] if "**: " in line else ""
             if rest:
-                # First word is the status
-                status_word = rest.split("|")[0].strip().split()[0].lower()
-                if status_word in ("active", "killed", "dormant", "paused", "brainstorm", "idea"):
+                # Normalize so legacy words ("idea") and synonyms stay usable
+                status_word = _normalize_status(rest)
+                if status_word != "unknown":
                     overrides[slug] = status_word
         except (IndexError, ValueError):
             continue
@@ -4959,7 +5000,7 @@ def review_project_status(store):
 
     print(f"\n  Review project statuses ({len(pages)} projects)")
     print(f"  For each project, confirm or change the status.")
-    print(f"  Options: [Enter]=keep, a=active, k=killed, d=dormant, p=paused, b=brainstorm\n")
+    print(f"  Options: [Enter]=keep, a=active, s=shipped, k=killed, d=dormant, p=paused, b=brainstorm\n")
 
     updated = {}
     for p in sorted(pages, key=lambda x: x["slug"]):
@@ -4969,29 +5010,22 @@ def review_project_status(store):
             continue
 
         # Detect current status from page content
-        content = p["content"]
-        detected_status = "unknown"
-        if "## Status" in content:
-            start = content.find("## Status") + len("## Status")
-            end = content.find("\n##", start)
-            status_line = content[start:end].strip() if end > 0 else content[start:start + 120].strip()
-            first_word = status_line.split("|")[0].strip().split()[0].lower() if status_line else "unknown"
-            if first_word in ("active", "killed", "dormant", "paused"):
-                detected_status = first_word
-        else:
-            status_line = ""
+        detected_status = _detect_page_status(p["content"])
 
         # Use override if exists
         if slug in overrides:
             detected_status = overrides[slug]
 
-        # Recency signal
+        # Recency signal (never second-guess a manual override)
         last_date = recency.get(slug, "unknown")
         if last_date != "unknown":
             try:
                 days_ago = (today - datetime.fromisoformat(last_date).date()).days
-                if days_ago > 60 and detected_status == "active":
-                    detected_status = "dormant"  # suggest dormant if >60 days
+                if slug not in overrides:
+                    if days_ago > 60 and detected_status == "active":
+                        detected_status = "dormant"  # suggest dormant if >60 days
+                    elif days_ago <= 14 and detected_status == "unknown":
+                        detected_status = "active"  # recent activity is the signal
                 recency_str = f"{days_ago}d ago"
             except (ValueError, TypeError):
                 recency_str = last_date
@@ -4999,7 +5033,7 @@ def review_project_status(store):
             recency_str = "?"
 
         # Status color hint
-        indicator = {"active": "🟢", "killed": "🔴", "dormant": "🟡", "paused": "⏸️", "brainstorm": "💡", "unknown": "❓"}.get(detected_status, "❓")
+        indicator = {"active": "🟢", "shipped": "🚢", "killed": "🔴", "dormant": "🟡", "paused": "⏸️", "brainstorm": "💡", "unknown": "❓"}.get(detected_status, "❓")
 
         try:
             choice = input(f"  {indicator} {slug} [{detected_status}] (last: {recency_str}): ").strip().lower()
@@ -5008,6 +5042,8 @@ def review_project_status(store):
 
         if choice == "a":
             updated[slug] = "active"
+        elif choice == "s":
+            updated[slug] = "shipped"
         elif choice == "k":
             updated[slug] = "killed"
         elif choice == "d":
@@ -5017,7 +5053,9 @@ def review_project_status(store):
         elif choice == "b":
             updated[slug] = "brainstorm"
         elif choice:
-            updated[slug] = choice  # custom status
+            # Normalize so the override survives the next parse round-trip
+            normalized = _normalize_status(choice)
+            updated[slug] = normalized if normalized != "unknown" else detected_status
         else:
             updated[slug] = detected_status  # keep current
 
@@ -5043,22 +5081,17 @@ def generate_status(store):
             statuses[slug] = overrides[slug]
             continue
         # Detect from page content
-        content = p["content"]
-        detected = "unknown"
-        if "## Status" in content:
-            start = content.find("## Status") + len("## Status")
-            end = content.find("\n##", start)
-            status_line = content[start:end].strip() if end > 0 else ""
-            first_word = status_line.split("|")[0].strip().split()[0].lower() if status_line else "unknown"
-            if first_word in ("active", "killed", "dormant", "paused"):
-                detected = first_word
-        # Apply recency rule
+        detected = _detect_page_status(p["content"])
+        # Apply recency rules: stale actives demote, fresh unknowns promote.
+        # "shipped" is exempt — live-but-not-worked is its whole meaning.
         last_date = recency.get(slug, "")
         if last_date:
             try:
                 days_ago = (today - datetime.fromisoformat(last_date).date()).days
                 if days_ago > 60 and detected == "active":
                     detected = "dormant"
+                elif days_ago <= 14 and detected == "unknown":
+                    detected = "active"
             except (ValueError, TypeError):
                 pass
         statuses[slug] = detected
@@ -5076,7 +5109,7 @@ def _write_status_md(store, pages, statuses, recency, manual_overrides=None):
         "",
         "## Manual Overrides",
         "",
-        "_Add overrides here as `- **project-slug**: active`. Valid statuses: active, killed, dormant, paused, brainstorm._",
+        "_Add overrides here as `- **project-slug**: active`. Valid statuses: active, shipped, killed, dormant, paused, brainstorm._",
         "",
     ]
 
@@ -5097,8 +5130,8 @@ def _write_status_md(store, pages, statuses, recency, manual_overrides=None):
         st = statuses.get(slug, "unknown")
         by_status[st].append(slug)
 
-    status_order = ["active", "paused", "dormant", "brainstorm", "killed", "unknown"]
-    status_emoji = {"active": "🟢", "killed": "🔴", "dormant": "🟡", "paused": "⏸️", "brainstorm": "💡", "unknown": "❓"}
+    status_order = ["active", "shipped", "paused", "dormant", "brainstorm", "killed", "unknown"]
+    status_emoji = {"active": "🟢", "shipped": "🚢", "killed": "🔴", "dormant": "🟡", "paused": "⏸️", "brainstorm": "💡", "unknown": "❓"}
 
     for st in status_order:
         slugs = by_status.get(st, [])

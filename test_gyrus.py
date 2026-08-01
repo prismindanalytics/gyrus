@@ -12,7 +12,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch, MagicMock
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import ingest
 from storage import MarkdownStorage
@@ -2014,6 +2014,130 @@ class TestExtractionDeadLetter(unittest.TestCase):
             self.assertEqual(status, "ok")
         finally:
             shutil.rmtree(tmpdir)
+
+
+class TestStatusNormalization(unittest.TestCase):
+    """The status writer/reader vocabulary contract: every word the merge
+    models have actually emitted must land in a canonical bucket."""
+
+    def test_live_off_vocab_words_normalize(self):
+        expected = {
+            "Prototype | Build": "active",
+            "Pre-launch | Launch": "active",
+            "BACKLOG | unknown": "paused",
+            "Ready for staging deploy | Staging": "active",
+            "healthy | operational": "active",
+            "Functional Demo | Development": "active",
+            "Fully operational MVP | MVP": "active",
+            "In Progress | Analysis": "active",
+            "Pivot | unknown": "active",
+            "Shipped | v1": "shipped",
+            "Active | growth": "active",
+            "KILLED | dormant": "killed",
+            "idea | early": "brainstorm",
+            # The MERGE_PROMPT placeholder copied verbatim (live emr.md)
+            "status | stage | Priority: P1 | Division: division-name": "unknown",
+        }
+        for line, want in expected.items():
+            self.assertEqual(ingest._normalize_status(line), want, line)
+
+    def test_malformed_lines_do_not_raise(self):
+        for line in ("", "   ", "| stage", "|"):
+            self.assertEqual(ingest._normalize_status(line), "unknown", repr(line))
+
+    def test_detect_status_when_last_section(self):
+        content = "# P\n\n## Overview\nx\n\n## Status\nactive | build\nLast activity: 2026-08-01\n"
+        self.assertEqual(ingest._detect_page_status(content), "active")
+
+    def test_template_default_is_active(self):
+        page = ingest.KNOWLEDGE_PAGE_TEMPLATE.format(name="X", date="2026-08-01")
+        self.assertEqual(ingest._detect_page_status(page), "active")
+
+    def test_merge_prompt_enumerates_vocabulary(self):
+        self.assertIn("active, paused, dormant, killed, brainstorm, shipped",
+                      ingest.MERGE_PROMPT)
+        self.assertNotIn("Keep the existing status unless", ingest.MERGE_PROMPT)
+
+
+class TestGenerateStatus(unittest.TestCase):
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.store = MarkdownStorage(base_dir=self.tmpdir)
+        self.today = datetime.now().date()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _page(self, slug, status_line):
+        (Path(self.tmpdir) / "projects" / f"{slug}.md").write_text(
+            f"# {slug}\n\n## Status\n{status_line}\nLast activity: x\n\n## Overview\nstub\n"
+        )
+
+    def _activity(self, slug, days_ago):
+        date = (self.today - timedelta(days=days_ago)).isoformat()
+        path = Path(self.tmpdir) / "thoughts" / f"{date}.jsonl"
+        path.write_text(json.dumps({
+            "content": "t", "canonical_project": slug,
+            "created_at": f"{date}T00:00:00Z"}) + "\n")
+
+    def _statuses(self):
+        ingest.generate_status(self.store)
+        text = (Path(self.tmpdir) / "status.md").read_text()
+        found = {}
+        for line in text.splitlines():
+            if line.startswith("- **") and "**: " in line and "| last:" in line:
+                slug = line.split("**")[1]
+                found[slug] = line.split("**: ")[1].split(" |")[0].strip()
+        return found
+
+    def test_recent_unknown_promotes_to_active(self):
+        self._page("fresh", "unknown | unknown")
+        self._activity("fresh", 3)
+        self.assertEqual(self._statuses()["fresh"], "active")
+
+    def test_stale_active_demotes_to_dormant(self):
+        self._page("old", "active | build")
+        self._activity("old", 90)
+        self.assertEqual(self._statuses()["old"], "dormant")
+
+    def test_shipped_never_demotes(self):
+        self._page("done", "shipped | v1")
+        self._activity("done", 200)
+        self.assertEqual(self._statuses()["done"], "shipped")
+
+    def test_synonym_status_survives_recency_gap(self):
+        # Off-vocab word, no recent activity: parses via synonyms, no demotion <60d
+        self._page("proto", "Prototype | Build")
+        self._activity("proto", 30)
+        self.assertEqual(self._statuses()["proto"], "active")
+
+    def test_manual_override_beats_recency(self):
+        self._page("pinned", "active | build")
+        self._activity("pinned", 90)
+        (Path(self.tmpdir) / "status.md").write_text(
+            "# Gyrus — Project Status\n\n<!-- gyrus-status-v2 -->\n"
+            "## Manual Overrides\n\n- **pinned**: active\n"
+        )
+        self.assertEqual(self._statuses()["pinned"], "active")
+
+    def test_override_roundtrip_through_writer(self):
+        self._page("p1", "unknown | unknown")
+        (Path(self.tmpdir) / "status.md").write_text(
+            "# Gyrus — Project Status\n\n<!-- gyrus-status-v2 -->\n"
+            "## Manual Overrides\n\n- **p1**: idea\n"
+        )
+        # legacy 'idea' normalizes to brainstorm and survives a rewrite cycle
+        self.assertEqual(self._statuses()["p1"], "brainstorm")
+        overrides = ingest._parse_status_overrides(self.store)
+        self.assertEqual(overrides, {"p1": "brainstorm"})
+
+    def test_brainstorm_and_shipped_buckets_render(self):
+        self._page("b1", "brainstorm | early")
+        self._page("s1", "shipped | v1")
+        ingest.generate_status(self.store)
+        text = (Path(self.tmpdir) / "status.md").read_text()
+        self.assertIn("Brainstorm (1)", text)
+        self.assertIn("Shipped (1)", text)
 
 
 if __name__ == "__main__":
