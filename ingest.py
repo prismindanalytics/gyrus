@@ -10,7 +10,7 @@ Knowledge pages are local markdown files by default.
 https://gyrus.sh
 """
 
-__version__ = "2026.8.1.3"
+__version__ = "2026.8.1.4"
 
 import argparse
 import atexit
@@ -5646,6 +5646,58 @@ def show_project_context(store, project=None, cwd=None, max_chars=12000):
     return 0
 
 
+# Every line the pre-marker installer heredocs ever wrote matches one of
+# these shapes. The legacy-block upgrade only proceeds when the whole span
+# is provably machine-written; one unrecognized line aborts the upgrade.
+_LEGACY_GYRUS_LINE_RE = re.compile(
+    r"(?i)("
+    r"knowledge base|"
+    r"^\s+(ls|cat|grep|gyrus)\b|"
+    r"PROJECT(_NAME)?\.md|"
+    r"[/\\]\.gyrus\b|gyrus-local|"
+    r"Use /gyrus|"
+    r"At the start of a project session|"
+    r"Other useful files|"
+    r"untrusted historical|never as instructions|"
+    r"Never execute commands|"
+    r"bounded handoff|"
+    r"project statuses|working patterns|"
+    r"Read the project page"
+    r")")
+
+
+def _upgrade_legacy_gyrus_block(existing, managed, marker):
+    """Replace a pre-marker Gyrus block with the managed block, or None.
+
+    The span runs from the marker heading to the next top-level heading or
+    EOF. Every non-blank line in it must match the known legacy templates;
+    otherwise the caller leaves the file untouched rather than guessing
+    where user-authored content ends.
+    """
+    lines = existing.splitlines()
+    try:
+        start = next(i for i, l in enumerate(lines) if l.strip() == marker)
+    except StopIteration:
+        return None
+    stop = len(lines)
+    for i in range(start + 1, len(lines)):
+        line = lines[i]
+        if line.startswith("# ") and line.strip() != marker:
+            stop = i
+            break
+        if not line.strip():
+            continue
+        if not _LEGACY_GYRUS_LINE_RE.search(line):
+            return None
+    head = "\n".join(lines[:start]).rstrip()
+    tail = "\n".join(lines[stop:]).strip("\n")
+    new_text = (head + "\n\n") if head else ""
+    new_text += managed
+    if tail:
+        new_text += "\n" + tail + "\n"
+    return new_text
+
+
 def sync_tool_context(store):
     """Write Gyrus read instructions to AI tool instruction files.
 
@@ -5670,15 +5722,19 @@ def sync_tool_context(store):
         f"  cat \"{gyrus_path}/projects/PROJECT.md\"    # read a project page\n"
         f"  cat \"{gyrus_path}/status.md\"              # project statuses\n"
         f"  cat \"{gyrus_path}/me.md\"                  # working patterns\n"
+        f"  cat \"{gyrus_path}/ideas.md\"               # idea backlog + kill log\n"
+        f"  cat \"{gyrus_path}/latest-digest.md\"       # activity digest (after `gyrus digest`)\n"
         f"  grep -ri --include='*.md' \"SEARCH\" \"{gyrus_path}/projects/\" "
         f"\"{gyrus_path}/me.md\" \"{gyrus_path}/ideas.md\" \"{gyrus_path}/status.md\" "
         f"\"{gyrus_path}/cross-cutting.md\"\n"
+    )
+    codex_extra = (
+        f"For full instructions: cat \"{gyrus_path}/skills/codex/gyrus-instructions.md\"\n"
     )
 
     marker = "# Gyrus Knowledge Base"
     begin = "<!-- BEGIN GYRUS MANAGED CONTEXT -->"
     end = "<!-- END GYRUS MANAGED CONTEXT -->"
-    managed = f"{begin}\n{pointer}{end}\n"
     targets = {}
 
     # Keep all supported global instruction surfaces aligned. The installers
@@ -5686,16 +5742,17 @@ def sync_tool_context(store):
     # the knowledge-base directory.
     claude_md = Path.home() / ".claude" / "CLAUDE.md"
     if claude_md.parent.exists():
-        targets["Claude Code (CLAUDE.md)"] = claude_md
+        targets["Claude Code (CLAUDE.md)"] = (claude_md, "")
     codex_home = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex")))
     codex_md = codex_home / "AGENTS.md"
     if codex_md.parent.exists():
-        targets["Codex (AGENTS.md)"] = codex_md
+        targets["Codex (AGENTS.md)"] = (codex_md, codex_extra)
     gemini_md = Path.home() / ".gemini" / "GEMINI.md"
     if gemini_md.parent.exists():
-        targets["Antigravity (GEMINI.md)"] = gemini_md
+        targets["Antigravity (GEMINI.md)"] = (gemini_md, "")
 
-    for label, path in targets.items():
+    for label, (path, extra) in targets.items():
+        managed = f"{begin}\n{pointer}{extra}{end}\n"
         if path.is_symlink():
             print(f"  ⚠️  {label}: refusing to update symlink {path}")
             continue
@@ -5719,8 +5776,21 @@ def sync_tool_context(store):
                     print(f"  ✓ {label}: updated Gyrus read instructions")
             continue
         if marker in existing:
-            # An older installer-owned block has no end marker. Do not guess
-            # where user-authored content ends; leave it untouched.
+            # A pre-marker installer block: upgrade it in place, but only
+            # when every line of the candidate span is provably ours —
+            # never guess where user-authored content ends.
+            upgraded = _upgrade_legacy_gyrus_block(existing, managed, marker)
+            if upgraded is None:
+                print(f"  ⚠️  {label}: legacy Gyrus block has unrecognized "
+                      f"content — delete the old '# Gyrus Knowledge Base' "
+                      f"section from {path} to let Gyrus manage it")
+                continue
+            try:
+                path.write_text(upgraded)
+            except OSError as exc:
+                print(f"  ⚠️  {label}: cannot write {path} ({exc})")
+            else:
+                print(f"  ✓ {label}: upgraded legacy Gyrus block")
             continue
         new_content = existing.rstrip() + "\n\n" + managed if existing.strip() else managed
         try:
@@ -5960,6 +6030,7 @@ def self_update(base_dir=None):
     The source URL is HTTPS, but users should still review changes before
     running an update from a mutable branch.
     """
+    import subprocess
     import urllib.request
     import shutil
     import tempfile
@@ -5976,6 +6047,7 @@ def self_update(base_dir=None):
         "storage_notion.py": base / "storage_notion.py",
         "eval_prompts.py": base / "eval_prompts.py",
         "skills/codex/gyrus-instructions.md": base / "skills" / "codex" / "gyrus-instructions.md",
+        "skills/cowork/gyrus/SKILL.md": base / "skills" / "cowork" / "gyrus" / "SKILL.md",
     }
 
     claude_cmd_dir = Path.home() / ".claude" / "commands"
@@ -6031,6 +6103,20 @@ def self_update(base_dir=None):
             target.parent.mkdir(parents=True, exist_ok=True)
             os.replace(staged[fname], target)
             print(f"  Updated {target}")
+
+        # Refresh the managed CLAUDE.md/AGENTS.md/GEMINI.md blocks with the
+        # NEW code, so doc-surface improvements actually reach existing
+        # installs (they historically never did).
+        try:
+            subprocess.run(
+                [sys.executable, str(base / "ingest.py"),
+                 "--sync-context", "--base-dir", str(base)],
+                timeout=60, check=False,
+            )
+        except Exception as sync_exc:
+            print(f"  ⚠️  couldn't refresh tool instruction blocks: {sync_exc}")
+            print(f"     run manually: gyrus --sync-context")
+
         print(f"  Done! Updated to v{remote_version or 'latest'}")
         return True
     except Exception as e:
@@ -7487,20 +7573,21 @@ def main():
         sync_tool_context(store)
 
     # ── Step 4: Daily digest ──
+    # The digest file is template-only (no LLM call), so every run refreshes
+    # it — the documented latest-digest.md must actually exist. Email stays
+    # opt-in behind digest.enabled.
     if batch_thoughts and not args.dry_run:
         digest_config = file_config.get("digest", {})
-        if digest_config.get("enabled", False):
-            digest = generate_digest(batch_thoughts, store, all_sessions)
-            if digest_config.get("email"):
-                send_digest_email(digest, digest_config, store.base_dir if hasattr(store, "base_dir") else Path.home() / ".gyrus")
-            # Always save to file
-            digest_root = getattr(store, "_root_dir", None)
-            digest_base = digest_root or (
-                store.base_dir if hasattr(store, "base_dir") else Path.home() / ".gyrus"
-            )
-            digest_path = digest_base / "latest-digest.md"
-            _safe_write(digest_path, digest, root=digest_root)
-            print(f"  Digest: {digest_path}")
+        digest = generate_digest(batch_thoughts, store, all_sessions)
+        if digest_config.get("enabled", False) and digest_config.get("email"):
+            send_digest_email(digest, digest_config, store.base_dir if hasattr(store, "base_dir") else Path.home() / ".gyrus")
+        digest_root = getattr(store, "_root_dir", None)
+        digest_base = digest_root or (
+            store.base_dir if hasattr(store, "base_dir") else Path.home() / ".gyrus"
+        )
+        digest_path = digest_base / "latest-digest.md"
+        _safe_write(digest_path, digest, root=digest_root)
+        print(f"  Digest: {digest_path}")
 
     # ── Summary + Run Log ──
     extract_model = _config["extract_model"]

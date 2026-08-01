@@ -228,6 +228,22 @@ class MarkdownStorage:
             for path in directory.glob(pattern):
                 _set_private_file_mode(path, self._root_dir)
 
+        # me.md/ideas.md are canonical at the storage root (matching every
+        # doc surface), but historically only migrated on a successful merge
+        # save — which can fail for weeks. Migrate eagerly instead.
+        for slug in _SPECIAL_PAGE_SLUGS:
+            legacy = self.projects_dir / f"{slug}.md"
+            canonical = self._root_dir / f"{slug}.md"
+            if not legacy.exists():
+                continue
+            if canonical.exists():
+                # Root already exists (a newer save landed): keep it, park
+                # the stale legacy copy where page discovery ignores it.
+                legacy.replace(self.projects_dir / f"{slug}.legacy.bak.md")
+            else:
+                legacy.replace(canonical)
+                _set_private_file_mode(canonical, self._root_dir)
+
     def _page_path(self, slug, *, legacy=False):
         slug = _validate_slug(slug)
         if slug in _SPECIAL_PAGE_SLUGS and not legacy:

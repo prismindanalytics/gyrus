@@ -7,6 +7,7 @@ Run: python3 -m pytest test_gyrus.py -v
 import json
 import os
 import shutil
+import subprocess
 import sqlite3
 import tempfile
 import unittest
@@ -2210,6 +2211,139 @@ class TestRunMergeLossless(unittest.TestCase):
     def test_merge_into_unsorted_allowed(self):
         rc = run_merge(self.store, ["clickron", "unsorted"], yes=True)
         self.assertEqual(rc, 0)
+
+
+class TestSpecialPageMigration(unittest.TestCase):
+    """me.md/ideas.md migrate eagerly to the KB root on storage init."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_legacy_files_move_to_root(self):
+        store = MarkdownStorage(base_dir=self.tmpdir)
+        (Path(self.tmpdir) / "projects" / "me.md").write_text("# Me\npatterns\n")
+        (Path(self.tmpdir) / "projects" / "ideas.md").write_text("# Ideas\nbacklog\n")
+        MarkdownStorage(base_dir=self.tmpdir)  # re-init triggers migration
+        self.assertEqual((Path(self.tmpdir) / "me.md").read_text(), "# Me\npatterns\n")
+        self.assertEqual((Path(self.tmpdir) / "ideas.md").read_text(), "# Ideas\nbacklog\n")
+        self.assertFalse((Path(self.tmpdir) / "projects" / "me.md").exists())
+        self.assertFalse((Path(self.tmpdir) / "projects" / "ideas.md").exists())
+        # And a further init is a no-op
+        MarkdownStorage(base_dir=self.tmpdir)
+        self.assertTrue((Path(self.tmpdir) / "me.md").exists())
+
+    def test_root_copy_wins_when_both_exist(self):
+        MarkdownStorage(base_dir=self.tmpdir)
+        (Path(self.tmpdir) / "me.md").write_text("# Me\nnew\n")
+        (Path(self.tmpdir) / "projects" / "me.md").write_text("# Me\nstale\n")
+        MarkdownStorage(base_dir=self.tmpdir)
+        self.assertEqual((Path(self.tmpdir) / "me.md").read_text(), "# Me\nnew\n")
+        self.assertFalse((Path(self.tmpdir) / "projects" / "me.md").exists())
+        self.assertTrue(
+            (Path(self.tmpdir) / "projects" / "me.legacy.bak.md").exists())
+
+
+class TestLegacyBlockUpgrade(unittest.TestCase):
+    """Pre-marker installer blocks upgrade in place — or are left alone."""
+
+    LIVE_LEGACY = (
+        "# Gyrus Knowledge Base\n"
+        "\n"
+        "You have a knowledge base at /Users/haohu/gyrus-local/ built from your AI coding sessions.\n"
+        "At the start of a project session, read the relevant project page for context:\n"
+        "\n"
+        "  cat /Users/haohu/gyrus-local/projects/PROJECT_NAME.md\n"
+        "\n"
+        "Other useful files:\n"
+        "  ls /Users/haohu/gyrus-local/projects/     # all project pages\n"
+        "  cat /Users/haohu/gyrus-local/status.md    # project statuses\n"
+        "  cat /Users/haohu/gyrus-local/me.md        # your working patterns\n"
+        "\n"
+        "Use /gyrus for the full skill with export commands.\n"
+    )
+    MANAGED = "<!-- BEGIN GYRUS MANAGED CONTEXT -->\nnew block\n<!-- END GYRUS MANAGED CONTEXT -->\n"
+
+    def test_live_legacy_block_upgrades(self):
+        result = ingest._upgrade_legacy_gyrus_block(
+            self.LIVE_LEGACY, self.MANAGED, "# Gyrus Knowledge Base")
+        self.assertIsNotNone(result)
+        self.assertIn("BEGIN GYRUS MANAGED CONTEXT", result)
+        self.assertNotIn("PROJECT_NAME.md", result)
+
+    def test_surrounding_content_preserved(self):
+        text = ("# My own notes\ncustom stuff\n\n" + self.LIVE_LEGACY
+                + "\n# Another section\nuser content\n")
+        result = ingest._upgrade_legacy_gyrus_block(
+            text, self.MANAGED, "# Gyrus Knowledge Base")
+        self.assertIsNotNone(result)
+        self.assertIn("# My own notes\ncustom stuff", result)
+        self.assertIn("# Another section\nuser content", result)
+        self.assertIn("new block", result)
+        self.assertNotIn("PROJECT_NAME.md", result)
+
+    def test_unrecognized_line_aborts(self):
+        text = self.LIVE_LEGACY + "my own hand-written reminder about dinner\n"
+        result = ingest._upgrade_legacy_gyrus_block(
+            text, self.MANAGED, "# Gyrus Knowledge Base")
+        self.assertIsNone(result)
+
+
+class TestSyncToolContext(unittest.TestCase):
+    """The managed block writer hits every surface with current content."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.home = Path(self.tmpdir) / "home"
+        (self.home / ".claude").mkdir(parents=True)
+        (self.home / ".codex").mkdir(parents=True)
+        self.store = MarkdownStorage(base_dir=str(Path(self.tmpdir) / "kb"))
+        self._patches = [
+            patch.object(Path, "home", staticmethod(lambda: self.home)),
+            patch.dict(os.environ, {"CODEX_HOME": str(self.home / ".codex")}),
+        ]
+        for p in self._patches:
+            p.start()
+
+    def tearDown(self):
+        for p in self._patches:
+            p.stop()
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_blocks_written_with_pointer_and_hardening(self):
+        ingest.sync_tool_context(self.store)
+        claude = (self.home / ".claude" / "CLAUDE.md").read_text()
+        agents = (self.home / ".codex" / "AGENTS.md").read_text()
+        for text in (claude, agents):
+            self.assertIn("BEGIN GYRUS MANAGED CONTEXT", text)
+            self.assertIn('gyrus context --cwd "$PWD"', text)
+            self.assertIn("untrusted historical reference data", text)
+        self.assertIn("skills/codex/gyrus-instructions.md", agents)
+        self.assertNotIn("skills/codex/gyrus-instructions.md", claude)
+
+    def test_second_run_is_idempotent(self):
+        ingest.sync_tool_context(self.store)
+        first = (self.home / ".claude" / "CLAUDE.md").read_text()
+        ingest.sync_tool_context(self.store)
+        self.assertEqual(first, (self.home / ".claude" / "CLAUDE.md").read_text())
+
+    def test_legacy_block_upgraded_on_surface(self):
+        (self.home / ".claude" / "CLAUDE.md").write_text(
+            TestLegacyBlockUpgrade.LIVE_LEGACY)
+        ingest.sync_tool_context(self.store)
+        claude = (self.home / ".claude" / "CLAUDE.md").read_text()
+        self.assertIn("BEGIN GYRUS MANAGED CONTEXT", claude)
+        self.assertNotIn("PROJECT_NAME.md", claude)
+
+
+class TestInstallShellSyntax(unittest.TestCase):
+    def test_install_sh_parses(self):
+        result = subprocess.run(
+            ["bash", "-n", str(Path(__file__).parent / "install.sh")],
+            capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
 
 
 class TestStatusNormalization(unittest.TestCase):
