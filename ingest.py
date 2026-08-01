@@ -10,7 +10,7 @@ Knowledge pages are local markdown files by default.
 https://gyrus.sh
 """
 
-__version__ = "2026.7.16.2"
+__version__ = "2026.8.1.1"
 
 import argparse
 import atexit
@@ -108,6 +108,32 @@ def _release_lock(base_dir):
         _lock_path().unlink(missing_ok=True)
     except OSError:
         pass
+
+
+_LOG_ROTATE_MAX_BYTES = 5 * 1024 * 1024
+
+
+def _rotate_ingest_log(base_dir, max_bytes=_LOG_ROTATE_MAX_BYTES):
+    """Size-based rotation of <base_dir>/ingest.log, run at the END of a run.
+
+    Renames ingest.log -> ingest.log.1, shifting an existing .1 to .2 and
+    dropping anything older. The end-of-run rename is safe under launchd
+    because StandardOutPath is reopened at each job launch; at worst the last
+    few lines of this run land in the rotated file. Rotation failure must
+    never break a run.
+    """
+    try:
+        base = Path(base_dir)
+        log_path = base / "ingest.log"
+        if not log_path.exists() or log_path.stat().st_size <= max_bytes:
+            return False
+        prev = base / "ingest.log.1"
+        if prev.exists():
+            prev.replace(base / "ingest.log.2")  # overwrites any existing .2
+        log_path.replace(prev)
+        return True
+    except OSError:
+        return False
 
 from storage import (
     MarkdownStorage,
@@ -1647,7 +1673,9 @@ def _llm_timeout(default=120):
         value = float(value)
     except (TypeError, ValueError):
         value = default
-    return max(5, min(value, 600))
+    # Ceiling of 1800 (not 600): the local-timeout error advises raising
+    # config.llm_timeout_seconds, which a 600s clamp made impossible.
+    return max(5, min(value, 1800))
 
 
 def _call_anthropic(model, messages, max_tokens, api_key, temperature=0):
@@ -1883,6 +1911,10 @@ _config = {
     # 600s for local inference). A value here overrides every provider.
     "llm_timeout_seconds": None,
     "enable_personal_profile": False,
+    # Merge chunking (config.json: {"merge": {"batch_size": ...,
+    # "max_batches_per_page_per_run": ...}}). None -> built-in defaults.
+    "merge_batch_size": None,
+    "merge_max_batches_per_page_per_run": None,
 }
 
 _LLM_SYSTEM_PROMPT = (
@@ -1934,6 +1966,18 @@ def _cost_per_call(model_name, default):
     if _resolve_model(model_name)["provider"] == "local":
         return 0.0
     return _COST_PER_CALL.get(model_name, default)
+
+
+def _estimate_model_price(model_name, default):
+    """(input, output) $/MTok tuple for the pre-run cost estimate.
+
+    Local models must price at zero: MODEL_PRICING keys are catalog names
+    ('gemma4-26b'), so a configured 'local:gemma4:26b' would miss the table
+    and fall through to cloud rates, billing a free run in the estimate.
+    """
+    if _resolve_model(model_name)["provider"] == "local":
+        return (0.0, 0.0)
+    return MODEL_PRICING.get(model_name, default)
 
 
 def call_llm(prompt, role="extract", max_tokens=4096, model_override=None):
@@ -2123,6 +2167,40 @@ def call_claude(text, anthropic_key, workspace="", repo_groups=None,
 def call_sonnet(prompt, anthropic_key, max_tokens=16384):
     """Merge knowledge — uses configured merge model."""
     return call_llm(prompt, role="merge", max_tokens=max_tokens)
+
+
+EXTRACTION_MAX_ATTEMPTS = 3
+
+
+def _record_extraction_failure(state, session):
+    """Count a failed extraction; dead-letter the session after 3 attempts.
+
+    Only successful sessions are checkpointed, so a session whose extraction
+    always fails (a poison pill) would otherwise be retried every run forever.
+    Returns True when the session was dead-lettered (checkpointed as done).
+    """
+    failures = state.setdefault("extraction_failures", {})
+    key = session["state_key"]
+    attempts = int(failures.get(key, 0) or 0) + 1
+    if attempts < EXTRACTION_MAX_ATTEMPTS:
+        failures[key] = attempts
+        return False
+    failures.pop(key, None)
+    state.setdefault("dead_letter_sessions", []).append({
+        "session": key,
+        "mtime": session.get("mtime"),
+        "attempts": attempts,
+        "failed_at": datetime.now().isoformat(),
+    })
+    state.setdefault("processed_sessions", {})[key] = session.get("mtime", 0)
+    return True
+
+
+def _clear_extraction_failure(state, session):
+    """Reset the attempt counter once a session extracts successfully."""
+    failures = state.get("extraction_failures")
+    if failures:
+        failures.pop(session.get("state_key"), None)
 
 
 # ─── Knowledge Pipeline ───
@@ -2404,181 +2482,267 @@ def _warn_if_page_near_budget(slug, page_content, max_tokens=16384):
           "so it is competing with itself; split or condense it.")
 
 
-def merge_into_knowledge_pages(thoughts_by_project, store, anthropic_key):
-    """Phase 2: Merge new thoughts into knowledge pages using Sonnet."""
-    for slug in sorted(thoughts_by_project):
-        thoughts = sorted(
-            thoughts_by_project[slug],
-            key=lambda t: (t.get("created_at", ""), t.get("source", ""),
-                           t.get("session_id", ""), t.get("id", "")),
+MERGE_BATCH_SIZE_DEFAULT = 40
+MERGE_MAX_BATCHES_PER_PAGE_DEFAULT = 3
+MERGE_MIN_BATCH_SIZE = 5
+MERGE_FLOOR_FAILURES_TO_DEAD_LETTER = 3
+
+# Merge outcomes for the current run. _save_run_log reads these so runs.jsonl
+# reports what a merge actually saved, not what extraction hoped it would.
+_merge_results = {
+    "pages_saved": {},   # slug -> thoughts merged this run
+    "failed": {},        # slug -> last error message
+    "dead_lettered": 0,  # thoughts abandoned this run
+}
+
+
+def _reset_merge_results():
+    _merge_results["pages_saved"] = {}
+    _merge_results["failed"] = {}
+    _merge_results["dead_lettered"] = 0
+
+
+def _merge_batch_config():
+    """(batch_size, max_batches_per_page_per_run) from config, with floors."""
+    def _as_int(value, default):
+        try:
+            return max(1, int(value))
+        except (TypeError, ValueError):
+            return default
+    return (_as_int(_config.get("merge_batch_size"), MERGE_BATCH_SIZE_DEFAULT),
+            _as_int(_config.get("merge_max_batches_per_page_per_run"),
+                    MERGE_MAX_BATCHES_PER_PAGE_DEFAULT))
+
+
+def _merge_batch_size_for(base_size, consecutive_failures):
+    """Adaptive batch size: halve after 2 consecutive failures, floor of 5."""
+    size = base_size
+    for _ in range(max(0, consecutive_failures - 1)):
+        size //= 2
+        if size <= MERGE_MIN_BATCH_SIZE:
+            return MERGE_MIN_BATCH_SIZE
+    return max(size, MERGE_MIN_BATCH_SIZE)
+
+
+def _merge_batches_into_page(slug, thoughts, store, anthropic_key, state, *,
+                             prompt_template, required_sections, initial_page,
+                             format_thought, mark_updates,
+                             append_only_sections=(),
+                             error_label="Merge API error"):
+    """Merge ``thoughts`` (already oldest-first) into one page in bounded batches.
+
+    Each successful batch saves the page and marks only that batch's thoughts
+    processed, so the next batch merges into the UPDATED content and a failure
+    never loses acknowledged work. A failed batch stops this page for the run:
+    later batches must not merge into a page missing their older evidence.
+
+    Consecutive failures (persisted per slug in ``state``) shrink the next
+    batch — halved after 2 failures, floor of MERGE_MIN_BATCH_SIZE — and once
+    the floor-sized batch itself has failed MERGE_FLOOR_FAILURES_TO_DEAD_LETTER
+    times, that batch is dead-lettered (skip_reason=merge_dead_letter) so the
+    queue cannot wedge forever. Any success resets the counters.
+
+    Returns the number of thoughts merged.
+    """
+    if state is None:
+        state = {}
+    batch_size_base, max_batches = _merge_batch_config()
+    failure_state = state.setdefault("merge_failures", {})
+    entry = failure_state.get(slug) or {}
+    consecutive = int(entry.get("failures", 0) or 0)
+    floor_failures = int(entry.get("floor_failures", 0) or 0)
+
+    page_content, version = store.get_page(slug)
+    if not page_content:
+        page_content = initial_page
+
+    _warn_if_page_near_budget(slug, page_content)
+
+    remaining = list(thoughts)
+    merged_count = 0
+    for batch_num in range(1, max_batches + 1):
+        if not remaining:
+            break
+        batch_size = _merge_batch_size_for(batch_size_base, consecutive)
+        batch = remaining[:batch_size]
+        if len(thoughts) > len(batch):
+            downshift = (f" (downshifted after {consecutive} consecutive failures)"
+                         if batch_size < batch_size_base else "")
+            print(f"    batch {batch_num}: {len(batch)} thought(s){downshift}")
+
+        prompt = prompt_template.format(
+            page_content=_redact_sensitive_text(page_content),
+            new_thoughts=_redact_sensitive_text(
+                "\n".join(format_thought(t) for t in batch)
+            ),
         )
+        try:
+            response_text = call_sonnet(prompt, anthropic_key)
+            updated_content, change_summary = _parse_merge_response(
+                response_text, page_content, required_sections,
+                append_only_sections=append_only_sections,
+            )
+        except Exception as e:
+            reason = _redact_sensitive_text(str(e))
+            print(f"    {error_label}: {reason}")
+            _merge_results["failed"][slug] = reason
+            consecutive += 1
+            if batch_size <= MERGE_MIN_BATCH_SIZE:
+                floor_failures += 1
+            if floor_failures >= MERGE_FLOOR_FAILURES_TO_DEAD_LETTER:
+                print(f"    🚨 '{slug}': the minimum batch of {len(batch)} failed "
+                      f"{floor_failures} consecutive time(s) — dead-lettering "
+                      f"{len(batch)} thought(s) (skip_reason=merge_dead_letter) "
+                      "so the queue cannot wedge forever")
+                for t in batch:
+                    if t.get("id"):
+                        store.update_thought(t["id"], {
+                            "skipped": True,
+                            "skip_reason": "merge_dead_letter",
+                            "processed": True,
+                        })
+                _merge_results["dead_lettered"] += len(batch)
+                remaining = remaining[len(batch):]
+                failure_state.pop(slug, None)
+            else:
+                failure_state[slug] = {
+                    "failures": consecutive,
+                    "floor_failures": floor_failures,
+                    "last_error": reason[:200],
+                }
+            break
+        version += 1
+        store.save_page(slug, updated_content, version)
+        for t in batch:
+            if t.get("id"):
+                store.update_thought(t["id"], mark_updates(t))
+        merged_count += len(batch)
+        _merge_results["pages_saved"][slug] = (
+            _merge_results["pages_saved"].get(slug, 0) + len(batch)
+        )
+        consecutive = 0
+        floor_failures = 0
+        failure_state.pop(slug, None)
+        page_content = updated_content
+        remaining = remaining[len(batch):]
+        print(f"    ✓ Updated '{slug}' v{version}: {change_summary[:80]}")
+        if remaining:
+            time.sleep(1)  # Rate limiting between batches
+
+    if remaining:
+        print(f"    {len(remaining)} thought(s) left for the next run")
+    return merged_count
+
+
+def _thought_sort_key(t):
+    """Stable oldest-first ordering for merge batches."""
+    return (t.get("created_at", ""), t.get("source", ""),
+            t.get("session_id", ""), t.get("id", ""))
+
+
+def merge_into_knowledge_pages(thoughts_by_project, store, anthropic_key,
+                               state=None):
+    """Phase 2: Merge new thoughts into knowledge pages using Sonnet.
+
+    Thoughts flow oldest-first in bounded batches (config ``merge.batch_size``
+    / ``merge.max_batches_per_page_per_run``) so a large backlog drains across
+    hourly runs instead of building one giant prompt that can never finish.
+    """
+    for slug in sorted(thoughts_by_project):
+        thoughts = sorted(thoughts_by_project[slug], key=_thought_sort_key)
         if not thoughts:
             continue
 
         print(f"\n  Merging {len(thoughts)} thoughts into '{slug}'...")
 
-        # Read existing page
-        page_content, version = store.get_page(slug)
-        if not page_content:
-            known_dates = sorted(
-                (t.get("occurred_at") or t.get("created_at", ""))[:10]
-                for t in thoughts
-                if t.get("occurred_at") or t.get("created_at")
-            )
-            today = known_dates[0] if known_dates else datetime.now().strftime("%Y-%m-%d")
-            display_name = slug.replace("-", " ").title()
-            page_content = KNOWLEDGE_PAGE_TEMPLATE.format(name=display_name, date=today)
+        known_dates = sorted(
+            (t.get("occurred_at") or t.get("created_at", ""))[:10]
+            for t in thoughts
+            if t.get("occurred_at") or t.get("created_at")
+        )
+        today = known_dates[0] if known_dates else datetime.now().strftime("%Y-%m-%d")
+        display_name = slug.replace("-", " ").title()
 
-        _warn_if_page_near_budget(slug, page_content)
-
-        # Format thoughts for prompt
-        thought_lines = []
-        for t in thoughts:
+        def _format_thought(t):
             stale = "[STALE - project may be killed/paused] " if t.get("_stale") else ""
             machine_tag = f", machine: {t['machine']}" if t.get("machine") else ""
             session_tag = f", session: {str(t.get('session_id', '?'))[:24]}"
             thought_tag = f", thought: {t['id']}" if t.get("id") else ""
             event_date = (t.get("occurred_at") or t.get("created_at") or "unknown")[:10]
-            thought_lines.append(
-                f"- {stale}[{t.get('source', 'unknown')}, "
-                f"{event_date}{machine_tag}"
-                f"{session_tag}{thought_tag}] {t['content']}"
-            )
-        new_thoughts_text = "\n".join(thought_lines)
+            return (f"- {stale}[{t.get('source', 'unknown')}, "
+                    f"{event_date}{machine_tag}"
+                    f"{session_tag}{thought_tag}] {t['content']}")
 
-        # Call Sonnet to merge
-        prompt = MERGE_PROMPT.format(
-            page_content=_redact_sensitive_text(page_content),
-            new_thoughts=_redact_sensitive_text(new_thoughts_text),
+        merged = _merge_batches_into_page(
+            slug, thoughts, store, anthropic_key, state,
+            prompt_template=MERGE_PROMPT,
+            required_sections=_PROJECT_PAGE_SECTIONS,
+            append_only_sections=("Key Decisions", "Timeline & History"),
+            initial_page=KNOWLEDGE_PAGE_TEMPLATE.format(name=display_name,
+                                                        date=today),
+            format_thought=_format_thought,
+            mark_updates=lambda t, slug=slug: {
+                "merged_into_page": slug,
+                "processed": True,
+                "canonical_project": t.get("canonical_project", slug),
+            },
         )
-
-        try:
-            response_text = call_sonnet(prompt, anthropic_key)
-            updated_content, change_summary = _parse_merge_response(
-                response_text, page_content, _PROJECT_PAGE_SECTIONS,
-                append_only_sections=("Key Decisions", "Timeline & History"),
-            )
-        except Exception as e:
-            print(f"    Merge API error: {_redact_sensitive_text(str(e))}")
-            continue
-
-        # Save updated page
-        new_version = version + 1
-        store.save_page(slug, updated_content, new_version)
-
-        # Mark thoughts as merged
-        for t in thoughts:
-            if t.get("id"):
-                store.update_thought(t["id"], {
-                    "merged_into_page": slug,
-                    "processed": True,
-                    "canonical_project": t.get("canonical_project", slug),
-                })
-
-        print(f"    ✓ Updated '{slug}' v{new_version}: {change_summary[:80]}")
-        time.sleep(1)  # Rate limiting for Anthropic API
+        if merged:
+            time.sleep(1)  # Rate limiting for Anthropic API
 
 
-def merge_into_me_page(thoughts, store, anthropic_key):
+def merge_into_me_page(thoughts, store, anthropic_key, state=None):
     """Merge project-less / meta thoughts into me.md."""
     if not thoughts:
         return
 
     print(f"\n  Merging {len(thoughts)} thoughts into 'me'...")
 
-    page_content, version = store.get_page("me")
-    if not page_content:
-        page_content = ME_PAGE_TEMPLATE
-
-    _warn_if_page_near_budget("me", page_content)
-
-    thought_lines = []
-    for t in thoughts:
+    def _format_thought(t):
         machine_tag = f", machine: {t['machine']}" if t.get("machine") else ""
         event_date = (t.get("occurred_at") or t.get("created_at") or "unknown")[:10]
-        thought_lines.append(
-            f"- [{t.get('source', 'unknown')}, "
-            f"{event_date}{machine_tag}, "
-            f"session: {str(t.get('session_id', '?'))[:24]}, "
-            f"thought: {t.get('id', '?')}] {t['content']}"
-        )
+        return (f"- [{t.get('source', 'unknown')}, "
+                f"{event_date}{machine_tag}, "
+                f"session: {str(t.get('session_id', '?'))[:24]}, "
+                f"thought: {t.get('id', '?')}] {t['content']}")
 
-    prompt = ME_MERGE_PROMPT.format(
-        page_content=_redact_sensitive_text(page_content),
-        new_thoughts=_redact_sensitive_text("\n".join(thought_lines)),
+    _merge_batches_into_page(
+        "me", sorted(thoughts, key=_thought_sort_key), store, anthropic_key,
+        state,
+        prompt_template=ME_MERGE_PROMPT,
+        required_sections=_ME_PAGE_SECTIONS,
+        append_only_sections=("Recurring Decisions",),
+        initial_page=ME_PAGE_TEMPLATE,
+        format_thought=_format_thought,
+        mark_updates=lambda t: {"merged_into_page": "me", "processed": True},
+        error_label="Me page merge error",
     )
 
-    try:
-        response_text = call_sonnet(prompt, anthropic_key)
-        updated_content, change_summary = _parse_merge_response(
-            response_text, page_content, _ME_PAGE_SECTIONS,
-            append_only_sections=("Recurring Decisions",),
-        )
-    except Exception as e:
-        print(f"    Me page merge error: {_redact_sensitive_text(str(e))}")
-        return
 
-    new_version = version + 1
-    store.save_page("me", updated_content, new_version)
-
-    for t in thoughts:
-        if t.get("id"):
-            store.update_thought(t["id"], {
-                "merged_into_page": "me",
-                "processed": True,
-            })
-
-    print(f"    ✓ Updated 'me' v{new_version}: {change_summary[:80]}")
-
-
-def merge_into_ideas_page(thoughts, store, anthropic_key):
+def merge_into_ideas_page(thoughts, store, anthropic_key, state=None):
     """Merge idea-kind thoughts into ideas.md."""
     if not thoughts:
         return
 
     print(f"\n  Merging {len(thoughts)} ideas into 'ideas'...")
 
-    page_content, version = store.get_page("ideas")
-    if not page_content:
-        page_content = IDEAS_PAGE_TEMPLATE
-
-    _warn_if_page_near_budget("ideas", page_content)
-
-    thought_lines = []
-    for t in thoughts:
+    def _format_thought(t):
         event_date = (t.get("occurred_at") or t.get("created_at") or "unknown")[:10]
-        thought_lines.append(
-            f"- [{t.get('source', 'unknown')}, "
-            f"{event_date}, "
-            f"session: {str(t.get('session_id', '?'))[:24]}, "
-            f"thought: {t.get('id', '?')}] {t['content']}"
-        )
+        return (f"- [{t.get('source', 'unknown')}, "
+                f"{event_date}, "
+                f"session: {str(t.get('session_id', '?'))[:24]}, "
+                f"thought: {t.get('id', '?')}] {t['content']}")
 
-    prompt = IDEAS_MERGE_PROMPT.format(
-        page_content=_redact_sensitive_text(page_content),
-        new_thoughts=_redact_sensitive_text("\n".join(thought_lines)),
+    _merge_batches_into_page(
+        "ideas", sorted(thoughts, key=_thought_sort_key), store, anthropic_key,
+        state,
+        prompt_template=IDEAS_MERGE_PROMPT,
+        required_sections=_IDEAS_PAGE_SECTIONS,
+        initial_page=IDEAS_PAGE_TEMPLATE,
+        format_thought=_format_thought,
+        mark_updates=lambda t: {"merged_into_page": "ideas", "processed": True},
+        error_label="Ideas page merge error",
     )
-
-    try:
-        response_text = call_sonnet(prompt, anthropic_key)
-        updated_content, change_summary = _parse_merge_response(
-            response_text, page_content, _IDEAS_PAGE_SECTIONS,
-        )
-    except Exception as e:
-        print(f"    Ideas page merge error: {_redact_sensitive_text(str(e))}")
-        return
-
-    new_version = version + 1
-    store.save_page("ideas", updated_content, new_version)
-
-    for t in thoughts:
-        if t.get("id"):
-            store.update_thought(t["id"], {
-                "merged_into_page": "ideas",
-                "processed": True,
-            })
-
-    print(f"    ✓ Updated 'ideas' v{new_version}: {change_summary[:80]}")
 
 
 def run_cross_reference_scan(store, anthropic_key, new_thoughts=None):
@@ -2791,9 +2955,13 @@ def _get_project_recency(store):
     if total == 0:
         return recency
     skipped = []
+    # \r progress is only meaningful on a live terminal; under launchd it
+    # would land as thousands of control-character fragments in ingest.log.
+    is_tty = sys.stdout.isatty()
     for i, jsonl_file in enumerate(files, 1):
-        sys.stdout.write(f"\r  scanning thoughts {i}/{total} {jsonl_file.stem}   ")
-        sys.stdout.flush()
+        if is_tty:
+            sys.stdout.write(f"\r  scanning thoughts {i}/{total} {jsonl_file.stem}   ")
+            sys.stdout.flush()
         text = _read_text_safe(jsonl_file, timeout_s=5)
         if text is None:
             skipped.append(jsonl_file.name)
@@ -2808,8 +2976,9 @@ def _get_project_recency(store):
                 created = t.get("created_at", "")[:10]
                 if created:
                     recency[cp] = created
-    sys.stdout.write("\r" + " " * 72 + "\r")
-    sys.stdout.flush()
+    if is_tty:
+        sys.stdout.write("\r" + " " * 72 + "\r")
+        sys.stdout.flush()
     if skipped:
         print(f"  ⚠️  skipped {len(skipped)} dataless/stuck thoughts file(s): "
               f"{', '.join(skipped[:3])}{'…' if len(skipped) > 3 else ''}")
@@ -3435,6 +3604,30 @@ def _doctor_check_backlog(base_dir):
             "run `gyrus` to process them")
 
 
+def _doctor_check_dead_letters(base_dir):
+    """Surface sessions abandoned after repeated extraction failures."""
+    state_path = base_dir / ".ingest-state.json"
+    if not state_path.exists():
+        return ("ok", "dead letters", "no .ingest-state.json yet", None)
+    text = _read_text_safe(state_path, timeout_s=5)
+    if text is None:
+        return ("warn", "dead letters", ".ingest-state.json unreadable", None)
+    try:
+        state = json.loads(text)
+    except json.JSONDecodeError:
+        return ("warn", "dead letters", "corrupt .ingest-state.json", None)
+    dead = state.get("dead_letter_sessions") or []
+    if not dead:
+        return ("ok", "dead letters", "none", None)
+    recent = ", ".join(str(d.get("session", "?")) for d in dead[-3:])
+    return ("warn", "dead letters",
+            f"{len(dead)} session(s) gave up after "
+            f"{EXTRACTION_MAX_ATTEMPTS} failed extraction attempts",
+            f"most recent: {recent}\n"
+            "fix the LLM server/model, then delete dead_letter_sessions from "
+            ".ingest-state.json to retry them")
+
+
 def _doctor_check_lockfile():
     """Detect a stale gyrus lockfile."""
     lock = _lock_path()
@@ -3675,6 +3868,7 @@ def run_doctor(base_dir, fix=False):
         _doctor_check_env(base_dir),
         _doctor_check_sources(),
         _doctor_check_backlog(base_dir),
+        _doctor_check_dead_letters(base_dir),
         _doctor_check_lockfile(),
     ]
 
@@ -4970,6 +5164,15 @@ def _save_run_log(store, sessions, thoughts, cost):
             if summary:
                 change_summaries[p["slug"]] = summary
 
+    # Honest accounting: ``by_project`` keeps extraction attribution, but
+    # ``pages_updated`` lists only pages whose merge actually saved this run —
+    # a page whose every merge timed out must not be reported as updated.
+    try:
+        backlog_remaining = len(store.get_thoughts(processed=False,
+                                                   skipped=False))
+    except Exception:
+        backlog_remaining = None
+
     entry = {
         "timestamp": datetime.now().isoformat(),
         "machine": _MACHINE,
@@ -4978,7 +5181,10 @@ def _save_run_log(store, sessions, thoughts, cost):
         "cost": round(cost, 3),
         "by_tool": dict(by_tool),
         "by_project": dict(by_project),
-        "pages_updated": list(by_project.keys()),
+        "pages_updated": sorted(_merge_results["pages_saved"]),
+        "merge_failed": dict(_merge_results["failed"]),
+        "backlog_remaining": backlog_remaining,
+        "dead_lettered": _merge_results["dead_lettered"],
         "extract_model": _config.get("extract_model", ""),
         "merge_model": _config.get("merge_model", ""),
     }
@@ -5025,6 +5231,10 @@ def show_run_log(base_dir, n=10):
             detail = ", ".join(projects[:5])
             if len(projects) > 5:
                 detail += f" +{len(projects)-5} more"
+        failed = e.get("merge_failed") or {}
+        if failed:
+            detail = (detail + "  " if detail else "") + \
+                f"⚠️ {len(failed)} merge failure(s)"
 
         print(f"  {ts:<20} {machine:<15} {sessions:>8} {thoughts:>8} ${cost:>7.3f} {detail}")
 
@@ -6560,6 +6770,12 @@ def main():
     _config["enable_personal_profile"] = (
         file_config.get("enable_personal_profile", False) is True
     )
+    merge_cfg = file_config.get("merge") or {}
+    _config["merge_batch_size"] = merge_cfg.get("batch_size")
+    _config["merge_max_batches_per_page_per_run"] = merge_cfg.get(
+        "max_batches_per_page_per_run"
+    )
+    _reset_merge_results()
 
     # Validate that the chosen models have API keys
     for role, model_name in [("extract", extract_model), ("merge", merge_model)]:
@@ -6586,6 +6802,9 @@ def main():
 
         print(f"Found {len(by_project)} projects to backfill")
 
+        # Failure counters live in the same state file normal ingestion uses.
+        state = store.load_state()
+
         # Process week by week for iterative refinement
         weekly = defaultdict(lambda: defaultdict(list))
         for t in all_thoughts:
@@ -6601,8 +6820,10 @@ def main():
         for week_num, (week_key, projects) in enumerate(sorted(weekly.items()), 1):
             total = sum(len(v) for v in projects.values())
             print(f"\n  ── Week {week_num}: {week_key} ({total} thoughts, {len(projects)} projects) ──")
-            merge_into_knowledge_pages(projects, store, anthropic_key)
+            merge_into_knowledge_pages(projects, store, anthropic_key,
+                                       state=state)
 
+        store.save_state(state)
         generate_status(store)
         print("\nBackfill complete.")
         return
@@ -6644,6 +6865,8 @@ def main():
         print("No new sessions to process.")
         if not args.dry_run:
             generate_status(store)
+            _rotate_ingest_log(store.base_dir if hasattr(store, 'base_dir')
+                               else Path.home() / ".gyrus")
         return
     if pending_thoughts:
         print(f"  Recovering {len(pending_thoughts)} pending thought(s) from a prior run")
@@ -6671,8 +6894,8 @@ def main():
     merge_input_tok = est_projects * 8000 / 1_000_000
     merge_output_tok = est_projects * 4000 / 1_000_000
 
-    ext_price = MODEL_PRICING.get(extract_model, (1, 5))
-    merge_price = MODEL_PRICING.get(merge_model, (3, 15))
+    ext_price = _estimate_model_price(extract_model, (1, 5))
+    merge_price = _estimate_model_price(merge_model, (3, 15))
 
     ext_cost = ext_input_tok * ext_price[0] + ext_output_tok * ext_price[1]
     merge_cost = merge_input_tok * merge_price[0] + merge_output_tok * merge_price[1]
@@ -6684,9 +6907,11 @@ def main():
     merge_time_mins = (est_projects * 15) / 60
     total_time_mins = ext_time_mins + merge_time_mins
 
+    ext_label = extract_model + (" (local, no API cost)" if extract_is_local else "")
+    merge_label = merge_model + (" (local, no API cost)" if merge_is_local else "")
     print(f"  Cost estimate: ~${total_est:.2f} "
-          f"({n_sessions} extractions @ {extract_model}, "
-          f"~{est_projects} merges @ {merge_model})")
+          f"({n_sessions} extractions @ {ext_label}, "
+          f"~{est_projects} merges @ {merge_label})")
     print(f"  Time estimate: ~{total_time_mins:.0f} minutes "
           f"({max_workers} parallel workers)")
 
@@ -6811,11 +7036,15 @@ def main():
                     thoughts = None
 
                 if thoughts is None:
+                    dead = _record_extraction_failure(state, session)
                     print(_progress_line(
                         _completed[0], source, session["session_id"],
-                        "failed; will retry next run",
+                        f"failed {EXTRACTION_MAX_ATTEMPTS}x — dead-lettered, "
+                        "will not retry (see `gyrus doctor`)" if dead
+                        else "failed; will retry next run",
                     ))
                     continue
+                _clear_extraction_failure(state, session)
                 if not thoughts:
                     state["processed_sessions"][session["state_key"]] = session["mtime"]
                     continue
@@ -6852,6 +7081,7 @@ def main():
             text = extract_text(session)
             if len(text) < 100:
                 print(" skipped (too short)")
+                _clear_extraction_failure(state, session)
                 state["processed_sessions"][session["state_key"]] = session["mtime"]
                 continue
 
@@ -6860,8 +7090,13 @@ def main():
                                    repo_groups=repo_groups,
                                    reference_context=memory_contexts.get(workspace, ""))
             if thoughts is None:
-                print(" failed (will retry next run)")
+                if _record_extraction_failure(state, session):
+                    print(f" failed {EXTRACTION_MAX_ATTEMPTS}x — dead-lettered,"
+                          " will not retry (see `gyrus doctor`)")
+                else:
+                    print(" failed (will retry next run)")
                 continue
+            _clear_extraction_failure(state, session)
             print(f" {len(thoughts)} thoughts")
 
             if thoughts and not args.dry_run:
@@ -6935,17 +7170,23 @@ def main():
             by_project = defaultdict(list)
             for t in active_thoughts:
                 by_project[t["canonical_project"]].append(t)
-            merge_into_knowledge_pages(by_project, store, anthropic_key)
+            merge_into_knowledge_pages(by_project, store, anthropic_key,
+                                       state=state)
 
         if idea_thoughts:
             # Phase 2b: Merge ideas into ideas.md
             print(f"\nPhase 2b: Merging {len(idea_thoughts)} ideas into ideas.md...")
-            merge_into_ideas_page(idea_thoughts, store, anthropic_key)
+            merge_into_ideas_page(idea_thoughts, store, anthropic_key,
+                                  state=state)
 
         if meta_thoughts:
             # Phase 2c: Merge meta/personal thoughts into me.md
             print(f"\nPhase 2c: Merging {len(meta_thoughts)} meta thoughts into me.md...")
-            merge_into_me_page(meta_thoughts, store, anthropic_key)
+            merge_into_me_page(meta_thoughts, store, anthropic_key,
+                               state=state)
+
+        # Persist per-page merge failure counters before anything can crash.
+        store.save_state(state)
 
         if active_thoughts:
 
@@ -7016,6 +7257,12 @@ def main():
             f"gyrus ingest · {datetime.now():%Y-%m-%d %H:%M} · "
             f"{len(all_sessions)} sessions, {len(batch_thoughts)} thoughts",
         )
+
+    # Very last step: rotate an oversized ingest.log. launchd reopens
+    # StandardOutPath at the next job launch, so an end-of-run rename is safe.
+    if not args.dry_run:
+        _rotate_ingest_log(store.base_dir if hasattr(store, 'base_dir')
+                           else Path.home() / ".gyrus")
 
 
 if __name__ == "__main__":

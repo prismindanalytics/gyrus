@@ -1690,5 +1690,331 @@ class TestUnifiedContextHardening(unittest.TestCase):
         self.assertIn("migration is blocked", output)
 
 
+class TestChunkedMerges(unittest.TestCase):
+    """Merges process pending thoughts oldest-first in bounded batches."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.store = MarkdownStorage(base_dir=self.tmpdir)
+        ingest._reset_merge_results()
+        self._saved_cfg = {
+            k: ingest._config.get(k)
+            for k in ("merge_batch_size", "merge_max_batches_per_page_per_run")
+        }
+        ingest._config["merge_batch_size"] = 40
+        ingest._config["merge_max_batches_per_page_per_run"] = 3
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir)
+        ingest._config.update(self._saved_cfg)
+        ingest._reset_merge_results()
+
+    def _make_thoughts(self, n, project="beacon"):
+        thoughts = [{"content": f"Fact number {i:03d} about the work",
+                     "project": project, "canonical_project": project}
+                    for i in range(n)]
+        self.store.save_thoughts(thoughts, "claude-code", "sess-1",
+                                 session_date="2026-01-01T00:00:00+00:00")
+        for t in thoughts:  # main() sets these after save_thoughts
+            t["source"] = "claude-code"
+            t["created_at"] = "2026-01-01T00:00:00+00:00"
+        return thoughts
+
+    @staticmethod
+    def _page_response(name="Beacon", marker=""):
+        page = ingest.KNOWLEDGE_PAGE_TEMPLATE.format(name=name,
+                                                     date="2026-01-01")
+        if marker:
+            page = page.replace("## Overview\n", f"## Overview\n{marker}\n")
+        return page + "\nCHANGE_SUMMARY: merged"
+
+    @staticmethod
+    def _batch_size(prompt):
+        return prompt.count("- [claude-code, ")
+
+    def test_hundred_thoughts_merge_as_three_batches(self):
+        thoughts = self._make_thoughts(100)
+        prompts = []
+
+        def fake_llm(prompt, role="merge", **kwargs):
+            prompts.append(prompt)
+            return self._page_response(marker=f"MARKER-{len(prompts)}")
+
+        state = {}
+        with patch("ingest.call_llm", side_effect=fake_llm), \
+                patch("ingest.time.sleep"):
+            ingest.merge_into_knowledge_pages({"beacon": thoughts},
+                                              self.store, "key", state=state)
+
+        self.assertEqual([self._batch_size(p) for p in prompts], [40, 40, 20])
+        # Each batch merges into the page the previous batch produced.
+        self.assertNotIn("MARKER-1", prompts[0])
+        self.assertIn("MARKER-1", prompts[1])
+        self.assertIn("MARKER-2", prompts[2])
+        _, version = self.store.get_page("beacon")
+        self.assertEqual(version, 3)
+        self.assertEqual(
+            len(self.store.get_thoughts(processed=False, skipped=False)), 0)
+
+    def test_max_batches_per_run_caps_work(self):
+        thoughts = self._make_thoughts(150)
+        prompts = []
+
+        def fake_llm(prompt, role="merge", **kwargs):
+            prompts.append(prompt)
+            return self._page_response()
+
+        with patch("ingest.call_llm", side_effect=fake_llm), \
+                patch("ingest.time.sleep"):
+            ingest.merge_into_knowledge_pages({"beacon": thoughts},
+                                              self.store, "key", state={})
+
+        self.assertEqual(len(prompts), 3)
+        # 30 thoughts deferred to the next run, still pending.
+        self.assertEqual(
+            len(self.store.get_thoughts(processed=False, skipped=False)), 30)
+
+    def test_batch_failure_stops_the_page_this_run(self):
+        thoughts = self._make_thoughts(100)
+        prompts = []
+
+        def fake_llm(prompt, role="merge", **kwargs):
+            prompts.append(prompt)
+            if len(prompts) == 2:
+                raise ValueError("model exploded")
+            return self._page_response()
+
+        state = {}
+        with patch("ingest.call_llm", side_effect=fake_llm), \
+                patch("ingest.time.sleep"):
+            ingest.merge_into_knowledge_pages({"beacon": thoughts},
+                                              self.store, "key", state=state)
+
+        # Batch 3 must not run into a page missing batch 2's evidence.
+        self.assertEqual(len(prompts), 2)
+        _, version = self.store.get_page("beacon")
+        self.assertEqual(version, 1)
+        self.assertEqual(
+            len(self.store.get_thoughts(processed=False, skipped=False)), 60)
+        self.assertEqual(state["merge_failures"]["beacon"]["failures"], 1)
+        self.assertIn("beacon", ingest._merge_results["failed"])
+
+    def test_downshift_then_dead_letter_after_repeated_failures(self):
+        self._make_thoughts(60)
+        sizes = []
+
+        def failing_llm(prompt, role="merge", **kwargs):
+            sizes.append(self._batch_size(prompt))
+            raise ValueError("did not finish within 600s")
+
+        state = {}
+        for _ in range(7):
+            pending = self.store.get_thoughts(processed=False, skipped=False,
+                                              order_desc=False)
+            with patch("ingest.call_llm", side_effect=failing_llm), \
+                    patch("ingest.time.sleep"):
+                ingest.merge_into_knowledge_pages({"beacon": pending},
+                                                  self.store, "key",
+                                                  state=state)
+
+        # Halved after 2 consecutive failures, floor of 5; the floor batch
+        # fails 3 times and is then dead-lettered.
+        self.assertEqual(sizes, [40, 40, 20, 10, 5, 5, 5])
+        dead = [t for t in self.store.get_thoughts()
+                if t.get("skip_reason") == "merge_dead_letter"]
+        self.assertEqual(len(dead), 5)
+        self.assertTrue(all(t.get("processed") and t.get("skipped")
+                            for t in dead))
+        self.assertEqual(ingest._merge_results["dead_lettered"], 5)
+        # Counter resets so the remaining backlog starts fresh.
+        self.assertNotIn("beacon", state.get("merge_failures", {}))
+        self.assertEqual(
+            len(self.store.get_thoughts(processed=False, skipped=False)), 55)
+
+    def test_success_resets_failure_counter(self):
+        thoughts = self._make_thoughts(10)
+        state = {"merge_failures": {"beacon": {"failures": 3,
+                                               "floor_failures": 0}}}
+        with patch("ingest.call_llm", return_value=self._page_response()), \
+                patch("ingest.time.sleep"):
+            ingest.merge_into_knowledge_pages({"beacon": thoughts},
+                                              self.store, "key", state=state)
+        self.assertNotIn("beacon", state["merge_failures"])
+
+    def test_ideas_page_failure_is_recorded(self):
+        thoughts = [{"content": "An idea worth keeping", "kind": "idea"}]
+        self.store.save_thoughts(thoughts, "claude-code", "sess-2",
+                                 session_date="2026-01-01T00:00:00+00:00")
+        state = {}
+        with patch("ingest.call_llm", side_effect=ValueError("boom")), \
+                patch("ingest.time.sleep"):
+            ingest.merge_into_ideas_page(thoughts, self.store, "key",
+                                         state=state)
+        self.assertIn("ideas", ingest._merge_results["failed"])
+        self.assertEqual(state["merge_failures"]["ideas"]["failures"], 1)
+
+    def test_run_log_reports_only_saved_pages(self):
+        alpha = self._make_thoughts(5, project="alpha")
+        beta = self._make_thoughts(5, project="beta")
+        calls = []
+
+        def fake_llm(prompt, role="merge", **kwargs):
+            calls.append(prompt)
+            if len(calls) == 1:
+                return self._page_response(name="Alpha")
+            raise ValueError("did not finish within 600s")
+
+        with patch("ingest.call_llm", side_effect=fake_llm), \
+                patch("ingest.time.sleep"):
+            ingest.merge_into_knowledge_pages(
+                {"alpha": alpha, "beta": beta}, self.store, "key", state={})
+
+        ingest._save_run_log(self.store, [], alpha + beta, 0.0)
+        entry = json.loads(
+            (Path(self.tmpdir) / "runs.jsonl").read_text().splitlines()[-1])
+        self.assertEqual(entry["pages_updated"], ["alpha"])
+        self.assertIn("beta", entry["merge_failed"])
+        self.assertIn("did not finish", entry["merge_failed"]["beta"])
+        self.assertEqual(entry["backlog_remaining"], 5)
+        self.assertEqual(entry["dead_lettered"], 0)
+        # Attribution fields stay for compatibility.
+        self.assertIn("by_project", entry)
+        self.assertIn("by_tool", entry)
+
+
+class TestCostEstimate(unittest.TestCase):
+    """Pre-run estimate must not bill local models at cloud rates."""
+
+    def test_local_model_price_is_zero(self):
+        self.assertEqual(
+            ingest._estimate_model_price("local:qwen3.5:27b", (3, 15)),
+            (0.0, 0.0))
+        self.assertEqual(
+            ingest._estimate_model_price("local:gemma4:26b", (1, 5)),
+            (0.0, 0.0))
+
+    def test_cloud_model_uses_pricing_table(self):
+        self.assertEqual(ingest._estimate_model_price("sonnet", (1, 5)),
+                         ingest.MODEL_PRICING["sonnet"])
+        self.assertEqual(ingest._estimate_model_price("unknown-model", (1, 5)),
+                         (1, 5))
+
+
+class TestTimeoutClamp(unittest.TestCase):
+    def test_config_timeout_honored_up_to_1800(self):
+        old = ingest._config.get("llm_timeout_seconds")
+        try:
+            ingest._config["llm_timeout_seconds"] = 1800
+            self.assertEqual(ingest._llm_timeout(default=600), 1800)
+            ingest._config["llm_timeout_seconds"] = 99999
+            self.assertEqual(ingest._llm_timeout(default=600), 1800)
+            ingest._config["llm_timeout_seconds"] = None
+            self.assertEqual(ingest._llm_timeout(default=600), 600)
+        finally:
+            ingest._config["llm_timeout_seconds"] = old
+
+
+class TestLogRotation(unittest.TestCase):
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.base = Path(self.tmpdir)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir)
+
+    def test_small_log_is_left_alone(self):
+        (self.base / "ingest.log").write_text("small\n")
+        self.assertFalse(ingest._rotate_ingest_log(self.base))
+        self.assertTrue((self.base / "ingest.log").exists())
+
+    def test_oversized_log_renames_to_dot_one(self):
+        (self.base / "ingest.log").write_bytes(
+            b"x" * (5 * 1024 * 1024 + 1))
+        self.assertTrue(ingest._rotate_ingest_log(self.base))
+        self.assertFalse((self.base / "ingest.log").exists())
+        self.assertGreater(
+            (self.base / "ingest.log.1").stat().st_size, 5 * 1024 * 1024)
+
+    def test_existing_rotations_shift_and_oldest_drops(self):
+        (self.base / "ingest.log").write_bytes(b"y" * (5 * 1024 * 1024 + 1))
+        (self.base / "ingest.log.1").write_text("previous\n")
+        (self.base / "ingest.log.2").write_text("oldest\n")
+        self.assertTrue(ingest._rotate_ingest_log(self.base))
+        self.assertEqual((self.base / "ingest.log.2").read_text(),
+                         "previous\n")
+        self.assertGreater(
+            (self.base / "ingest.log.1").stat().st_size, 5 * 1024 * 1024)
+        self.assertFalse((self.base / "ingest.log").exists())
+
+    def test_missing_log_is_a_noop(self):
+        self.assertFalse(ingest._rotate_ingest_log(self.base))
+
+
+class TestExtractionDeadLetter(unittest.TestCase):
+    """Poison-pill sessions stop retrying after 3 failed extractions."""
+
+    def _session(self):
+        return {"state_key": "code:poison", "mtime": 123.0,
+                "session_id": "poison", "type": "claude-code"}
+
+    def test_session_dead_letters_after_three_attempts(self):
+        state = {"processed_sessions": {}}
+        session = self._session()
+        self.assertFalse(ingest._record_extraction_failure(state, session))
+        self.assertFalse(ingest._record_extraction_failure(state, session))
+        self.assertEqual(state["extraction_failures"]["code:poison"], 2)
+        self.assertNotIn("code:poison", state["processed_sessions"])
+
+        self.assertTrue(ingest._record_extraction_failure(state, session))
+        # Checkpointed so it is never picked up again.
+        self.assertEqual(state["processed_sessions"]["code:poison"], 123.0)
+        self.assertNotIn("code:poison", state["extraction_failures"])
+        dead = state["dead_letter_sessions"]
+        self.assertEqual(len(dead), 1)
+        self.assertEqual(dead[0]["session"], "code:poison")
+        self.assertEqual(dead[0]["attempts"], 3)
+
+    def test_success_resets_attempt_counter(self):
+        state = {"processed_sessions": {}}
+        session = self._session()
+        ingest._record_extraction_failure(state, session)
+        ingest._record_extraction_failure(state, session)
+        ingest._clear_extraction_failure(state, session)
+        self.assertNotIn("code:poison", state["extraction_failures"])
+        # Counter starts over: one new failure does not dead-letter.
+        self.assertFalse(ingest._record_extraction_failure(state, session))
+        self.assertEqual(state["extraction_failures"]["code:poison"], 1)
+
+    def test_doctor_surfaces_dead_letter_sessions(self):
+        tmpdir = tempfile.mkdtemp()
+        try:
+            base = Path(tmpdir)
+            (base / ".ingest-state.json").write_text(json.dumps({
+                "processed_sessions": {"code:poison": 123.0},
+                "dead_letter_sessions": [
+                    {"session": "code:poison", "mtime": 123.0,
+                     "attempts": 3, "failed_at": "2026-08-01T00:00:00"},
+                ],
+            }))
+            status, label, msg, hint = ingest._doctor_check_dead_letters(base)
+            self.assertEqual(status, "warn")
+            self.assertEqual(label, "dead letters")
+            self.assertIn("1 session", msg)
+            self.assertIn("code:poison", hint)
+        finally:
+            shutil.rmtree(tmpdir)
+
+    def test_doctor_ok_without_dead_letters(self):
+        tmpdir = tempfile.mkdtemp()
+        try:
+            base = Path(tmpdir)
+            (base / ".ingest-state.json").write_text(
+                json.dumps({"processed_sessions": {}}))
+            status, _, _, _ = ingest._doctor_check_dead_letters(base)
+            self.assertEqual(status, "ok")
+        finally:
+            shutil.rmtree(tmpdir)
+
+
 if __name__ == "__main__":
     unittest.main()
