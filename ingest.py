@@ -10,7 +10,7 @@ Knowledge pages are local markdown files by default.
 https://gyrus.sh
 """
 
-__version__ = "2026.8.1.4"
+__version__ = "2026.8.1.5"
 
 import argparse
 import atexit
@@ -343,7 +343,7 @@ Output the COMPLETE updated page in this markdown structure:
 # ProjectName
 
 ## Status
-active|paused|dormant|killed|brainstorm|shipped | stage | Priority: P1/P2/P3 | Division: division-name
+<one of: active, paused, dormant, killed, brainstorm, shipped> | stage | Priority: P1/P2/P3 | Division: division-name
 Last activity: YYYY-MM-DD | Machine: machine-name
 
 ## Overview
@@ -2299,9 +2299,16 @@ def resolve_aliases(thoughts, store, repo_groups=None):
             # meta/idea thoughts without a project should stay unlinked
             # so they route to me.md / ideas.md correctly.
             kind = t.get("kind", "project")
-            if kind == "project" and workspace and workspace in repo_groups:
-                t["project"] = repo_groups[workspace]
-                t["canonical_project"] = repo_groups[workspace]
+            if kind == "project":
+                if workspace and workspace in repo_groups:
+                    t["project"] = repo_groups[workspace]
+                    t["canonical_project"] = repo_groups[workspace]
+                else:
+                    # A project-kind thought with no attributable project must
+                    # stay visible — quarantine, don't let it fall through to
+                    # the me.md bucket where it is silently dropped when the
+                    # personal profile is disabled.
+                    t["canonical_project"] = UNSORTED_SLUG
             continue
 
         # Priority 1: If workspace maps to a repo_group, use that
@@ -2314,28 +2321,35 @@ def resolve_aliases(thoughts, store, repo_groups=None):
                 print(f"    Workspace override: '{project}' -> '{canonical}' (repo: {workspace})")
             continue
 
-        # Priority 2: Exact alias match
+        # Priority 2: Exact alias match — unless the recorded canonical is
+        # itself junk (e.g. the historical 'none' -> 'none' row); honoring
+        # those would keep resurrecting garbage pages forever.
         if project in aliases:
-            t["canonical_project"] = aliases[project]
-            continue
+            canonical = aliases[project]
+            if canonical == UNSORTED_SLUG or (
+                    not _uuid_re.match(canonical)
+                    and _normalize_project_slug(canonical) is not None):
+                t["canonical_project"] = canonical
+                continue
 
         # Priority 2.5: Path-like names resolve by segment before any fuzzy
-        # matching — 'calledthird/research/x' belongs to whatever page or
-        # alias 'calledthird' (or 'x') already names.
+        # matching. A dedicated leaf page beats a parent alias: probe the
+        # full name, then the LAST segment, then the first, and within each
+        # prefer an existing page over a mere alias row.
         if "/" in project:
-            segments = [project] + [s for s in (project.split("/")[0],
-                                                project.split("/")[-1]) if s]
+            segments = [project] + [s for s in (project.split("/")[-1],
+                                                project.split("/")[0]) if s]
             resolved = None
             for seg in segments:
                 seg_slug = _normalize_project_slug(seg)
                 if not seg_slug:
                     continue
-                if seg in aliases:
+                if seg_slug in page_slugs:
+                    resolved = seg_slug
+                elif seg in aliases:
                     resolved = aliases[seg]
                 elif seg_slug in aliases:
                     resolved = aliases[seg_slug]
-                elif seg_slug in page_slugs:
-                    resolved = seg_slug
                 if resolved:
                     break
             if resolved:
@@ -2543,15 +2557,22 @@ def _parse_merge_response(response_text, existing_content, required_sections,
 
     # Restore append-only entries the model dropped — but let it consolidate:
     # a bullet is NOT restored when the new page already carries it as an
-    # exact line in a sibling append-only section, or as a same-dated
-    # paraphrase (>= 0.9 similar) in the same section. Anything less similar
-    # is treated as a drop and comes back verbatim.
+    # exact line in a sibling append-only section, or as a same-dated close
+    # paraphrase in the same section. Paraphrase matching additionally
+    # requires identical digit-bearing tokens so two distinct same-day
+    # events ('Shipped v1' vs 'Shipped v1.1') can never collapse.
     def _norm(line):
         return re.sub(r"\s+", " ", line.strip())
 
     def _bullet_date(line):
         m = re.match(r"-\s*\[(\d{4}-\d{2}-\d{2})\]", line.strip())
         return m.group(1) if m else None
+
+    def _digit_tokens(normed):
+        return sorted(tok for tok in normed.split() if any(c.isdigit() for c in tok))
+
+    _EMPTY_SECTION_SENTINELS = ("(None recorded)", "(None yet.)",
+                                "_None recorded yet._", "(None identified)")
 
     sibling_lines = set()
     for heading in append_only_sections:
@@ -2574,40 +2595,77 @@ def _parse_merge_response(response_text, existing_content, required_sections,
             if normed in new_lines or normed in sibling_lines:
                 continue
             date = _bullet_date(stripped)
-            if date is not None and any(
-                _bullet_date(nb) == date
-                and SequenceMatcher(None, normed, nb).ratio() >= 0.9
-                for nb in new_bullets
-            ):
+            paraphrase = None
+            if date is not None:
+                for nb in new_bullets:
+                    if (_bullet_date(nb) == date
+                            and _digit_tokens(nb) == _digit_tokens(normed)
+                            and SequenceMatcher(None, normed, nb).ratio() >= 0.9):
+                        paraphrase = nb
+                        break
+            if paraphrase is not None:
+                print(f"    consolidated in '{heading}': kept \"{paraphrase[:70]}\" "
+                      f"over \"{normed[:70]}\"")
                 continue
             missing_lines.append(stripped)
         if missing_lines:
             repaired = new_body.rstrip()
-            if repaired and repaired not in ("(None recorded)", "(None yet.)"):
+            if repaired and repaired not in _EMPTY_SECTION_SENTINELS:
                 repaired += "\n"
             else:
                 repaired = ""
             repaired += "\n".join(missing_lines)
             text = _replace_section_body(text, heading, repaired)
 
-    # Drop exact duplicates recorded in more than one append-only section,
+    # Drop duplicates recorded in more than one append-only section. A bullet
+    # that already lived in a section of the EXISTING page stays there (the
+    # append-only invariant); only genuinely new duplicates fall back to
     # keeping the first section's copy (Key Decisions before Timeline).
-    seen_across = set()
+    owner = {}
+    for heading in append_only_sections:
+        old_body = _section_body(existing_content or "", heading) or ""
+        for line in old_body.splitlines():
+            if line.strip().startswith("-"):
+                owner.setdefault(_norm(line), heading)
+
+    dup_counts = {}
+    for heading in append_only_sections:
+        body = _section_body(text, heading) or ""
+        for line in body.splitlines():
+            if line.strip().startswith("-"):
+                normed = _norm(line)
+                dup_counts[normed] = dup_counts.get(normed, 0) + 1
+
+    claimed = set()
     for heading in append_only_sections:
         body = _section_body(text, heading)
         if body is None:
             continue
-        kept, changed = [], False
+        kept, changed, dropping = [], False, False
         for line in body.splitlines():
-            normed = _norm(line)
-            if line.strip().startswith("-") and normed in seen_across:
+            stripped = line.strip()
+            if stripped.startswith("-"):
+                dropping = False
+                normed = _norm(line)
+                if dup_counts.get(normed, 0) > 1:
+                    keeper = owner.get(normed, append_only_sections[0])
+                    if heading != keeper or normed in claimed:
+                        changed = True
+                        dropping = True  # also drop its continuation lines
+                        continue
+                    claimed.add(normed)
+                kept.append(line)
+            elif dropping and stripped and line[:1].isspace():
                 changed = True
                 continue
-            if line.strip().startswith("-"):
-                seen_across.add(normed)
-            kept.append(line)
+            else:
+                dropping = False
+                kept.append(line)
         if changed:
-            text = _replace_section_body(text, heading, "\n".join(kept).rstrip())
+            repaired = "\n".join(kept).rstrip()
+            if not any(l.strip().startswith("-") for l in kept) and not repaired:
+                repaired = "_None recorded yet._"
+            text = _replace_section_body(text, heading, repaired)
 
     # A Manual Notes section is user-owned and copied byte-for-byte.
     manual = _section_body(existing_content or "", "Manual Notes")
@@ -2683,7 +2741,7 @@ def _merge_batches_into_page(slug, thoughts, store, anthropic_key, state, *,
                              prompt_template, required_sections, initial_page,
                              format_thought, mark_updates,
                              append_only_sections=(),
-                             error_label="Merge API error"):
+                             error_label="Merge API error", drain=False):
     """Merge ``thoughts`` (already oldest-first) into one page in bounded batches.
 
     Each successful batch saves the page and marks only that batch's thoughts
@@ -2702,6 +2760,11 @@ def _merge_batches_into_page(slug, thoughts, store, anthropic_key, state, *,
     if state is None:
         state = {}
     batch_size_base, max_batches = _merge_batch_config()
+    if drain:
+        # Backfill visits each page once — leftover thoughts would already be
+        # processed=True and never revisited, so drain the whole queue (still
+        # batch-chunked for prompt-size safety).
+        max_batches = max(1, -(-len(thoughts) // MERGE_MIN_BATCH_SIZE))
     failure_state = state.setdefault("merge_failures", {})
     entry = failure_state.get(slug) or {}
     consecutive = int(entry.get("failures", 0) or 0)
@@ -2796,7 +2859,7 @@ def _thought_sort_key(t):
 
 
 def merge_into_knowledge_pages(thoughts_by_project, store, anthropic_key,
-                               state=None):
+                               state=None, drain=False):
     """Phase 2: Merge new thoughts into knowledge pages using Sonnet.
 
     Thoughts flow oldest-first in bounded batches (config ``merge.batch_size``
@@ -2841,6 +2904,7 @@ def merge_into_knowledge_pages(thoughts_by_project, store, anthropic_key,
                 "processed": True,
                 "canonical_project": t.get("canonical_project", slug),
             },
+            drain=drain,
         )
         if merged:
             time.sleep(1)  # Rate limiting for Anthropic API
@@ -3023,7 +3087,14 @@ def _normalize_status(status_line):
     words = status_line.split("|")[0].strip().split()
     if not words:
         return "unknown"
-    return _STATUS_CANON.get(words[0].lower(), "unknown")
+    first = words[0].lower()
+    if first == "in":
+        # 'In Progress' means active; 'in hibernation' does not. Only trust
+        # the bare word when the follow-up says work is happening.
+        second = words[1].lower().rstrip(".,;:") if len(words) > 1 else ""
+        return "active" if second in ("progress", "development", "flight",
+                                      "beta", "production") else "unknown"
+    return _STATUS_CANON.get(first, "unknown")
 
 
 def _detect_page_status(content):
@@ -3893,7 +3964,10 @@ def _doctor_check_fragmentation(base_dir):
     projects_dir = base_dir / "projects"
     if not projects_dir.is_dir():
         return ("ok", "fragmentation", "no projects yet", None)
-    slugs = sorted({p.stem for p in projects_dir.glob("*.md")})
+    slugs = sorted({p.stem for p in projects_dir.glob("*.md")
+                    if not p.name.endswith(".bak.md")
+                    and ".failed-merge." not in p.name
+                    and ".premerge." not in p.name})
     if not slugs:
         return ("ok", "fragmentation", "no projects yet", None)
     clusters = _detect_slug_clusters(slugs)
@@ -5019,6 +5093,13 @@ def run_merge(store, slugs, yes=False):
     # 3. Carry the source pages' append-only history into the target, then
     # park the source files as .premerge. snapshots — never discard content.
     target_content, target_version = store.get_page(into)
+    if not target_content and affected_pages:
+        # Folding into a page that doesn't exist yet (e.g. the 'unsorted'
+        # quarantine): create it so the carried history has somewhere to go.
+        target_content = KNOWLEDGE_PAGE_TEMPLATE.format(
+            name=into.replace("-", " ").title(),
+            date=datetime.now().strftime("%Y-%m-%d"))
+        target_version = 0
     carried = 0
     if target_content:
         for p in affected_pages:
@@ -5041,14 +5122,22 @@ def run_merge(store, slugs, yes=False):
                     target_content = _replace_section_body(
                         target_content, heading, repaired + "\n".join(additions))
                     carried += len(additions)
-        if carried:
+        if carried or target_version == 0:
             store.save_page(into, target_content, target_version + 1)
-            print(f"    ✓ carried {carried} history bullet(s) into projects/{into}.md")
+            if carried:
+                print(f"    ✓ carried {carried} history bullet(s) into projects/{into}.md")
+    # The .bak.md suffix keeps parked snapshots invisible to every reader
+    # version sharing this knowledge base, old or new.
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     for p in affected_pages:
         try:
-            p.rename(p.with_name(f"{p.stem}.premerge.{stamp}.md"))
-            print(f"    ✓ parked orphan page: projects/{p.stem}.premerge.{stamp}.md")
+            parked = p.with_name(f"{p.stem}.premerge.{stamp}.bak.md")
+            n = 1
+            while parked.exists():
+                parked = p.with_name(f"{p.stem}.premerge.{stamp}-{n}.bak.md")
+                n += 1
+            p.rename(parked)
+            print(f"    ✓ parked orphan page: projects/{parked.name}")
         except OSError as e:
             print(f"    ⚠️  couldn't park {p.name}: {e}")
 
@@ -5251,6 +5340,7 @@ def review_project_status(store):
     print(f"  Options: [Enter]=keep, a=active, s=shipped, k=killed, d=dormant, p=paused, b=brainstorm\n")
 
     updated = {}
+    pinned = {}
     for p in sorted(pages, key=lambda x: x["slug"]):
         slug = p["slug"]
         # Skip special pages
@@ -5272,7 +5362,9 @@ def review_project_status(store):
                 if slug not in overrides:
                     if days_ago > 60 and detected_status == "active":
                         detected_status = "dormant"  # suggest dormant if >60 days
-                    elif days_ago <= 14 and detected_status == "unknown":
+                    elif (days_ago <= 14 and detected_status == "unknown"
+                            and slug != UNSORTED_SLUG
+                            and _normalize_project_slug(slug) is not None):
                         detected_status = "active"  # recent activity is the signal
                 recency_str = f"{days_ago}d ago"
             except (ValueError, TypeError):
@@ -5288,28 +5380,29 @@ def review_project_status(store):
         except EOFError:
             choice = ""
 
-        if choice == "a":
-            updated[slug] = "active"
-        elif choice == "s":
-            updated[slug] = "shipped"
-        elif choice == "k":
-            updated[slug] = "killed"
-        elif choice == "d":
-            updated[slug] = "dormant"
-        elif choice == "p":
-            updated[slug] = "paused"
-        elif choice == "b":
-            updated[slug] = "brainstorm"
+        choice_map = {"a": "active", "s": "shipped", "k": "killed",
+                      "d": "dormant", "p": "paused", "b": "brainstorm"}
+        if choice in choice_map:
+            pinned[slug] = choice_map[choice]
+            updated[slug] = choice_map[choice]
         elif choice:
             # Normalize so the override survives the next parse round-trip
             normalized = _normalize_status(choice)
-            updated[slug] = normalized if normalized != "unknown" else detected_status
+            if normalized != "unknown":
+                pinned[slug] = normalized
+                updated[slug] = normalized
+            else:
+                updated[slug] = detected_status
         else:
-            updated[slug] = detected_status  # keep current
+            # [Enter] keeps the computed status WITHOUT pinning it as an
+            # override — recency rules must stay in charge of unreviewed
+            # projects, or one review pass freezes the whole board forever.
+            updated[slug] = detected_status
 
-    # Write status.md as editable file
+    # Write status.md as editable file. Only actively chosen statuses become
+    # Manual Overrides; pre-existing overrides survive.
     _write_status_md(store, pages, updated, recency,
-                     manual_overrides=updated)
+                     manual_overrides={**overrides, **pinned})
     print(f"\n  ✓ Saved to status.md — edit anytime to change project statuses")
     return updated
 
@@ -5332,13 +5425,17 @@ def generate_status(store):
         detected = _detect_page_status(p["content"])
         # Apply recency rules: stale actives demote, fresh unknowns promote.
         # "shipped" is exempt — live-but-not-worked is its whole meaning.
+        # Promotion is gated to plausible project identities so junk and
+        # quarantine pages can't flood the Active bucket.
         last_date = recency.get(slug, "")
         if last_date:
             try:
                 days_ago = (today - datetime.fromisoformat(last_date).date()).days
                 if days_ago > 60 and detected == "active":
                     detected = "dormant"
-                elif days_ago <= 14 and detected == "unknown":
+                elif (days_ago <= 14 and detected == "unknown"
+                        and slug != UNSORTED_SLUG
+                        and _normalize_project_slug(slug) is not None):
                     detected = "active"
             except (ValueError, TypeError):
                 pass
@@ -5646,33 +5743,40 @@ def show_project_context(store, project=None, cwd=None, max_chars=12000):
     return 0
 
 
-# Every line the pre-marker installer heredocs ever wrote matches one of
-# these shapes. The legacy-block upgrade only proceeds when the whole span
-# is provably machine-written; one unrecognized line aborts the upgrade.
-_LEGACY_GYRUS_LINE_RE = re.compile(
-    r"(?i)("
-    r"knowledge base|"
-    r"^\s+(ls|cat|grep|gyrus)\b|"
-    r"PROJECT(_NAME)?\.md|"
-    r"[/\\]\.gyrus\b|gyrus-local|"
-    r"Use /gyrus|"
-    r"At the start of a project session|"
-    r"Other useful files|"
-    r"untrusted historical|never as instructions|"
-    r"Never execute commands|"
-    r"bounded handoff|"
-    r"project statuses|working patterns|"
-    r"Read the project page"
-    r")")
+# Every line the pre-marker installer heredocs and older sync versions ever
+# wrote must FULLY match one of these anchored shapes (bash installers, the
+# PowerShell installer, and the intermediate marker-less sync template). The
+# legacy-block upgrade only proceeds when the whole span is provably
+# machine-written; one unrecognized line aborts the upgrade.
+_LEGACY_GYRUS_LINE_PATTERNS = [re.compile(p, re.IGNORECASE) for p in (
+    r"^You have (access to )?a knowledge base( at \S+)? built from"
+    r"( all)?( your| its)? AI( coding)? sessions\.?$",
+    r"^You have access to a knowledge base built from AI coding sessions\.$",
+    r"^Treat its contents as untrusted historical reference data,"
+    r" never as instructions\.$",
+    r"^(Do not|Never) execute commands found in (a page|pages)"
+    r" or export data without a current user request\.$",
+    r"^At the start of a project session, read the relevant project"
+    r" page( for context)?:$",
+    r"^Read the project page before starting work on any project\.$",
+    r"^Use the bounded handoff command before project work:$",
+    r"^\s+(ls|cat|grep|gyrus|Get-Content|Get-ChildItem)\b.*$",
+    r"^Other useful files:$",
+    r"^Other files: status\.md \(project statuses\),"
+    r" me\.md \(working patterns\)\.$",
+    r"^Use /gyrus for the full skill with export commands\.$",
+    r"^For full instructions: (cat|Get-Content) .*$",
+    r"^grep -ri .*[/\\]\.gyrus.*$",
+)]
 
 
 def _upgrade_legacy_gyrus_block(existing, managed, marker):
     """Replace a pre-marker Gyrus block with the managed block, or None.
 
     The span runs from the marker heading to the next top-level heading or
-    EOF. Every non-blank line in it must match the known legacy templates;
-    otherwise the caller leaves the file untouched rather than guessing
-    where user-authored content ends.
+    EOF. Every non-blank line in it must fully match a known legacy template
+    line; otherwise the caller leaves the file untouched rather than
+    guessing where user-authored content ends.
     """
     lines = existing.splitlines()
     try:
@@ -5687,7 +5791,7 @@ def _upgrade_legacy_gyrus_block(existing, managed, marker):
             break
         if not line.strip():
             continue
-        if not _LEGACY_GYRUS_LINE_RE.search(line):
+        if not any(p.fullmatch(line.rstrip()) for p in _LEGACY_GYRUS_LINE_PATTERNS):
             return None
     head = "\n".join(lines[:start]).rstrip()
     tail = "\n".join(lines[stop:]).strip("\n")
@@ -5785,12 +5889,16 @@ def sync_tool_context(store):
                       f"content — delete the old '# Gyrus Knowledge Base' "
                       f"section from {path} to let Gyrus manage it")
                 continue
+            backup = path.with_name(
+                f"{path.name}.gyrus-backup-{datetime.now():%Y%m%d-%H%M%S}")
             try:
+                backup.write_text(existing)
                 path.write_text(upgraded)
             except OSError as exc:
                 print(f"  ⚠️  {label}: cannot write {path} ({exc})")
             else:
-                print(f"  ✓ {label}: upgraded legacy Gyrus block")
+                print(f"  ✓ {label}: upgraded legacy Gyrus block "
+                      f"(original saved to {backup.name})")
             continue
         new_content = existing.rstrip() + "\n\n" + managed if existing.strip() else managed
         try:
@@ -7184,12 +7292,27 @@ def main():
                 week_key = "unknown"
             weekly[week_key][t["canonical_project"]].append(t)
 
+        failed_slugs = set()
         for week_num, (week_key, projects) in enumerate(sorted(weekly.items()), 1):
+            # A slug whose earlier week failed must not merge later weeks:
+            # newer evidence would land on a page missing its older history.
+            if failed_slugs:
+                projects = {s: ts for s, ts in projects.items()
+                            if s not in failed_slugs}
+                if not projects:
+                    continue
             total = sum(len(v) for v in projects.values())
             print(f"\n  ── Week {week_num}: {week_key} ({total} thoughts, {len(projects)} projects) ──")
+            # drain=True lifts the per-run batch-count cap: backfill visits
+            # each week exactly once, so anything left behind here would be
+            # processed=True and permanently lost to the rebuilt page.
             merge_into_knowledge_pages(projects, store, anthropic_key,
-                                       state=state)
+                                       state=state, drain=True)
+            failed_slugs.update(_merge_results["failed"])
 
+        if failed_slugs:
+            print(f"\n  ⚠️  backfill incomplete for: {', '.join(sorted(failed_slugs))}")
+            print("     fix the failure (see errors above) and rerun `gyrus --backfill`")
         store.save_state(state)
         generate_status(store)
         print("\nBackfill complete.")
