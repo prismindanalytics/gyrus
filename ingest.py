@@ -10,7 +10,7 @@ Knowledge pages are local markdown files by default.
 https://gyrus.sh
 """
 
-__version__ = "2026.8.1.6"
+__version__ = "2026.8.1.7"
 
 import argparse
 import atexit
@@ -5495,20 +5495,32 @@ def _write_status_md(store, pages, statuses, recency, manual_overrides=None):
 
     store.write_status("\n".join(lines) + "\n")
 
-    # Cross-cutting thoughts
+    # Cross-cutting thoughts. The cross-reference scan restates the same
+    # insight across runs (one live file had the dual-agent pattern three
+    # times), and this file is regenerated wholesale, so dedupe at render
+    # time — a hand-edit here would be overwritten on the next run.
     thoughts = store.get_thoughts(canonical_project=None, skipped=False, limit=200)
     # Filter to thoughts with no project (cross-cutting)
     cross_cutting = [t for t in thoughts if not t.get("canonical_project")]
     if cross_cutting:
-        cc_lines = ["# Cross-Cutting Thoughts\n"]
-        cc_lines.append(f"_{len(cross_cutting)} thoughts not tied to a specific project_\n")
+        rendered = []
         for t in cross_cutting:
             tags = ", ".join(t.get("tags", []))
             line = f"- [{t.get('source', '?')}] {t['content']}"
             if tags:
                 line += f"  `{tags}`"
-            cc_lines.append(line)
-        store.write_cross_cutting("\n".join(cc_lines) + "\n")
+            content = re.sub(r"\s+", " ", (t.get("content") or "")).strip().lower()
+            if not content:
+                continue
+            if any(SequenceMatcher(None, content, seen).ratio() >= 0.8
+                   for seen in (r[0] for r in rendered)):
+                continue
+            rendered.append((content, line))
+        if rendered:
+            cc_lines = ["# Cross-Cutting Thoughts\n"]
+            cc_lines.append(f"_{len(rendered)} thoughts not tied to a specific project_\n")
+            cc_lines.extend(line for _, line in rendered)
+            store.write_cross_cutting("\n".join(cc_lines) + "\n")
 
 
 # ─── Daily Digest ───

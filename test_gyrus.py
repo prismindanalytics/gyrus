@@ -2668,6 +2668,26 @@ class TestGenerateStatus(unittest.TestCase):
         overrides = ingest._parse_status_overrides(self.store)
         self.assertEqual(overrides, {"p1": "brainstorm"})
 
+    def test_cross_cutting_render_dedupes_restatements(self):
+        base = ("A recurring pattern of using a dual-agent adversarial strategy "
+                "(Agent A: Claude vs Agent B: Codex) to validate analytics hypotheses")
+        rows = [
+            {"content": base, "tags": ["pattern"], "source": "gyrus"},
+            {"content": base + " across projects.", "tags": ["pattern"],
+             "source": "gyrus"},   # restatement — must collapse
+            {"content": "Both projects migrate from Supabase to Cloudflare D1/R2.",
+             "tags": ["connection"], "source": "gyrus"},
+        ]
+        path = Path(self.tmpdir) / "thoughts" / "2026-07-30.jsonl"
+        path.write_text("\n".join(
+            json.dumps({**r, "created_at": "2026-07-30T00:00:00Z", "skipped": False})
+            for r in rows) + "\n")
+        ingest.generate_status(self.store)
+        text = (Path(self.tmpdir) / "cross-cutting.md").read_text()
+        self.assertEqual(text.count("dual-agent adversarial strategy"), 1)
+        self.assertIn("Supabase to Cloudflare", text)
+        self.assertIn("_2 thoughts not tied to a specific project_", text)
+
     def test_brainstorm_and_shipped_buckets_render(self):
         self._page("b1", "brainstorm | early")
         self._page("s1", "shipped | v1")
