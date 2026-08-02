@@ -662,6 +662,12 @@ runs.jsonl
 .notion-thought-cache.json
 eval/
 model-comparison.html
+
+# snapshot artifacts (kept on disk for recovery, not synced)
+*.bak.md
+*.premerge.*
+*.failed-merge.*
+*.gyrus-backup-*
 GITIGNORE
       # Fallback identity so `git commit` doesn't fail on boxes without
       # user.email/user.name configured; git prefers real config when set.

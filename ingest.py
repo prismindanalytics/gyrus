@@ -10,7 +10,7 @@ Knowledge pages are local markdown files by default.
 https://gyrus.sh
 """
 
-__version__ = "2026.8.1.7"
+__version__ = "2026.8.1.8"
 
 import argparse
 import atexit
@@ -4207,6 +4207,12 @@ latest-digest.md
 runs.jsonl
 .notion-state.json
 .notion-thought-cache.json
+
+# snapshot artifacts (kept on disk for recovery, not synced)
+*.bak.md
+*.premerge.*
+*.failed-merge.*
+*.gyrus-backup-*
 
 # raw/private evaluation artifacts
 eval/
