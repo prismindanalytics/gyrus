@@ -10,7 +10,7 @@ Knowledge pages are local markdown files by default.
 https://gyrus.sh
 """
 
-__version__ = "2026.8.1.5"
+__version__ = "2026.8.1.6"
 
 import argparse
 import atexit
@@ -5145,8 +5145,12 @@ def run_merge(store, slugs, yes=False):
     try:
         pages = store.get_all_pages()
         if pages:
-            # Rewrite status.md by dropping merged slugs — cheap approximation
-            status_path = store.base_dir / "status.md"
+            # Rewrite status.md by dropping merged slugs — cheap
+            # approximation. Anchor to the RESOLVED root: base_dir may be a
+            # symlink (~/.gyrus), and the containment guard in _safe_write
+            # compares against the resolved root.
+            status_root = getattr(store, "_root_dir", None) or store.base_dir
+            status_path = status_root / "status.md"
             if status_path.exists():
                 lines = status_path.read_text().splitlines()
                 kept = []

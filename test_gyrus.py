@@ -2287,6 +2287,26 @@ class TestRunMergeLossless(unittest.TestCase):
         rc = run_merge(self.store, ["clickron", "unsorted"], yes=True)
         self.assertEqual(rc, 0)
 
+    def test_merge_with_symlinked_base_dir_updates_status(self):
+        # The live deployment addresses the KB through a ~/.gyrus symlink;
+        # the status.md rewrite must anchor to the resolved root or the
+        # containment guard rejects it.
+        link = Path(self.tmpdir).parent / f"link-{Path(self.tmpdir).name}"
+        os.symlink(self.tmpdir, link)
+        try:
+            store = MarkdownStorage(base_dir=str(link))
+            (Path(self.tmpdir) / "status.md").write_text(
+                "# Gyrus — Project Status\n\n<!-- gyrus-status-v2 -->\n"
+                "## Manual Overrides\n\n"
+                "## 🟢 Active (1)\n\n- **clickron**: active | last: 2026-07-02\n"
+            )
+            rc = run_merge(store, ["clickron", "clickory"], yes=True)
+            self.assertEqual(rc, 0)
+            self.assertNotIn("**clickron**:",
+                             (Path(self.tmpdir) / "status.md").read_text())
+        finally:
+            link.unlink()
+
 
 class TestSpecialPageMigration(unittest.TestCase):
     """me.md/ideas.md migrate eagerly to the KB root on storage init."""
