@@ -14,7 +14,9 @@
 - Poison-pill sessions dead-letter after 3 failed extraction attempts (surfaced in `gyrus doctor`), the timeout clamp ceiling rises to 1800s, `ingest.log` rotates at 5 MB, and the `\r` progress spinner stays off non-TTY output.
 
 ### Changed
-- `gyrus merge` refuses junk targets, carries source pages' Key Decisions/Timeline bullets into the target, parks source pages as `.premerge.` snapshots instead of deleting them, rewrites `merged_into_page`, and proposes junk-identity consolidations in its suggestion flow.
+- `gyrus merge` refuses junk targets, carries source pages' Key Decisions/Timeline bullets into the target (replacing an empty-section placeholder rather than stacking under it), parks source pages as `.premerge.<stamp>.bak.md` snapshots instead of deleting them, rewrites `merged_into_page`, and proposes junk-identity consolidations in its suggestion flow.
+- `cross-cutting.md` is deduplicated at render time — it is regenerated wholesale each run, so near-duplicate cross-reference insights could not be fixed by editing the file.
+- Snapshot artifacts (`*.bak.md`, `*.premerge.*`, `*.failed-merge.*`, managed-block backups) are gitignored: the synced knowledge base had accumulated 83 of them.
 - The merge prompt assigns each event to exactly one of Key Decisions or Timeline & History, and validation permits consolidation (cross-section exact duplicates collapse; same-dated close paraphrases are accepted) while still restoring genuinely dropped append-only lines.
 - `latest-digest.md` is written on every ingest run (digest email remains opt-in), and the `/gyrus` command leads with `gyrus context`, discovers namespaced MCP tools instead of assuming flat names, and excludes snapshots and personal pages from export-all.
 
