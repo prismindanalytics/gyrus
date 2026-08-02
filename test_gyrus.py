@@ -2278,6 +2278,16 @@ class TestRunMergeLossless(unittest.TestCase):
         self.assertEqual(thought["canonical_project"], "clickory")
         self.assertEqual(thought["merged_into_page"], "clickory")
 
+    def test_carry_replaces_empty_section_placeholder(self):
+        # The target's Timeline is a placeholder; carried bullets must
+        # replace it, not stack underneath '(None recorded)'.
+        rc = run_merge(self.store, ["clickron", "clickory"], yes=True)
+        self.assertEqual(rc, 0)
+        target = (Path(self.tmpdir) / "projects" / "clickory.md").read_text()
+        timeline = target.split("## Timeline & History")[1]
+        self.assertNotIn("(None recorded)", timeline)
+        self.assertIn("Shard event", timeline)
+
     def test_merge_refuses_junk_target(self):
         rc = run_merge(self.store, ["clickory", "could-you-please-help-me-sharpen-2"],
                        yes=True)

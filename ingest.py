@@ -10,7 +10,7 @@ Knowledge pages are local markdown files by default.
 https://gyrus.sh
 """
 
-__version__ = "2026.8.1.8"
+__version__ = "2026.8.1.9"
 
 import argparse
 import atexit
@@ -5124,7 +5124,14 @@ def run_merge(store, slugs, yes=False):
                         additions.append(stripped)
                 if additions:
                     repaired = dst_body.rstrip()
-                    repaired = (repaired + "\n") if repaired else ""
+                    # An empty-section placeholder is not content: carried
+                    # bullets replace it instead of stacking underneath it.
+                    if (not repaired
+                            or not any(l.strip().startswith("-")
+                                       for l in repaired.splitlines())):
+                        repaired = ""
+                    else:
+                        repaired += "\n"
                     target_content = _replace_section_body(
                         target_content, heading, repaired + "\n".join(additions))
                     carried += len(additions)
