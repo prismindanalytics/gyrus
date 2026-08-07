@@ -6,6 +6,7 @@ Run: python3 -m pytest test_gyrus.py -v
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sqlite3
@@ -2502,6 +2503,100 @@ class TestLegacyBlockUpgradeInstallerShapes(unittest.TestCase):
                 block, self.MANAGED, "# Gyrus Knowledge Base")
             self.assertIsNotNone(result, f"{name} heredoc failed to upgrade")
             self.assertIn("BEGIN GYRUS MANAGED CONTEXT", result)
+
+
+class TestSyncAllowlistCoversInstalledFiles(unittest.TestCase):
+    """Anything self_update installs under the KB must be sync-allowlisted,
+    or autosync refuses to pull with 'unexpected tracked path'."""
+
+    def test_installed_kb_files_are_allowlisted(self):
+        source = Path(__file__).parent.joinpath("ingest.py").read_text()
+        # Destinations written as base / "..." inside self_update's files dict
+        installed = set(re.findall(r'"(skills/[^"]+\.md)":\s*base\s*/', source))
+        self.assertTrue(installed, "expected self_update to install skill files")
+        missing = installed - ingest._SYNC_ROOT_FILES
+        self.assertEqual(missing, set(),
+                         f"self_update installs {missing} into the KB but "
+                         f"_SYNC_ROOT_FILES omits them")
+
+
+class TestSelfUpdateDowngradeGuard(unittest.TestCase):
+    """`gyrus update` must never move the installation backwards."""
+
+    def test_version_parsing(self):
+        self.assertEqual(ingest._parse_version("2026.8.1.9"), (2026, 8, 1, 9))
+        self.assertEqual(ingest._parse_version("2026.7.16.2"), (2026, 7, 16, 2))
+        self.assertIsNone(ingest._parse_version("2026.8.1.dev0"))
+        self.assertIsNone(ingest._parse_version(""))
+        self.assertIsNone(ingest._parse_version(None))
+
+    def test_date_versions_order_correctly(self):
+        # The live regression: 2026.7.16.2 must sort BELOW 2026.8.1.9
+        # (string comparison gets this wrong: "2026.7" > "2026.8" is False
+        # but "2026.7.16.2" > "2026.8.1.9" is True lexically).
+        self.assertLess(ingest._parse_version("2026.7.16.2"),
+                        ingest._parse_version("2026.8.1.9"))
+        self.assertGreater(ingest._parse_version("2026.8.1.10"),
+                           ingest._parse_version("2026.8.1.9"))
+
+    def _run_update(self, remote_version, env=None):
+        payload = f'__version__ = "{remote_version}"\n'.encode()
+
+        class _Resp:
+            def __init__(self, data): self._d = data
+            def read(self, *a): return self._d
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+
+        import io
+        from contextlib import redirect_stdout
+        tmpdir = tempfile.mkdtemp()
+        buf = io.StringIO()
+        try:
+            # self_update also writes ~/.claude/commands/gyrus.md, which is
+            # OUTSIDE base_dir — fake HOME so a test run can never touch the
+            # real installation.
+            fake_home = Path(tmpdir) / "home"
+            (fake_home / ".claude" / "commands").mkdir(parents=True)
+            with patch("urllib.request.urlopen", lambda *a, **k: _Resp(payload)), \
+                 patch.object(Path, "home", staticmethod(lambda: fake_home)), \
+                 patch("subprocess.run", MagicMock()), \
+                 patch.dict(os.environ, env or {}, clear=False), \
+                 redirect_stdout(buf):
+                ok = ingest.self_update(str(Path(tmpdir) / "base"))
+            return ok, buf.getvalue()
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+    def test_older_remote_is_refused(self):
+        with patch.object(ingest, "__version__", "2026.8.1.9"):
+            ok, out = self._run_update("2026.7.16.2")
+        self.assertFalse(ok)
+        self.assertIn("refusing to downgrade", out)
+        self.assertIn("GYRUS_ALLOW_DOWNGRADE=1", out)
+
+    def test_same_version_is_noop(self):
+        with patch.object(ingest, "__version__", "2026.8.1.9"):
+            ok, out = self._run_update("2026.8.1.9")
+        self.assertTrue(ok)
+        self.assertIn("Already up to date", out)
+
+    def test_newer_remote_still_installs(self):
+        with patch.object(ingest, "__version__", "2026.7.16.2"):
+            _, out = self._run_update("2026.8.1.9")
+        self.assertNotIn("refusing to downgrade", out)
+        self.assertIn("Updating:", out)
+
+    def test_downgrade_allowed_with_explicit_opt_in(self):
+        with patch.object(ingest, "__version__", "2026.8.1.9"):
+            _, out = self._run_update("2026.7.16.2",
+                                      env={"GYRUS_ALLOW_DOWNGRADE": "1"})
+        self.assertNotIn("refusing to downgrade", out)
+
+    def test_unparseable_versions_do_not_block(self):
+        with patch.object(ingest, "__version__", "2026.8.1.dev0"):
+            _, out = self._run_update("2026.7.16.2")
+        self.assertNotIn("refusing to downgrade", out)
 
 
 class TestBackfillDrain(unittest.TestCase):

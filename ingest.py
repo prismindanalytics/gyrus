@@ -10,7 +10,7 @@ Knowledge pages are local markdown files by default.
 https://gyrus.sh
 """
 
-__version__ = "2026.8.1.9"
+__version__ = "2026.8.7.1"
 
 import argparse
 import atexit
@@ -3426,10 +3426,14 @@ def _git_attach_head_to_default(base_dir):
     return True, default
 
 
+# Every managed file that may legitimately be tracked in the knowledge-base
+# repo. A tracked path missing from this set makes autosync refuse to pull,
+# so anything self_update installs under the KB must be listed here too.
 _SYNC_ROOT_FILES = {
     ".gitignore", "aliases.json", "config.json", "status.md",
     "cross-cutting.md", "me.md", "ideas.md", "runs.jsonl",
     "skills/codex/gyrus-instructions.md",
+    "skills/cowork/gyrus/SKILL.md",
 }
 
 
@@ -6160,6 +6164,22 @@ def _parallel_worker_count(value, default=4):
     return max(1, min(workers, 32))
 
 
+def _parse_version(value):
+    """Version string as a comparable tuple, or None if not comparable.
+
+    Versions are date-based (YYYY.M.D.N). Anything non-numeric is treated
+    as incomparable rather than guessed at, so ordering checks fall back to
+    the caller's safe path instead of ranking wrongly.
+    """
+    parts = re.split(r"[._-]", (value or "").strip())
+    numbers = []
+    for part in parts:
+        if not part.isdigit():
+            return None
+        numbers.append(int(part))
+    return tuple(numbers) or None
+
+
 def self_update(base_dir=None):
     """Download and atomically install the latest Gyrus scripts.
 
@@ -6228,6 +6248,21 @@ def self_update(base_dir=None):
         if remote_version and remote_version == __version__:
             print(f"  Already up to date (v{__version__})")
             return True
+
+        # An equality check alone treats an OLDER remote as an update, so a
+        # machine running a newer build (a dev deploy, or a release the
+        # remote has since rolled back) gets silently downgraded and loses
+        # whatever that build fixed. Compare ordering, and refuse to go
+        # backwards unless the user explicitly asks.
+        local_parsed = _parse_version(__version__)
+        remote_parsed = _parse_version(remote_version)
+        if (local_parsed and remote_parsed and remote_parsed < local_parsed
+                and os.environ.get("GYRUS_ALLOW_DOWNGRADE") != "1"):
+            print(f"  Installed v{__version__} is NEWER than remote "
+                  f"v{remote_version} — refusing to downgrade.")
+            print("  Nothing was changed. If you really want the remote "
+                  "version, run: GYRUS_ALLOW_DOWNGRADE=1 gyrus update")
+            return False
 
         print(f"  Updating: v{__version__} -> {remote_version or 'latest'}")
         # Parse every downloaded Python file before touching the installation.
