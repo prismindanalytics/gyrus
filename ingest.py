@@ -10,7 +10,7 @@ Knowledge pages are local markdown files by default.
 https://gyrus.sh
 """
 
-__version__ = "2026.8.7.1"
+__version__ = "2026.8.9.1"
 
 import argparse
 import atexit
@@ -5894,7 +5894,7 @@ def sync_tool_context(store):
             print(f"  ⚠️  {label}: refusing to update symlink {path}")
             continue
         try:
-            existing = path.read_text(errors="replace") if path.exists() else ""
+            existing = path.read_text(encoding="utf-8", errors="replace") if path.exists() else ""
         except OSError as exc:
             print(f"  ⚠️  {label}: cannot read {path} ({exc})")
             continue
@@ -5903,10 +5903,14 @@ def sync_tool_context(store):
                 re.escape(begin) + r".*?" + re.escape(end) + r"\n?",
                 re.DOTALL,
             )
-            updated = block_re.sub(managed, existing, count=1)
+            # Replace via a function: re.sub interprets backslash escapes in
+            # a string replacement, and the managed block embeds the KB path.
+            # On Windows that path starts "C:\Users\..." and "\U" raises
+            # "bad escape" — this ran for every Windows install.
+            updated = block_re.sub(lambda _match: managed, existing, count=1)
             if updated != existing:
                 try:
-                    path.write_text(updated)
+                    path.write_text(updated, encoding="utf-8")
                 except OSError as exc:
                     print(f"  ⚠️  {label}: cannot write {path} ({exc})")
                 else:
@@ -5925,8 +5929,8 @@ def sync_tool_context(store):
             backup = path.with_name(
                 f"{path.name}.gyrus-backup-{datetime.now():%Y%m%d-%H%M%S}")
             try:
-                backup.write_text(existing)
-                path.write_text(upgraded)
+                backup.write_text(existing, encoding="utf-8")
+                path.write_text(upgraded, encoding="utf-8")
             except OSError as exc:
                 print(f"  ⚠️  {label}: cannot write {path} ({exc})")
             else:
@@ -5935,7 +5939,7 @@ def sync_tool_context(store):
             continue
         new_content = existing.rstrip() + "\n\n" + managed if existing.strip() else managed
         try:
-            path.write_text(new_content)
+            path.write_text(new_content, encoding="utf-8")
         except OSError as exc:
             print(f"  ⚠️  {label}: cannot write {path} ({exc})")
         else:

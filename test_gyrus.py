@@ -2244,18 +2244,18 @@ class TestRunMergeLossless(unittest.TestCase):
             "# clickory\n\n## Key Decisions\n"
             "- [2026-07-01] Real decision (source: claude-code)\n"
             "\n## Timeline & History\n(None recorded)\n"
-        )
+        , encoding="utf-8")
         (Path(self.tmpdir) / "projects" / "clickron.md").write_text(
             "# clickron\n\n## Key Decisions\n"
             "- [2026-07-02] Shard decision (source: codex)\n"
             "\n## Timeline & History\n"
             "- [2026-07-02] Shard event (source: codex)\n"
-        )
+        , encoding="utf-8")
         (Path(self.tmpdir) / "thoughts" / "2026-07-02.jsonl").write_text(
             json.dumps({"content": "t", "canonical_project": "clickron",
                         "merged_into_page": "clickron",
                         "created_at": "2026-07-02T00:00:00Z"}) + "\n"
-        )
+        , encoding="utf-8")
 
     def tearDown(self):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
@@ -2263,19 +2263,19 @@ class TestRunMergeLossless(unittest.TestCase):
     def test_merge_parks_and_carries(self):
         rc = run_merge(self.store, ["clickron", "clickory"], yes=True)
         self.assertEqual(rc, 0)
-        target = (Path(self.tmpdir) / "projects" / "clickory.md").read_text()
+        target = (Path(self.tmpdir) / "projects" / "clickory.md").read_text(encoding="utf-8")
         self.assertIn("Shard decision", target)
         self.assertIn("Shard event", target)
         self.assertIn("Real decision", target)
         parked = list((Path(self.tmpdir) / "projects").glob("clickron.premerge.*.md"))
         self.assertEqual(len(parked), 1)
-        self.assertIn("Shard decision", parked[0].read_text())
+        self.assertIn("Shard decision", parked[0].read_text(encoding="utf-8"))
         # Parked snapshots are invisible to page discovery
         slugs = {p["slug"] for p in self.store.get_all_pages()}
         self.assertEqual(slugs, {"clickory"})
         # Thought records repointed, including merged_into_page
         thought = json.loads(
-            (Path(self.tmpdir) / "thoughts" / "2026-07-02.jsonl").read_text())
+            (Path(self.tmpdir) / "thoughts" / "2026-07-02.jsonl").read_text(encoding="utf-8"))
         self.assertEqual(thought["canonical_project"], "clickory")
         self.assertEqual(thought["merged_into_page"], "clickory")
 
@@ -2284,7 +2284,7 @@ class TestRunMergeLossless(unittest.TestCase):
         # replace it, not stack underneath '(None recorded)'.
         rc = run_merge(self.store, ["clickron", "clickory"], yes=True)
         self.assertEqual(rc, 0)
-        target = (Path(self.tmpdir) / "projects" / "clickory.md").read_text()
+        target = (Path(self.tmpdir) / "projects" / "clickory.md").read_text(encoding="utf-8")
         timeline = target.split("## Timeline & History")[1]
         self.assertNotIn("(None recorded)", timeline)
         self.assertIn("Shard event", timeline)
@@ -2298,6 +2298,7 @@ class TestRunMergeLossless(unittest.TestCase):
         rc = run_merge(self.store, ["clickron", "unsorted"], yes=True)
         self.assertEqual(rc, 0)
 
+    @unittest.skipIf(os.name == "nt", "symlink creation needs privileges on Windows")
     def test_merge_with_symlinked_base_dir_updates_status(self):
         # The live deployment addresses the KB through a ~/.gyrus symlink;
         # the status.md rewrite must anchor to the resolved root or the
@@ -2310,11 +2311,11 @@ class TestRunMergeLossless(unittest.TestCase):
                 "# Gyrus — Project Status\n\n<!-- gyrus-status-v2 -->\n"
                 "## Manual Overrides\n\n"
                 "## 🟢 Active (1)\n\n- **clickron**: active | last: 2026-07-02\n"
-            )
+            , encoding="utf-8")
             rc = run_merge(store, ["clickron", "clickory"], yes=True)
             self.assertEqual(rc, 0)
             self.assertNotIn("**clickron**:",
-                             (Path(self.tmpdir) / "status.md").read_text())
+                             (Path(self.tmpdir) / "status.md").read_text(encoding="utf-8"))
         finally:
             link.unlink()
 
@@ -2330,11 +2331,11 @@ class TestSpecialPageMigration(unittest.TestCase):
 
     def test_legacy_files_move_to_root(self):
         store = MarkdownStorage(base_dir=self.tmpdir)
-        (Path(self.tmpdir) / "projects" / "me.md").write_text("# Me\npatterns\n")
-        (Path(self.tmpdir) / "projects" / "ideas.md").write_text("# Ideas\nbacklog\n")
+        (Path(self.tmpdir) / "projects" / "me.md").write_text("# Me\npatterns\n", encoding="utf-8")
+        (Path(self.tmpdir) / "projects" / "ideas.md").write_text("# Ideas\nbacklog\n", encoding="utf-8")
         MarkdownStorage(base_dir=self.tmpdir)  # re-init triggers migration
-        self.assertEqual((Path(self.tmpdir) / "me.md").read_text(), "# Me\npatterns\n")
-        self.assertEqual((Path(self.tmpdir) / "ideas.md").read_text(), "# Ideas\nbacklog\n")
+        self.assertEqual((Path(self.tmpdir) / "me.md").read_text(encoding="utf-8"), "# Me\npatterns\n")
+        self.assertEqual((Path(self.tmpdir) / "ideas.md").read_text(encoding="utf-8"), "# Ideas\nbacklog\n")
         self.assertFalse((Path(self.tmpdir) / "projects" / "me.md").exists())
         self.assertFalse((Path(self.tmpdir) / "projects" / "ideas.md").exists())
         # And a further init is a no-op
@@ -2343,10 +2344,10 @@ class TestSpecialPageMigration(unittest.TestCase):
 
     def test_root_copy_wins_when_both_exist(self):
         MarkdownStorage(base_dir=self.tmpdir)
-        (Path(self.tmpdir) / "me.md").write_text("# Me\nnew\n")
-        (Path(self.tmpdir) / "projects" / "me.md").write_text("# Me\nstale\n")
+        (Path(self.tmpdir) / "me.md").write_text("# Me\nnew\n", encoding="utf-8")
+        (Path(self.tmpdir) / "projects" / "me.md").write_text("# Me\nstale\n", encoding="utf-8")
         MarkdownStorage(base_dir=self.tmpdir)
-        self.assertEqual((Path(self.tmpdir) / "me.md").read_text(), "# Me\nnew\n")
+        self.assertEqual((Path(self.tmpdir) / "me.md").read_text(encoding="utf-8"), "# Me\nnew\n")
         self.assertFalse((Path(self.tmpdir) / "projects" / "me.md").exists())
         parked = list((Path(self.tmpdir) / "projects").glob("me.legacy.*.bak.md"))
         self.assertEqual(len(parked), 1)
@@ -2420,8 +2421,8 @@ class TestSyncToolContext(unittest.TestCase):
 
     def test_blocks_written_with_pointer_and_hardening(self):
         ingest.sync_tool_context(self.store)
-        claude = (self.home / ".claude" / "CLAUDE.md").read_text()
-        agents = (self.home / ".codex" / "AGENTS.md").read_text()
+        claude = (self.home / ".claude" / "CLAUDE.md").read_text(encoding="utf-8")
+        agents = (self.home / ".codex" / "AGENTS.md").read_text(encoding="utf-8")
         for text in (claude, agents):
             self.assertIn("BEGIN GYRUS MANAGED CONTEXT", text)
             self.assertIn('gyrus context --cwd "$PWD"', text)
@@ -2431,19 +2432,33 @@ class TestSyncToolContext(unittest.TestCase):
 
     def test_second_run_is_idempotent(self):
         ingest.sync_tool_context(self.store)
-        first = (self.home / ".claude" / "CLAUDE.md").read_text()
+        first = (self.home / ".claude" / "CLAUDE.md").read_text(encoding="utf-8")
         ingest.sync_tool_context(self.store)
-        self.assertEqual(first, (self.home / ".claude" / "CLAUDE.md").read_text())
+        self.assertEqual(first, (self.home / ".claude" / "CLAUDE.md").read_text(encoding="utf-8"))
+
+    def test_windows_style_kb_path_does_not_break_block_refresh(self):
+        """Regression: the managed block embeds the KB path, and re.sub
+        interprets backslash escapes in a string replacement. A Windows path
+        like C:\\Users\\... made refresh raise 'bad escape \\U' — on every
+        Windows install, since C:\\Users is the default."""
+        import types
+        fake_store = types.SimpleNamespace(base_dir=r"C:\Users\test\.gyrus")
+        ingest.sync_tool_context(fake_store)          # creates the block
+        ingest.sync_tool_context(fake_store)          # refresh hits re.sub
+        claude = (self.home / ".claude" / "CLAUDE.md").read_text(encoding="utf-8")
+        self.assertIn(r"C:\Users\test\.gyrus", claude)
+        self.assertEqual(claude.count("BEGIN GYRUS MANAGED CONTEXT"), 1)
 
     def test_legacy_block_upgraded_on_surface(self):
         (self.home / ".claude" / "CLAUDE.md").write_text(
-            TestLegacyBlockUpgrade.LIVE_LEGACY)
+            TestLegacyBlockUpgrade.LIVE_LEGACY, encoding="utf-8")
         ingest.sync_tool_context(self.store)
-        claude = (self.home / ".claude" / "CLAUDE.md").read_text()
+        claude = (self.home / ".claude" / "CLAUDE.md").read_text(encoding="utf-8")
         self.assertIn("BEGIN GYRUS MANAGED CONTEXT", claude)
         self.assertNotIn("PROJECT_NAME.md", claude)
 
 
+@unittest.skipIf(os.name == "nt", "install.sh is not used on Windows (install.ps1 is)")
 class TestInstallShellSyntax(unittest.TestCase):
     def test_install_sh_parses(self):
         result = subprocess.run(
@@ -2510,7 +2525,7 @@ class TestSyncAllowlistCoversInstalledFiles(unittest.TestCase):
     or autosync refuses to pull with 'unexpected tracked path'."""
 
     def test_installed_kb_files_are_allowlisted(self):
-        source = Path(__file__).parent.joinpath("ingest.py").read_text()
+        source = Path(__file__).parent.joinpath("ingest.py").read_text(encoding="utf-8")
         # Destinations written as base / "..." inside self_update's files dict
         installed = set(re.findall(r'"(skills/[^"]+\.md)":\s*base\s*/', source))
         self.assertTrue(installed, "expected self_update to install skill files")
@@ -2704,18 +2719,18 @@ class TestGenerateStatus(unittest.TestCase):
     def _page(self, slug, status_line):
         (Path(self.tmpdir) / "projects" / f"{slug}.md").write_text(
             f"# {slug}\n\n## Status\n{status_line}\nLast activity: x\n\n## Overview\nstub\n"
-        )
+        , encoding="utf-8")
 
     def _activity(self, slug, days_ago):
         date = (self.today - timedelta(days=days_ago)).isoformat()
         path = Path(self.tmpdir) / "thoughts" / f"{date}.jsonl"
         path.write_text(json.dumps({
             "content": "t", "canonical_project": slug,
-            "created_at": f"{date}T00:00:00Z"}) + "\n")
+            "created_at": f"{date}T00:00:00Z"}) + "\n", encoding="utf-8")
 
     def _statuses(self):
         ingest.generate_status(self.store)
-        text = (Path(self.tmpdir) / "status.md").read_text()
+        text = (Path(self.tmpdir) / "status.md").read_text(encoding="utf-8")
         found = {}
         for line in text.splitlines():
             if line.startswith("- **") and "**: " in line and "| last:" in line:
@@ -2759,7 +2774,7 @@ class TestGenerateStatus(unittest.TestCase):
         (Path(self.tmpdir) / "status.md").write_text(
             "# Gyrus — Project Status\n\n<!-- gyrus-status-v2 -->\n"
             "## Manual Overrides\n\n- **pinned**: active\n"
-        )
+        , encoding="utf-8")
         self.assertEqual(self._statuses()["pinned"], "active")
 
     def test_override_roundtrip_through_writer(self):
@@ -2767,7 +2782,7 @@ class TestGenerateStatus(unittest.TestCase):
         (Path(self.tmpdir) / "status.md").write_text(
             "# Gyrus — Project Status\n\n<!-- gyrus-status-v2 -->\n"
             "## Manual Overrides\n\n- **p1**: idea\n"
-        )
+        , encoding="utf-8")
         # legacy 'idea' normalizes to brainstorm and survives a rewrite cycle
         self.assertEqual(self._statuses()["p1"], "brainstorm")
         overrides = ingest._parse_status_overrides(self.store)
@@ -2786,9 +2801,9 @@ class TestGenerateStatus(unittest.TestCase):
         path = Path(self.tmpdir) / "thoughts" / "2026-07-30.jsonl"
         path.write_text("\n".join(
             json.dumps({**r, "created_at": "2026-07-30T00:00:00Z", "skipped": False})
-            for r in rows) + "\n")
+            for r in rows) + "\n", encoding="utf-8")
         ingest.generate_status(self.store)
-        text = (Path(self.tmpdir) / "cross-cutting.md").read_text()
+        text = (Path(self.tmpdir) / "cross-cutting.md").read_text(encoding="utf-8")
         self.assertEqual(text.count("dual-agent adversarial strategy"), 1)
         self.assertIn("Supabase to Cloudflare", text)
         self.assertIn("_2 thoughts not tied to a specific project_", text)
@@ -2797,7 +2812,7 @@ class TestGenerateStatus(unittest.TestCase):
         self._page("b1", "brainstorm | early")
         self._page("s1", "shipped | v1")
         ingest.generate_status(self.store)
-        text = (Path(self.tmpdir) / "status.md").read_text()
+        text = (Path(self.tmpdir) / "status.md").read_text(encoding="utf-8")
         self.assertIn("Brainstorm (1)", text)
         self.assertIn("Shipped (1)", text)
 
