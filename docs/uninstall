@@ -17,8 +17,14 @@ echo -e "${BOLD}Gyrus Uninstaller${NC}"
 echo "=================="
 echo ""
 
+# Identify OUR cron entry precisely — the marker comment on new installs, or a
+# gyrus-path + ingest.py line on older ones — so we never touch an unrelated
+# user cron job that merely runs some other ingest.py.
+GYRUS_CRON_RE='# gyrus-autosync|(\.gyrus|gyrus-local)[^#]*ingest\.py'
+has_gyrus_cron() { crontab -l 2>/dev/null | grep -qE "$GYRUS_CRON_RE"; }
+
 # Check if installed
-if [ ! -d "$GYRUS_DIR" ] && ! crontab -l 2>/dev/null | grep -q "ingest.py"; then
+if [ ! -d "$GYRUS_DIR" ] && ! has_gyrus_cron; then
   echo "Gyrus doesn't appear to be installed."
   exit 0
 fi
@@ -26,14 +32,16 @@ fi
 # Show what will be removed
 echo -e "This will remove:"
 [ -d "$GYRUS_DIR" ] && echo -e "  • ${BOLD}$GYRUS_DIR${NC} (knowledge base, config, scripts)"
-crontab -l 2>/dev/null | grep -q "ingest.py" && echo -e "  • Cron job (scheduled sync)"
+has_gyrus_cron && echo -e "  • Cron job (scheduled sync)"
 [ -f "$HOME/.claude/commands/gyrus.md" ] && echo -e "  • Claude Code /gyrus skill"
 echo ""
 
-# Ask to backup
+# Ask to backup. Guard the glob: with no *.md files and pipefail set, an
+# unguarded `ls *.md` fails and the trailing `|| echo 0` fires in addition to
+# the pipeline output, yielding a non-integer count ("0\n0").
 if [ -d "$GYRUS_DIR/projects" ]; then
-  PAGE_COUNT=$(ls "$GYRUS_DIR/projects/"*.md 2>/dev/null | wc -l | tr -d ' ' || echo "0")
-  if [ "$PAGE_COUNT" -gt 0 ]; then
+  PAGE_COUNT=$({ ls "$GYRUS_DIR/projects/"*.md 2>/dev/null || true; } | wc -l | tr -d ' ')
+  if [ "${PAGE_COUNT:-0}" -gt 0 ]; then
     echo -e "${YELLOW}!${NC} You have ${BOLD}$PAGE_COUNT project pages${NC} in $GYRUS_DIR/projects/"
     echo -e "  ${DIM}Back them up before uninstalling if you want to keep them.${NC}"
     echo ""
@@ -48,9 +56,9 @@ fi
 
 echo ""
 
-# Remove cron job
-if crontab -l 2>/dev/null | grep -q "ingest.py"; then
-  crontab -l 2>/dev/null | grep -v "ingest.py" | crontab - 2>/dev/null || true
+# Remove cron job (only our marked/gyrus-path line)
+if has_gyrus_cron; then
+  crontab -l 2>/dev/null | grep -vE "$GYRUS_CRON_RE" | crontab - 2>/dev/null || true
   echo -e "  ${GREEN}✓${NC} Removed cron job"
 fi
 
@@ -68,6 +76,34 @@ fi
 # Remove Codex skill
 if [ -f "$GYRUS_DIR/skills/codex/gyrus-instructions.md" ]; then
   echo -e "  ${GREEN}✓${NC} Codex instructions will be removed with ~/.gyrus"
+fi
+
+# Remove the "# Gyrus Knowledge Base" instruction block from global agent
+# config files so they stop pointing tools at a deleted knowledge base.
+# Handles both the marker-wrapped block (new installs) and the older unmarked
+# block (stops at its known last line).
+remove_gyrus_block() {
+  local file="$1" tail_line="$2"
+  [ -f "$file" ] || return 0
+  grep -q "# Gyrus Knowledge Base" "$file" 2>/dev/null || return 0
+  awk -v tail="$tail_line" '
+    /# Gyrus Knowledge Base/ { skip=1 }
+    skip {
+      if ($0 ~ /<!-- END GYRUS -->/ || index($0, tail) > 0) { skip=0 }
+      next
+    }
+    { print }
+  ' "$file" > "$file.gyrus-tmp" && mv "$file.gyrus-tmp" "$file"
+  echo -e "  ${GREEN}✓${NC} Removed Gyrus block from $(basename "$file")"
+}
+remove_gyrus_block "$HOME/.claude/CLAUDE.md" "Use /gyrus for the full skill"
+remove_gyrus_block "$HOME/AGENTS.md" "For full instructions:"
+
+# Remove the Cowork skills-plugin gyrus skill (best-effort; session-scoped).
+COWORK_PLUGIN="$HOME/Library/Application Support/Claude/local-agent-mode-sessions/skills-plugin"
+if [ -d "$COWORK_PLUGIN" ]; then
+  find "$COWORK_PLUGIN" -type d -name gyrus -path '*/skills/gyrus' -prune \
+    -exec rm -rf {} + 2>/dev/null || true
 fi
 
 # Remove symlink if exists, then offer to remove the target too
