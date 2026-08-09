@@ -228,6 +228,30 @@ class MarkdownStorage:
             for path in directory.glob(pattern):
                 _set_private_file_mode(path, self._root_dir)
 
+        # me.md/ideas.md are canonical at the storage root (matching every
+        # doc surface), but historically only migrated on a successful merge
+        # save — which can fail for weeks. Migrate eagerly instead. Losing a
+        # rename race to a concurrent construction just means the other
+        # process migrated first; never abort construction over it.
+        for slug in _SPECIAL_PAGE_SLUGS:
+            legacy = self.projects_dir / f"{slug}.md"
+            canonical = self._root_dir / f"{slug}.md"
+            try:
+                if not legacy.exists():
+                    continue
+                if canonical.exists():
+                    # Root already exists (a newer save landed): keep it,
+                    # park the stale legacy copy under a unique name page
+                    # discovery ignores.
+                    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+                    legacy.replace(
+                        self.projects_dir / f"{slug}.legacy.{stamp}.bak.md")
+                else:
+                    legacy.replace(canonical)
+                    _set_private_file_mode(canonical, self._root_dir)
+            except (FileNotFoundError, OSError):
+                continue
+
     def _page_path(self, slug, *, legacy=False):
         slug = _validate_slug(slug)
         if slug in _SPECIAL_PAGE_SLUGS and not legacy:
@@ -455,7 +479,9 @@ class MarkdownStorage:
             # Historical snapshots and rejected merge responses live beside
             # real pages but are not project slugs. Keep them recoverable
             # without making page discovery fail strict slug validation.
-            if filepath.name.endswith(".bak.md") or ".failed-merge." in filepath.name:
+            if (filepath.name.endswith(".bak.md")
+                    or ".failed-merge." in filepath.name
+                    or ".premerge." in filepath.name):
                 continue
             slug = filepath.stem
             if slug in ("status", "cross-cutting", "me", "ideas"):

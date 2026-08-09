@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.4.0 — 2026-08-01
+
+**The dogfood release: chunked merges, honest telemetry, junk-slug quarantine, and doc surfaces that upgrade themselves.**
+
+### Fixed
+- **Merge death spiral**: merges now process pending thoughts oldest-first in batches (`merge.batch_size`, default 40; at most `merge.max_batches_per_page_per_run` per page per run) instead of stuffing an ever-growing backlog into one prompt that local models could never finish within the timeout. Consecutive failures halve the batch (floor 5), and a batch that still cannot merge is dead-lettered with a visible warning instead of wedging the queue forever.
+- **Telemetry honesty**: `runs.jsonl` `pages_updated` lists only pages whose merge actually saved; new `merge_failed`, `backlog_remaining`, and `dead_lettered` fields. Local models estimate $0.00 instead of cloud rates.
+- **Junk slugs**: the slugify preserves separators instead of deleting them (`calledthird/research/x` no longer crushes into a new identity), path-like names resolve by segment against existing pages first, junk names (`none`, UUIDs, prompt-fragment sentence slugs from Codex scratch dirs) are quarantined onto an `unsorted` page instead of minted, and the fuzzy matcher never attaches variants to a junk canonical.
+- **Unreachable me.md/ideas.md**: they migrate eagerly to the KB root on startup instead of waiting for a successful merge, so every documented path works even when merges are failing.
+- **Frozen doc blocks**: pre-marker legacy blocks in `CLAUDE.md`/`AGENTS.md`/`GEMINI.md` upgrade in place to managed marker blocks (only when every line is provably installer-written); the installer and `gyrus update` both route through the same writer, so shipped guidance improvements finally reach existing installs. Codex's block gains the pointer to its full instructions file.
+- **Status contract**: one shared normalizer maps the vocabulary models actually write (`Prototype`, `BACKLOG`, `Pre-launch`, …) onto `active/paused/dormant/killed/brainstorm/shipped`; new pages default to `active`; unknown pages with activity in the last 14 days surface as active; manual overrides win everywhere, including the interactive review.
+- Poison-pill sessions dead-letter after 3 failed extraction attempts (surfaced in `gyrus doctor`), the timeout clamp ceiling rises to 1800s, `ingest.log` rotates at 5 MB, and the `\r` progress spinner stays off non-TTY output.
+
+### Changed
+- `gyrus merge` refuses junk targets, carries source pages' Key Decisions/Timeline bullets into the target (replacing an empty-section placeholder rather than stacking under it), parks source pages as `.premerge.<stamp>.bak.md` snapshots instead of deleting them, rewrites `merged_into_page`, and proposes junk-identity consolidations in its suggestion flow.
+- `cross-cutting.md` is deduplicated at render time — it is regenerated wholesale each run, so near-duplicate cross-reference insights could not be fixed by editing the file.
+- Snapshot artifacts (`*.bak.md`, `*.premerge.*`, `*.failed-merge.*`, managed-block backups) are gitignored: the synced knowledge base had accumulated 83 of them.
+- The merge prompt assigns each event to exactly one of Key Decisions or Timeline & History, and validation permits consolidation (cross-section exact duplicates collapse; same-dated close paraphrases are accepted) while still restoring genuinely dropped append-only lines.
+- `latest-digest.md` is written on every ingest run (digest email remains opt-in), and the `/gyrus` command leads with `gyrus context`, discovers namespaced MCP tools instead of assuming flat names, and excludes snapshots and personal pages from export-all.
+
 ## 0.3.6
 
 ### Added

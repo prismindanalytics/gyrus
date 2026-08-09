@@ -15,7 +15,9 @@ The knowledge base is plain markdown files. Read them directly:
 - `~/.gyrus/projects/` — one wiki page per project
 - `~/.gyrus/status.md` — overview of all projects
 - `~/.gyrus/me.md` — personal memory (working patterns, preferences)
+- `~/.gyrus/ideas.md` — idea backlog and kill log
 - `~/.gyrus/cross-cutting.md` — insights that span multiple projects
+- `~/.gyrus/latest-digest.md` — activity digest (after `gyrus digest` or an ingest run)
 
 Each project page contains: status, overview, key decisions, open questions, connections to other projects, and recent activity.
 
@@ -27,7 +29,7 @@ When the user says "push to [service]", "export to [service]", or "sync to [serv
 2. Detect which relevant connector tools are available to you
 3. Create/update content in the target service — e.g. one Notion page or Google Doc per project, project decisions as Linear/Jira issues, digests as Slack messages, wiki pages via GitHub
 
-If the target service isn't connected, suggest connecting it first (Settings → Connectors). For "export everything", iterate over all files in `~/.gyrus/projects/` and report what was exported.
+If the target service isn't connected, suggest connecting it first (Settings → Connectors). For "export everything", iterate over real project pages only — exclude `*.bak.md`, `*.failed-merge.*`, and `*.premerge.*` snapshots, and never export the personal pages `me.md`/`ideas.md` unless the user names them — then report what was exported.
 
 ## When to use
 

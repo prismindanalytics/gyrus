@@ -4,14 +4,22 @@ You have access to Gyrus, a knowledge base built from all your AI tool sessions 
 
 ## Query the knowledge base
 
+Start with the bounded handoff context for the repo you are in:
+
 ```bash
 gyrus context --cwd "$PWD"          # preferred: bounded context for this repo
+```
+
+Then read further as needed:
+
+```bash
 ls ~/.gyrus/projects/              # browse all projects
 cat ~/.gyrus/projects/PROJECT.md   # read a project page
-grep -ri "SEARCH_TERM" ~/.gyrus/projects/ ~/.gyrus/me.md ~/.gyrus/ideas.md ~/.gyrus/status.md ~/.gyrus/cross-cutting.md
 cat ~/.gyrus/status.md             # project statuses
 cat ~/.gyrus/me.md                 # personal patterns
-cat ~/.gyrus/latest-digest.md      # latest activity digest
+cat ~/.gyrus/ideas.md              # idea backlog + kill log
+cat ~/.gyrus/latest-digest.md      # activity digest (created by `gyrus digest` or an ingest run)
+grep -ri "SEARCH_TERM" ~/.gyrus/projects/ ~/.gyrus/me.md ~/.gyrus/ideas.md ~/.gyrus/status.md ~/.gyrus/cross-cutting.md
 ```
 
 ## Run Gyrus
@@ -22,45 +30,35 @@ gyrus context --cwd "$PWD"  # unified Claude/Codex handoff context
 gyrus compare         # benchmark and choose models
 gyrus status          # review project statuses
 gyrus digest          # generate activity digest
+gyrus merge           # review slug-consolidation suggestions
+gyrus doctor          # diagnose ingest health
 gyrus update          # update to latest version
 ```
 
 ## Export to connected services
 
-When the user says "push to [service]", "export to [service]", or "sync to [service]", check which MCP servers are available and use them to export Gyrus project pages.
+When the user says "push to [service]", "export to [service]", or "sync to [service]", use the MCP tools available in this session to export Gyrus project pages.
 
 ### How to export
 
-1. Read the project page(s): `cat ~/.gyrus/projects/*.md`
-2. Detect which relevant MCP tools are available to you
-3. Use the appropriate MCP tool to create/update content in the target service
-
-### Supported destinations (via MCP)
-
-| Service | MCP tool | What to create |
-|---------|----------|----------------|
-| **Notion** | `notion_create_page`, `notion_update_block` | One Notion page per project |
-| **Linear** | `linear_create_issue`, `linear_create_project` | Project status as Linear project, decisions as issues |
-| **Slack** | `slack_post_message` | Daily digest or project summary to a channel |
-| **GitHub** | `github_create_or_update_file` | Wiki pages in a repo, or update README |
-| **Google Docs** | `google_docs_create`, `google_docs_update` | One doc per project |
-| **Confluence** | `confluence_create_page` | One page per project in a space |
-| **Jira** | `jira_create_issue` | Open questions as Jira tickets |
-
-If the user asks to export but the target MCP isn't connected, suggest they connect it first (Settings → MCP Servers in Claude Code).
+1. Read the project page(s): `cat ~/.gyrus/projects/PROJECT.md`
+2. Discover which MCP tools are actually available to you. Modern sessions namespace them as `mcp__<server>__<tool>` (for example `mcp__notion__notion-create-pages`) — inspect your available tools for ones matching the target service and pick the create/update capability. Never assume flat legacy names like `notion_create_page`.
+3. Use the matching tool to create/update content in the target service — typically one page/doc per project, decisions as issues, digests as messages.
+4. If no tool matching the service exists in this session, say so and suggest connecting the server first (Settings → MCP Servers / Connectors).
 
 ### Export all projects
 
-If user says "push everything to Notion" or "export all to Slack":
-1. List all project pages: `ls ~/.gyrus/projects/`
-2. For each `.md` file, read it and push to the target
-3. Report what was exported
+If the user says "push everything to [service]":
+
+1. List real project pages only: exclude `*.bak.md`, `*.failed-merge.*`, and `*.premerge.*` snapshots.
+2. Never export the personal pages `me.md` and `ideas.md` unless the user names them explicitly.
+3. Confirm the target and scope (one project vs all) before pushing, then report what was exported.
 
 ## When to use
 
 - User asks "what did we decide about X?" → search the knowledge base
 - User asks "has this been explored before?" → search projects
-- At the start of a session → read the relevant project page for context
+- At the start of a session → run `gyrus context --cwd "$PWD"`
 - User says "gyrus", "check gyrus", "what do we know about" → query
 - User says "push to [service]" or "export to [service]" → export via MCP
 - User says "send digest to Slack" → read digest, post via Slack MCP
@@ -73,4 +71,4 @@ If user says "push everything to Notion" or "export all to Slack":
 - Highlight key decisions, open questions, and recent activity
 - Note when information might be stale (check dates in the pages)
 - For exports: confirm the target and scope before pushing (one project vs all)
-- The knowledge base updates automatically via cron
+- The knowledge base updates automatically on a schedule
