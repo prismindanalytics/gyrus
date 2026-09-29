@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Gyrus — Your AI tools don't talk to each other. Gyrus fixes that.</title>
-  <meta name="description" content="Gyrus reads all your AI coding sessions, extracts strategic insights, and builds a compounding knowledge base that gets smarter every hour.">
+  <meta name="description" content="Claude Code, Codex, Cursor and the rest each remember only their own work. Gyrus reads all of them and keeps a short, current handoff card per project that any tool can pick up. Plain markdown, local-first.">
   <link rel="canonical" href="https://gyrus.sh">
 
   <!-- Fonts -->
@@ -130,6 +130,7 @@
       <a href="#" class="font-semibold text-lg tracking-tight text-white">Gyrus</a>
       <div class="hidden sm:flex items-center gap-8 text-sm text-surface-800">
         <a href="#how-it-works" class="hover:text-white transition-colors">How it works</a>
+        <a href="#native-memory" class="hover:text-white transition-colors">Native memory</a>
         <a href="#models" class="hover:text-white transition-colors">Models</a>
         <a href="#quality" class="hover:text-white transition-colors">Quality</a>
         <a href="#pricing" class="hover:text-white transition-colors">Pricing</a>
@@ -154,12 +155,12 @@
       <p class="text-xs tracking-widest uppercase text-surface-600 mb-8"><span class="normal-case italic">a ridge on the cerebral cortex</span></p>
 
       <p class="text-xl sm:text-2xl font-semibold text-white mb-5 leading-snug">
-        For builders using AI across<br>multiple projects and tools.
+        Your AI tools each remember their own work.<br>Gyrus is the handoff between them.
       </p>
 
       <p class="text-base sm:text-lg text-surface-700 max-w-lg mx-auto mb-12 leading-relaxed">
-        Claude Code, Cowork, Codex, Antigravity &mdash; none of them remember the others.<br class="hidden sm:block">
-        Gyrus reads all of them and builds one knowledge base. Plain markdown, local-first, editable.
+        Claude Code, Codex, Cursor, Antigravity &mdash; each keeps its own memory, and none of them sees the others.
+        Gyrus reads all of them and keeps one short, current card per project that any tool can pick up. Plain markdown, local-first, editable.
       </p>
 
       <!-- Install command -->
@@ -193,7 +194,7 @@
   <section class="py-24 sm:py-32 fade-section">
     <div class="max-w-3xl mx-auto px-6">
       <h2 class="text-3xl sm:text-4xl font-bold text-white mb-3 text-center">See it work</h2>
-      <p class="text-surface-800 text-center mb-12 max-w-xl mx-auto">Run the install. Gyrus scans your sessions, extracts insights, and merges them into project wikis&thinsp;&mdash;&thinsp;automatically.</p>
+      <p class="text-surface-800 text-center mb-12 max-w-xl mx-auto">Run the install. Gyrus scans your sessions, pulls out the decisions, and keeps a handoff card for every project&thinsp;&mdash;&thinsp;automatically.</p>
 
       <!-- Terminal block -->
       <div class="terminal-glow rounded-xl overflow-hidden border border-white/5">
@@ -212,49 +213,89 @@
 <span class="text-surface-600">[3/269]</span> <span class="text-green-400">codex</span> <span class="text-surface-600">clinic-notes</span> &mdash; <span class="text-white">4</span> thoughts
 <span class="text-surface-600">[4/269]</span> <span class="text-yellow-400">antigravity</span> <span class="text-surface-600">style-engine</span> &mdash; <span class="text-white">11</span> thoughts
 
-Merging 115 thoughts into <span class="text-indigo-400">'safety-alerts'</span>...
-  <span class="text-green-400">&#10003;</span> Updated <span class="text-white">'safety-alerts' v1</span>
-Merging 271 thoughts into <span class="text-indigo-400">'style-engine'</span>...
-  <span class="text-green-400">&#10003;</span> Updated <span class="text-white">'style-engine' v1</span>
+Building card for <span class="text-indigo-400">'safety-alerts'</span> (115 new notes)...
+  <span class="text-green-400">&#10003;</span> Card rebuilt in <span class="text-white">2 passes</span> from 115 notes
+Building card for <span class="text-indigo-400">'style-engine'</span> (271 new notes)...
+  <span class="text-green-400">&#10003;</span> Card rebuilt in <span class="text-white">4 passes</span> from 271 notes
 
-Done. 269 sessions, 1226 thoughts, 31 project pages.
-<span class="text-surface-600">  Cost: ~$4.88 | LLM calls: 266 extract, 32 merge</span><span class="cursor-blink text-surface-700">_</span></pre>
+Done. 269 sessions, 1226 notes, 31 project cards.
+<span class="text-surface-600">  Cost: ~$4.88 | LLM calls: 266 extract, 38 card</span><span class="cursor-blink text-surface-700">_</span></pre>
         </div>
       </div>
 
-      <!-- Wiki output card -->
-      <p class="text-surface-700 text-sm text-center mt-14 mb-4 uppercase tracking-wider font-medium">What a project page looks like</p>
+      <!-- Card output -->
+      <p class="text-surface-700 text-sm text-center mt-14 mb-4 uppercase tracking-wider font-medium">What a project card looks like</p>
       <div class="terminal-glow rounded-xl overflow-hidden border border-white/5 bg-surface-200">
         <div class="flex items-center gap-2 px-4 py-3 border-b border-white/5">
           <svg class="w-4 h-4 text-surface-700" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>
           <span class="text-xs text-surface-700 font-mono">safety-alerts.md</span>
+          <span class="ml-auto text-xs text-surface-600 font-mono hidden sm:inline">4 KB &middot; rebuilt every run</span>
         </div>
         <div class="p-6 sm:p-8 space-y-5">
-          <h3 class="text-2xl font-bold text-white">SafetyAlerts</h3>
-          <div class="flex flex-wrap gap-2 text-xs font-mono">
-            <span class="px-2 py-1 rounded bg-green-500/10 text-green-400 border border-green-500/20">active</span>
-            <span class="px-2 py-1 rounded bg-purple-500/10 text-purple-400 border border-purple-500/20">pre-launch</span>
-            <span class="px-2 py-1 rounded bg-yellow-500/10 text-yellow-400 border border-yellow-500/20">Priority: P1</span>
+          <div class="flex flex-wrap items-center gap-3">
+            <h3 class="text-2xl font-bold text-white">SafetyAlerts</h3>
+            <span class="px-2 py-1 rounded bg-green-500/10 text-green-400 border border-green-500/20 text-xs font-mono">active</span>
+            <span class="px-2 py-1 rounded bg-purple-500/10 text-purple-400 border border-purple-500/20 text-xs font-mono">pre-launch</span>
           </div>
+          <p class="text-surface-600 text-xs font-mono">Built 12 minutes ago from 115 notes &middot; cowork, claude-code, codex, antigravity</p>
           <div>
-            <h4 class="text-xs uppercase tracking-wider text-surface-700 font-semibold mb-2">Overview</h4>
-            <p class="text-surface-800 text-sm leading-relaxed">Consumer app aggregating safety alerts from government agencies into a personalized feed. iOS and Android sharing the same backend. Privacy-first: all user data on-device, only anonymous push tokens stored remotely.</p>
-          </div>
-          <div>
-            <h4 class="text-xs uppercase tracking-wider text-surface-700 font-semibold mb-2">Key Decisions <span class="text-surface-600 normal-case font-normal">(from multiple tools)</span></h4>
-            <ul class="text-sm space-y-1.5">
-              <li class="flex gap-2"><span class="text-surface-600 font-mono text-xs shrink-0 pt-0.5">03-25</span><span class="text-surface-800">Killed scanner tab before App Store resubmission <span class="text-purple-400/60 text-xs">cowork</span></span></li>
-              <li class="flex gap-2"><span class="text-surface-600 font-mono text-xs shrink-0 pt-0.5">03-28</span><span class="text-surface-800">Fixed push notification key mismatch across platforms <span class="text-blue-400/60 text-xs">claude-code</span></span></li>
-              <li class="flex gap-2"><span class="text-surface-600 font-mono text-xs shrink-0 pt-0.5">03-30</span><span class="text-surface-800">Switched to direct Play Billing for donations <span class="text-yellow-400/60 text-xs">antigravity</span></span></li>
-              <li class="flex gap-2"><span class="text-surface-600 font-mono text-xs shrink-0 pt-0.5">04-01</span><span class="text-surface-800">Dynamic sitemap via edge worker for SEO pages <span class="text-green-400/60 text-xs">codex</span></span></li>
+            <h4 class="text-xs uppercase tracking-wider text-surface-700 font-semibold mb-2">Current Focus</h4>
+            <ul class="text-sm space-y-1.5 text-surface-800">
+              <li class="flex gap-2"><span class="text-surface-600 shrink-0">&bull;</span>App Store resubmission without the scanner tab</li>
+              <li class="flex gap-2"><span class="text-surface-600 shrink-0">&bull;</span>Donations through direct Play Billing on Android</li>
             </ul>
           </div>
           <div>
-            <h4 class="text-xs uppercase tracking-wider text-surface-700 font-semibold mb-2">Sources</h4>
-            <p class="text-surface-600 text-xs">Built from 115 thoughts across multiple Claude, Cowork, Codex, and Antigravity sessions</p>
+            <h4 class="text-xs uppercase tracking-wider text-surface-700 font-semibold mb-2">Recent Decisions <span class="text-surface-600 normal-case font-normal">(from every tool)</span></h4>
+            <ul class="text-sm space-y-1.5">
+              <li class="flex gap-2"><span class="text-surface-600 font-mono text-xs shrink-0 pt-0.5">04-01</span><span class="text-surface-800">Dynamic sitemap via edge worker for SEO pages <span class="text-green-400/60 text-xs">codex</span></span></li>
+              <li class="flex gap-2"><span class="text-surface-600 font-mono text-xs shrink-0 pt-0.5">03-30</span><span class="text-surface-800">Switched to direct Play Billing for donations <span class="text-yellow-400/60 text-xs">antigravity</span></span></li>
+              <li class="flex gap-2"><span class="text-surface-600 font-mono text-xs shrink-0 pt-0.5">03-28</span><span class="text-surface-800">Fixed push notification key mismatch across platforms <span class="text-blue-400/60 text-xs">claude-code</span></span></li>
+              <li class="flex gap-2"><span class="text-surface-600 font-mono text-xs shrink-0 pt-0.5">03-25</span><span class="text-surface-800">Killed scanner tab before App Store resubmission <span class="text-purple-400/60 text-xs">cowork</span></span></li>
+            </ul>
+          </div>
+          <div class="grid sm:grid-cols-2 gap-5">
+            <div>
+              <h4 class="text-xs uppercase tracking-wider text-surface-700 font-semibold mb-2">Open Questions &amp; Blockers</h4>
+              <ul class="text-sm space-y-1.5 text-surface-800">
+                <li class="flex gap-2"><span class="text-surface-600 shrink-0">&bull;</span>Which agencies to launch with in the EU</li>
+              </ul>
+            </div>
+            <div>
+              <h4 class="text-xs uppercase tracking-wider text-surface-700 font-semibold mb-2">Durable Context</h4>
+              <ul class="text-sm space-y-1.5 text-surface-800">
+                <li class="flex gap-2"><span class="text-surface-600 shrink-0">&bull;</span>All user data stays on-device; only anonymous push tokens leave it</li>
+                <li class="flex gap-2"><span class="text-surface-600 shrink-0">&bull;</span>iOS and Android share one backend</li>
+              </ul>
+            </div>
           </div>
         </div>
       </div>
+
+      <!-- Handoff -->
+      <p class="text-surface-700 text-sm text-center mt-14 mb-4 uppercase tracking-wider font-medium">Then any tool picks it up</p>
+      <div class="terminal-glow rounded-xl overflow-hidden border border-white/5">
+        <div class="flex items-center gap-2 px-4 py-3 bg-surface-200 border-b border-white/5">
+          <span class="w-3 h-3 rounded-full bg-red-500/70"></span>
+          <span class="w-3 h-3 rounded-full bg-yellow-500/70"></span>
+          <span class="w-3 h-3 rounded-full bg-green-500/70"></span>
+          <span class="ml-3 text-xs text-surface-700 font-mono">codex &middot; ~/work/safety-alerts</span>
+        </div>
+        <div class="bg-surface-100 p-5 sm:p-6 font-mono text-sm leading-relaxed overflow-x-auto">
+<pre class="text-surface-800"><span class="text-surface-600">$</span> gyrus context --cwd "$PWD" --tool codex
+<span class="text-green-400">&gt; Gyrus card for safety-alerts &middot; built 12m ago &middot; notes through 04-03</span>
+
+# SafetyAlerts
+## Current Focus
+- App Store resubmission without the scanner tab
+<span class="text-surface-600">...</span>
+
+<span class="text-indigo-400">## Claude Code memory for this directory</span>
+<span class="text-surface-600">### push-keys (updated 04-02)</span>
+Push keys differ per platform; rotate both together.</pre>
+        </div>
+      </div>
+      <p class="text-surface-700 text-xs text-center mt-4 max-w-xl mx-auto">Codex gets the card plus what Claude Code&rsquo;s own memory recorded in this repo. Claude Code gets the card when the work happened somewhere else.</p>
     </div>
   </section>
 
@@ -266,14 +307,14 @@ Done. 269 sessions, 1226 thoughts, 31 project pages.
     <div class="max-w-4xl mx-auto px-6">
       <h2 class="text-3xl sm:text-4xl font-bold text-white mb-16 text-center">How it works</h2>
 
-      <div class="grid md:grid-cols-3 gap-8">
+      <div class="grid sm:grid-cols-2 md:grid-cols-4 gap-8">
         <!-- Step 1 -->
         <div class="text-center">
           <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-purple-500/20 to-indigo-500/20 border border-purple-500/20 flex items-center justify-center mx-auto mb-5">
             <span class="text-purple-400 font-bold font-mono text-lg">1</span>
           </div>
           <h3 class="text-lg font-semibold text-white mb-2">Scans all tools</h3>
-          <p class="text-surface-800 text-sm leading-relaxed">Reads sessions from ten supported AI tools on the same machine, plus Claude Code&rsquo;s own saved memory. Groups by workspace so a Cowork architecture session and a Claude Code build session end up on the same project page.</p>
+          <p class="text-surface-800 text-sm leading-relaxed">Reads sessions from ten AI tools on the machine, plus Claude Code&rsquo;s own saved memory. A Cowork planning session and a Codex build session land on the same project.</p>
         </div>
 
         <!-- Step 2 -->
@@ -282,7 +323,7 @@ Done. 269 sessions, 1226 thoughts, 31 project pages.
             <span class="text-purple-400 font-bold font-mono text-lg">2</span>
           </div>
           <h3 class="text-lg font-semibold text-white mb-2">Extracts</h3>
-          <p class="text-surface-800 text-sm leading-relaxed">An LLM you choose picks out decisions, status changes, and project context. Not code diffs or terminal output.</p>
+          <p class="text-surface-800 text-sm leading-relaxed">A model you choose picks out decisions, status changes, blockers, and constraints. Not code diffs or terminal output.</p>
         </div>
 
         <!-- Step 3 -->
@@ -290,8 +331,17 @@ Done. 269 sessions, 1226 thoughts, 31 project pages.
           <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-purple-500/20 to-indigo-500/20 border border-purple-500/20 flex items-center justify-center mx-auto mb-5">
             <span class="text-purple-400 font-bold font-mono text-lg">3</span>
           </div>
-          <h3 class="text-lg font-semibold text-white mb-2">Merges</h3>
-          <p class="text-surface-800 text-sm leading-relaxed">New insights merge into existing wiki pages. You can edit pages by hand anytime &mdash; your edits are preserved.</p>
+          <h3 class="text-lg font-semibold text-white mb-2">Summarizes</h3>
+          <p class="text-surface-800 text-sm leading-relaxed">Each project&rsquo;s card is rebuilt from the previous card plus what&rsquo;s new. It stays a few KB; the full history stays in the notes log.</p>
+        </div>
+
+        <!-- Step 4 -->
+        <div class="text-center">
+          <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-purple-500/20 to-indigo-500/20 border border-purple-500/20 flex items-center justify-center mx-auto mb-5">
+            <span class="text-purple-400 font-bold font-mono text-lg">4</span>
+          </div>
+          <h3 class="text-lg font-semibold text-white mb-2">Hands off</h3>
+          <p class="text-surface-800 text-sm leading-relaxed"><code class="text-xs font-mono text-purple-300">gyrus context</code> gives any tool the card, a freshness line, and Claude Code&rsquo;s memory for the repo.</p>
         </div>
       </div>
 
@@ -322,9 +372,9 @@ Done. 269 sessions, 1226 thoughts, 31 project pages.
   <section class="py-20 sm:py-24 fade-section">
     <div class="max-w-4xl mx-auto px-6">
       <h2 class="text-3xl sm:text-4xl font-bold text-white mb-4 text-center">Runs automatically</h2>
-      <p class="text-surface-800 text-center mb-12 max-w-2xl mx-auto">A cron job pulls the latest from your GitHub sync, ingests new sessions, and pushes back. No new sessions&thinsp;=&thinsp;no API calls&thinsp;=&thinsp;<span class="text-white font-medium">zero cost</span>. Review pages periodically &mdash; they're drafts, not gospel.</p>
+      <p class="text-surface-800 text-center mb-12 max-w-2xl mx-auto">A scheduled job pulls the latest from your GitHub sync, ingests new sessions, and pushes back. No new sessions&thinsp;=&thinsp;no API calls&thinsp;=&thinsp;<span class="text-white font-medium">zero cost</span>. Skim the cards now and then &mdash; they're drafts, not gospel.</p>
 
-      <div class="grid sm:grid-cols-2 gap-8">
+      <div class="grid md:grid-cols-3 gap-6">
         <!-- Cron -->
         <div class="rounded-xl border border-surface-400 bg-surface-200 p-6">
           <div class="flex items-center gap-3 mb-3">
@@ -344,7 +394,18 @@ Done. 269 sessions, 1226 thoughts, 31 project pages.
             </div>
             <h3 class="text-base font-semibold text-white">Tool skills</h3>
           </div>
-          <p class="text-surface-800 text-sm leading-relaxed">Gyrus installs a <code class="text-xs font-mono text-purple-300">/gyrus</code> slash command into Claude Code and instruction files for Codex. Your AI tools can query the knowledge base mid-session&thinsp;&mdash;&thinsp;context flows both ways.</p>
+          <p class="text-surface-800 text-sm leading-relaxed">Gyrus writes instructions for Codex, Antigravity, and Claude Code, plus a <code class="text-xs font-mono text-purple-300">/gyrus</code> command. Codex fetches the card before project work; Claude Code keeps its own memory first and asks Gyrus when the work crossed tools.</p>
+        </div>
+
+        <!-- Fails loudly -->
+        <div class="rounded-xl border border-surface-400 bg-surface-200 p-6">
+          <div class="flex items-center gap-3 mb-3">
+            <div class="w-8 h-8 rounded-lg bg-purple-500/10 flex items-center justify-center">
+              <svg class="w-4 h-4 text-purple-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>
+            </div>
+            <h3 class="text-base font-semibold text-white">Fails loudly</h3>
+          </div>
+          <p class="text-surface-800 text-sm leading-relaxed">If summaries stop working, the freshness line says so, <code class="text-xs font-mono text-purple-300">gyrus doctor</code> names the cause (down to a model that&rsquo;s no longer installed), and three failed runs in a row trigger a desktop notification.</p>
         </div>
       </div>
 
@@ -409,37 +470,75 @@ Done. 269 sessions, 1226 thoughts, 31 project pages.
 
 
   <!-- ════════════════════════════════════════════════════ -->
-  <!-- Knowledge Compounds -->
+  <!-- Native Memory -->
   <!-- ════════════════════════════════════════════════════ -->
-  <section class="py-24 sm:py-32 fade-section">
+  <section id="native-memory" class="py-24 sm:py-32 fade-section">
     <div class="max-w-3xl mx-auto px-6">
-      <h2 class="text-3xl sm:text-4xl font-bold text-white mb-4 text-center">Pages evolve over time</h2>
-      <p class="text-surface-800 text-center mb-12">Each run adds new context. Pages get more useful as you work, but they're LLM-maintained &mdash; review them like you'd review a junior's draft.</p>
+      <h2 class="text-3xl sm:text-4xl font-bold text-white mb-4 text-center">Works with your tools&rsquo; own memory</h2>
+      <p class="text-surface-800 text-center mb-12 max-w-xl mx-auto">Claude Code&rsquo;s auto-memory and Codex&rsquo;s memories are good at one thing: remembering that tool&rsquo;s work in that repo. Gyrus doesn&rsquo;t compete with them. It connects them.</p>
 
-      <div class="space-y-0 border-l-2 border-purple-500/30 ml-4 sm:ml-8">
-        <div class="pl-6 sm:pl-8 py-4 relative">
-          <div class="absolute left-[-7px] top-5 w-3 h-3 rounded-full bg-purple-500/30 border-2 border-purple-400"></div>
-          <p class="text-xs font-mono text-surface-600 mb-1">Week 1</p>
-          <p class="text-surface-800">"Pulse is a real-time analytics dashboard"</p>
+      <div class="grid sm:grid-cols-2 gap-6">
+        <div class="rounded-xl border border-surface-400 bg-surface-200 p-6">
+          <p class="text-xs uppercase tracking-wider text-surface-700 font-semibold mb-1">Built-in memory</p>
+          <p class="text-surface-600 text-xs font-mono mb-4">one tool &middot; one repo</p>
+          <ul class="space-y-3 text-sm text-surface-800">
+            <li class="flex gap-2 items-start"><span class="text-surface-600 mt-0.5 shrink-0">&bull;</span>Claude Code remembers your Claude Code sessions</li>
+            <li class="flex gap-2 items-start"><span class="text-surface-600 mt-0.5 shrink-0">&bull;</span>Codex remembers your Codex sessions</li>
+            <li class="flex gap-2 items-start"><span class="text-surface-600 mt-0.5 shrink-0">&bull;</span>Neither sees the other &mdash; or your other projects</li>
+          </ul>
         </div>
-        <div class="pl-6 sm:pl-8 py-4 relative">
-          <div class="absolute left-[-7px] top-5 w-3 h-3 rounded-full bg-purple-500/40 border-2 border-purple-400"></div>
-          <p class="text-xs font-mono text-surface-600 mb-1">Week 2</p>
-          <p class="text-surface-800">"Pulse targets early-stage startups. Switched to columnar DB for real-time queries"</p>
-        </div>
-        <div class="pl-6 sm:pl-8 py-4 relative">
-          <div class="absolute left-[-7px] top-5 w-3 h-3 rounded-full bg-purple-500/60 border-2 border-purple-400"></div>
-          <p class="text-xs font-mono text-surface-600 mb-1">Week 3</p>
-          <p class="text-surface-900">"Pulse's moat is sub-second latency + native payment integration"</p>
-        </div>
-        <div class="pl-6 sm:pl-8 py-4 relative">
-          <div class="absolute left-[-7px] top-5 w-3 h-3 rounded-full bg-purple-500 border-2 border-purple-300"></div>
-          <p class="text-xs font-mono text-surface-600 mb-1">Week 4</p>
-          <p class="text-white font-medium">"Pulse needs demo by April 1. Ship churn predictor or cut scope."</p>
+        <div class="rounded-xl border border-purple-500/20 bg-purple-500/[0.04] p-6">
+          <p class="text-xs uppercase tracking-wider text-purple-400 font-semibold mb-1">Gyrus</p>
+          <p class="text-surface-600 text-xs font-mono mb-4">every tool &middot; every project</p>
+          <ul class="space-y-3 text-sm text-surface-800">
+            <li class="flex gap-2 items-start"><span class="text-purple-400 mt-0.5 shrink-0">&bull;</span><span>One card per project, built from all your tools&rsquo; sessions</span></li>
+            <li class="flex gap-2 items-start"><span class="text-purple-400 mt-0.5 shrink-0">&bull;</span><span>Hands Codex the card <em>plus</em> Claude Code&rsquo;s memory for that directory</span></li>
+            <li class="flex gap-2 items-start"><span class="text-purple-400 mt-0.5 shrink-0">&bull;</span><span>Lets Claude Code keep its own memory first and ask only when work happened elsewhere</span></li>
+            <li class="flex gap-2 items-start"><span class="text-purple-400 mt-0.5 shrink-0">&bull;</span><span>Ranks every project by this week&rsquo;s activity in <code class="font-mono text-xs text-purple-300">status.md</code></span></li>
+          </ul>
         </div>
       </div>
 
-      <p class="text-center mt-12 text-sm text-surface-700">Pages work best for: project status, key decisions, timeline, next steps. They're weaker for precise architecture docs or exact dependency versions &mdash; review and edit as needed.</p>
+      <p class="text-center mt-8 text-sm text-surface-700">Only use one tool on one repo? Its built-in memory probably covers you.</p>
+    </div>
+  </section>
+
+
+  <!-- ════════════════════════════════════════════════════ -->
+  <!-- Cards -->
+  <!-- ════════════════════════════════════════════════════ -->
+  <section class="py-24 sm:py-32 fade-section">
+    <div class="max-w-3xl mx-auto px-6">
+      <h2 class="text-3xl sm:text-4xl font-bold text-white mb-4 text-center">Cards stay short and current</h2>
+      <p class="text-surface-800 text-center mb-12 max-w-xl mx-auto">A card is a snapshot of where a project stands, not a history. Each run rewrites it from the previous card plus what&rsquo;s new.</p>
+
+      <div class="grid sm:grid-cols-3 gap-6 mb-10">
+        <div class="rounded-xl border border-white/5 bg-surface-200 p-5">
+          <p class="text-white font-medium text-sm mb-2">Bounded</p>
+          <p class="text-surface-700 text-xs leading-relaxed">Fixed limits per section, so a card stays a few KB however long the project runs. We learned this the hard way: long wiki pages grew until the model couldn&rsquo;t rewrite them, and the busiest projects quietly stopped updating.</p>
+        </div>
+        <div class="rounded-xl border border-white/5 bg-surface-200 p-5">
+          <p class="text-white font-medium text-sm mb-2">Honest about freshness</p>
+          <p class="text-surface-700 text-xs leading-relaxed">Every handoff opens with when the card was built and which notes it covers. If notes are waiting or summaries are failing, it says so and tells the agent to check the repo.</p>
+        </div>
+        <div class="rounded-xl border border-white/5 bg-surface-200 p-5">
+          <p class="text-white font-medium text-sm mb-2">Yours to edit</p>
+          <p class="text-surface-700 text-xs leading-relaxed">Anything under <code class="font-mono">## Manual Notes</code> is kept word for word. The rest is rewritten from evidence each run; the full note history stays in <code class="font-mono">thoughts/</code>.</p>
+        </div>
+      </div>
+
+      <div class="rounded-xl border border-white/5 bg-surface-100 p-5 font-mono text-xs sm:text-sm leading-relaxed overflow-x-auto">
+<pre class="text-surface-800"><span class="text-green-400">&gt; Gyrus card for pulse &middot; built 12m ago
+&gt;   notes through 2026-04-03</span>
+
+<span class="text-surface-600"># a day with the model down:</span>
+<span class="text-yellow-400">&gt; &#9888; Freshness: 14 newer notes are not
+&gt;   summarized yet; summaries have failed
+&gt;   for 3 runs in a row: model 'x' is not
+&gt;   installed. Verify against the repo.</span></pre>
+      </div>
+
+      <p class="text-center mt-10 text-sm text-surface-700">Cards work best for current focus, recent decisions, open questions, and constraints. They&rsquo;re weaker for precise architecture docs or exact dependency versions &mdash; keep those in the repo.</p>
     </div>
   </section>
 
@@ -457,12 +556,12 @@ Done. 269 sessions, 1226 thoughts, 31 project pages.
           <div>
             <p class="text-xs uppercase tracking-wider text-surface-700 font-medium mb-1">Thought extraction</p>
             <p class="text-white font-mono text-lg">~$0.01<span class="text-surface-700 text-sm">/session</span></p>
-            <p class="text-surface-600 text-xs mt-1">GPT-4.1-mini, Haiku, Gemini Flash</p>
+            <p class="text-surface-600 text-xs mt-1">GPT-6 Luna, Haiku, Gemini Flash</p>
           </div>
           <div>
-            <p class="text-xs uppercase tracking-wider text-surface-700 font-medium mb-1">Knowledge merging</p>
-            <p class="text-white font-mono text-lg">~$0.05<span class="text-surface-700 text-sm">/page update</span></p>
-            <p class="text-surface-600 text-xs mt-1">Sonnet, GPT-4.1, Gemini Pro</p>
+            <p class="text-xs uppercase tracking-wider text-surface-700 font-medium mb-1">Card summaries</p>
+            <p class="text-white font-mono text-lg">~$0.05<span class="text-surface-700 text-sm">/card rebuild</span></p>
+            <p class="text-surface-600 text-xs mt-1">Claude Sonnet 5, GPT-6 Sol, Gemini Pro &mdash; or ~30&ndash;50&thinsp;s locally on gemma4:26b</p>
           </div>
         </div>
         <div class="border-t border-white/5 pt-6 flex flex-col sm:flex-row items-center justify-center gap-6">
@@ -492,7 +591,7 @@ Done. 269 sessions, 1226 thoughts, 31 project pages.
   <section id="models" class="py-24 sm:py-32 fade-section">
     <div class="max-w-4xl mx-auto px-6">
       <h2 class="text-3xl sm:text-4xl font-bold text-white mb-4 text-center">You pick the model</h2>
-      <p class="text-surface-800 text-center mb-12 max-w-2xl mx-auto">26 models across Anthropic, OpenAI, Google &mdash; and local inference via Ollama, LM Studio, llama.cpp, MLX, or vLLM. Run <code class="font-mono text-purple-400 text-sm">compare</code> to benchmark them on your own sessions &mdash; it tests extraction quality, generates sample wiki pages, and an AI judge grades each model. You choose both extraction and merge models.</p>
+      <p class="text-surface-800 text-center mb-12 max-w-2xl mx-auto">30 models across Anthropic, OpenAI, Google &mdash; and local inference via Ollama, LM Studio, llama.cpp, MLX, or vLLM. Run <code class="font-mono text-purple-400 text-sm">compare</code> to benchmark them on your own sessions &mdash; it tests extraction quality, generates sample pages, and an AI judge grades each model. You choose the extraction model and the model that writes cards.</p>
 
       <!-- Benchmark table -->
       <div class="rounded-xl border border-white/5 bg-surface-200 overflow-hidden mb-8">
@@ -511,7 +610,7 @@ Done. 269 sessions, 1226 thoughts, 31 project pages.
           </thead>
           <tbody class="text-surface-800">
             <tr class="border-b border-white/[0.03]">
-              <td class="px-6 py-3 text-white font-medium">gpt-4.1-mini <span class="text-xs text-purple-400 font-normal ml-1">default</span></td>
+              <td class="px-6 py-3 text-white font-medium">gpt-4.1-mini</td>
               <td class="px-4 py-3">31</td>
               <td class="px-4 py-3">25s</td>
               <td class="px-4 py-3 font-mono">$0.030</td>
@@ -563,7 +662,8 @@ Done. 269 sessions, 1226 thoughts, 31 project pages.
         </table>
       </div>
 
-      <p class="text-surface-700 text-xs text-center">These are our results. Yours will vary &mdash; <code class="font-mono text-surface-700">compare</code> runs the same benchmark on your sessions and lets you pick.</p>
+      <p class="text-surface-700 text-xs text-center">These are our results from an earlier model generation; the defaults are now GPT-6 Luna for extraction and Claude Sonnet 5 for cards. Yours will vary &mdash; <code class="font-mono text-surface-700">compare</code> runs the same benchmark on your sessions and lets you pick.</p>
+      <p class="text-surface-700 text-xs text-center mt-2">Fully local: on an M2 Ultra, <code class="font-mono text-surface-700">gemma4:26b</code> rebuilds a card in 30&ndash;50 seconds and <code class="font-mono text-surface-700">qwen3.8:27b</code> in 70&ndash;100. Extraction runs on every session, so it wants the faster model.</p>
     </div>
   </section>
 
@@ -640,7 +740,7 @@ Done. 269 sessions, 1226 thoughts, 31 project pages.
         <div class="grid sm:grid-cols-3 gap-4 text-sm">
           <div>
             <p class="text-surface-700 font-medium mb-1">Entity grounding</p>
-            <p class="text-surface-600 text-xs">Named entities in wiki pages must trace back to input thoughts. Ungrounded terms are flagged.</p>
+            <p class="text-surface-600 text-xs">Named entities in generated pages must trace back to input notes. Ungrounded terms are flagged.</p>
           </div>
           <div>
             <p class="text-surface-700 font-medium mb-1">Date verification</p>
@@ -657,12 +757,21 @@ Done. 269 sessions, 1226 thoughts, 31 project pages.
 
 
   <!-- ════════════════════════════════════════════════════ -->
-  <!-- Personal Memory -->
+  <!-- Across Projects -->
   <!-- ════════════════════════════════════════════════════ -->
   <section class="py-16 sm:py-20 fade-section">
-    <div class="max-w-3xl mx-auto px-6 text-center">
-      <h2 class="text-2xl sm:text-3xl font-bold text-white mb-3">Not just projects</h2>
-      <p class="text-surface-800 max-w-xl mx-auto">Working patterns and cross-cutting decisions go into <code class="font-mono text-purple-400 text-sm">~/.gyrus/me.md</code>. Ideas and brainstorms go into <code class="font-mono text-purple-400 text-sm">~/.gyrus/ideas.md</code>. You can review project statuses in <code class="font-mono text-purple-400 text-sm">status.md</code> and edit them by hand.</p>
+    <div class="max-w-3xl mx-auto px-6">
+      <h2 class="text-2xl sm:text-3xl font-bold text-white mb-3 text-center">The view across projects</h2>
+      <p class="text-surface-800 max-w-xl mx-auto text-center mb-8"><code class="font-mono text-purple-400 text-sm">status.md</code> ranks every project by this week&rsquo;s activity and parks junk-looking names under <em>Needs sorting</em>. Ideas go into <code class="font-mono text-purple-400 text-sm">ideas.md</code>; a working-style profile (<code class="font-mono text-purple-400 text-sm">me.md</code>) is opt-in. Override any status by hand.</p>
+      <div class="rounded-xl border border-white/5 bg-surface-100 p-5 font-mono text-xs sm:text-sm leading-relaxed overflow-x-auto">
+<pre class="text-surface-800"><span class="text-white">## 🟢 Active this week (3)</span>
+- <span class="text-white">safety-alerts</span>: active | last: 2026-04-03 | notes 7d: 42, 30d: 180
+- <span class="text-white">pulse</span>: active | last: 2026-04-02 | notes 7d: 17, 30d: 64
+- <span class="text-white">style-engine</span>: active | last: 2026-03-31 | notes 7d: 5, 30d: 90
+
+<span class="text-white">## 🧹 Needs sorting (1)</span>
+- <span class="text-white">untitled-draft-2</span>: unknown | last: 2026-02-11</pre>
+      </div>
     </div>
   </section>
 
@@ -690,7 +799,7 @@ gyrus init --clone &lt;your-repo-url&gt;</pre>
         </div>
         <div class="rounded-xl border border-white/5 bg-surface-200 p-5">
           <p class="text-white font-medium text-sm mb-1">Obsidian</p>
-          <p class="text-surface-700 text-xs">Set your vault path to <code class="font-mono">~/.gyrus/</code> &mdash; pages are plain markdown</p>
+          <p class="text-surface-700 text-xs">Set your vault path to <code class="font-mono">~/.gyrus/</code> &mdash; cards are plain markdown</p>
         </div>
         <div class="rounded-xl border border-white/5 bg-surface-200 p-5">
           <p class="text-white font-medium text-sm mb-1">Notion</p>
@@ -714,15 +823,15 @@ gyrus init --clone &lt;your-repo-url&gt;</pre>
         <div class="rounded-xl border border-green-500/10 bg-green-500/[0.03] p-6">
           <p class="text-xs uppercase tracking-wider text-green-400 font-semibold mb-4">Good fit</p>
           <ul class="space-y-3 text-sm text-surface-800">
+            <li class="flex gap-2 items-start"><span class="text-green-500 mt-0.5 shrink-0">&bull;</span>People who switch between Codex, Claude Code, and other tools on the same projects</li>
             <li class="flex gap-2 items-start"><span class="text-green-500 mt-0.5 shrink-0">&bull;</span>Founders and solo builders juggling multiple projects</li>
-            <li class="flex gap-2 items-start"><span class="text-green-500 mt-0.5 shrink-0">&bull;</span>People using multiple AI coding tools across machines</li>
-            <li class="flex gap-2 items-start"><span class="text-green-500 mt-0.5 shrink-0">&bull;</span>Anyone who makes strategic decisions in AI chats and then forgets them</li>
+            <li class="flex gap-2 items-start"><span class="text-green-500 mt-0.5 shrink-0">&bull;</span>Anyone who makes decisions in AI chats and then forgets them</li>
           </ul>
         </div>
         <div class="rounded-xl border border-surface-400 bg-surface-200 p-6">
           <p class="text-xs uppercase tracking-wider text-surface-700 font-semibold mb-4">Less useful for</p>
           <ul class="space-y-3 text-sm text-surface-700">
-            <li class="flex gap-2 items-start"><span class="mt-0.5 shrink-0">&bull;</span>One repo, one tool, no context loss</li>
+            <li class="flex gap-2 items-start"><span class="mt-0.5 shrink-0">&bull;</span>One repo, one tool &mdash; its built-in memory already covers you</li>
             <li class="flex gap-2 items-start"><span class="mt-0.5 shrink-0">&bull;</span>Teams that already maintain disciplined docs</li>
             <li class="flex gap-2 items-start"><span class="mt-0.5 shrink-0">&bull;</span>Users expecting exact, source-of-truth technical documentation</li>
           </ul>
@@ -742,13 +851,26 @@ gyrus init --clone &lt;your-repo-url&gt;</pre>
       <div class="space-y-3">
         <div class="faq-item rounded-xl border border-white/5 bg-surface-200 overflow-hidden">
           <button class="faq-toggle w-full text-left px-6 py-4 flex items-center justify-between" aria-expanded="false">
+            <span class="text-sm font-medium text-white pr-4">Claude Code and Codex already have memory. Why Gyrus?</span>
+            <svg class="faq-chevron w-5 h-5 text-surface-700 shrink-0 transition-transform duration-200" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"></polyline></svg>
+          </button>
+          <div class="faq-answer px-6">
+            <div class="text-sm text-surface-800 pb-4 leading-relaxed space-y-3">
+              <p>Built-in memory is scoped to one tool, usually one repo. If that&rsquo;s how you work, it may be all you need.</p>
+              <p>Gyrus is for the gaps between tools and projects. Claude Code keeps using its own memory; Gyrus passes that memory to Codex through <code class="font-mono text-xs bg-surface-300 px-1.5 py-0.5 rounded">gyrus context</code>, and turns what happened in Codex, Cursor, or Cowork into a card Claude Code can read. It also gives you one view across every project.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="faq-item rounded-xl border border-white/5 bg-surface-200 overflow-hidden">
+          <button class="faq-toggle w-full text-left px-6 py-4 flex items-center justify-between" aria-expanded="false">
             <span class="text-sm font-medium text-white pr-4">How is this different from Mem0 / OpenMemory?</span>
             <svg class="faq-chevron w-5 h-5 text-surface-700 shrink-0 transition-transform duration-200" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"></polyline></svg>
           </button>
           <div class="faq-answer px-6">
             <div class="text-sm text-surface-800 pb-4 leading-relaxed space-y-3">
               <p>Different approach. Mem0 and OpenMemory store facts as vector embeddings in a database. They're designed as memory APIs for AI apps.</p>
-              <p>Gyrus produces <strong class="text-white">editable markdown wiki pages</strong> organized by project. You can read them, edit them, sync them with any tool. The output is structured documents, not database rows.</p>
+              <p>Gyrus produces <strong class="text-white">editable markdown handoff cards</strong>, one per project. You can read them, edit them, sync them with any tool. The output is short documents, not database rows.</p>
             </div>
           </div>
         </div>
@@ -771,7 +893,7 @@ gyrus init --clone &lt;your-repo-url&gt;</pre>
             <svg class="faq-chevron w-5 h-5 text-surface-700 shrink-0 transition-transform duration-200" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"></polyline></svg>
           </button>
           <div class="faq-answer px-6">
-            <p class="text-sm text-surface-800 pb-4 leading-relaxed">Gyrus currently supports Claude Code, Claude Cowork, OpenAI Codex, Google Antigravity, Cursor, GitHub Copilot, Cline, Continue.dev, Aider, and OpenCode &mdash; plus Claude Code&rsquo;s own saved memory, so distilled facts about you and your projects feed the wiki even when the session itself has rolled off. If another tool writes sessions to disk, contributions are welcome.</p>
+            <p class="text-sm text-surface-800 pb-4 leading-relaxed">Gyrus currently supports Claude Code, Claude Cowork, OpenAI Codex, Google Antigravity, Cursor, GitHub Copilot, Cline, Continue.dev, Aider, and OpenCode &mdash; plus Claude Code&rsquo;s own saved memory, so distilled facts about your projects feed the cards even when the session itself has rolled off. If another tool writes sessions to disk, contributions are welcome.</p>
           </div>
         </div>
 
@@ -787,11 +909,11 @@ gyrus init --clone &lt;your-repo-url&gt;</pre>
 
         <div class="faq-item rounded-xl border border-white/5 bg-surface-200 overflow-hidden">
           <button class="faq-toggle w-full text-left px-6 py-4 flex items-center justify-between" aria-expanded="false">
-            <span class="text-sm font-medium text-white pr-4">Can I edit the wiki pages manually?</span>
+            <span class="text-sm font-medium text-white pr-4">Can I edit the cards?</span>
             <svg class="faq-chevron w-5 h-5 text-surface-700 shrink-0 transition-transform duration-200" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"></polyline></svg>
           </button>
           <div class="faq-answer px-6">
-            <p class="text-sm text-surface-800 pb-4 leading-relaxed">Yes, and you should. Pages are LLM-maintained drafts &mdash; they can be subtly wrong or overgeneralized. Edit them in any text editor. Gyrus preserves your manual edits during the next merge. You can also set project statuses in <code class="font-mono text-xs bg-surface-300 px-1.5 py-0.5 rounded">status.md</code>.</p>
+            <p class="text-sm text-surface-800 pb-4 leading-relaxed">Yes. Cards are rewritten every run, so put anything you want kept under a <code class="font-mono text-xs bg-surface-300 px-1.5 py-0.5 rounded">## Manual Notes</code> heading &mdash; it&rsquo;s copied word for word. Set project statuses in <code class="font-mono text-xs bg-surface-300 px-1.5 py-0.5 rounded">status.md</code>. Cards are model-written drafts and can be subtly wrong; the freshness line tells you how current each one is.</p>
           </div>
         </div>
 
@@ -802,7 +924,7 @@ gyrus init --clone &lt;your-repo-url&gt;</pre>
             <svg class="faq-chevron w-5 h-5 text-surface-700 shrink-0 transition-transform duration-200" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"></polyline></svg>
           </button>
           <div class="faq-answer px-6">
-            <p class="text-sm text-surface-800 pb-4 leading-relaxed">Run <code class="font-mono text-xs bg-surface-300 px-1.5 py-0.5 rounded">gyrus doctor</code>. It checks storage location, ingest freshness, scheduled-job status, GitHub sync, API keys, session sources, backlog, and lockfile in one pass &mdash; then tells you the single most likely root cause. Add <code class="font-mono text-xs bg-surface-300 px-1.5 py-0.5 rounded">--fix</code> to auto-patch the safe ones (removes stale locks, installs cron, runs <code class="font-mono text-xs">brctl download</code>, initializes git, syncs). Every <code class="font-mono text-xs">gyrus</code> run also prints a heartbeat line so silent-failure modes are impossible to miss.</p>
+            <p class="text-sm text-surface-800 pb-4 leading-relaxed">Run <code class="font-mono text-xs bg-surface-300 px-1.5 py-0.5 rounded">gyrus doctor</code>. It checks storage location, ingest freshness, scheduled-job status, GitHub sync, API keys, whether your configured models are actually installed, whether summaries are succeeding, session sources, backlog, and lockfile in one pass &mdash; then tells you the single most likely root cause. Add <code class="font-mono text-xs bg-surface-300 px-1.5 py-0.5 rounded">--fix</code> to auto-patch the safe ones (removes stale locks, installs cron, runs <code class="font-mono text-xs">brctl download</code>, initializes git, syncs). Every <code class="font-mono text-xs">gyrus</code> run also prints a heartbeat line so silent-failure modes are impossible to miss.</p>
           </div>
         </div>
 

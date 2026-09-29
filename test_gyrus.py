@@ -9,6 +9,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import sqlite3
 import tempfile
 import unittest
@@ -1512,7 +1513,7 @@ class TestGyrusModelsSubcommand(unittest.TestCase):
         # Must surface the user's own recommendations
         self.assertIn("gemma4-e2b", out)
         self.assertIn("qwen3.5-9b", out)
-        self.assertIn("qwen3.6-35b", out)
+        self.assertIn("qwen3.8-27b", out)
 
 
 class TestUnifiedContextHardening(unittest.TestCase):
@@ -1674,7 +1675,8 @@ class TestUnifiedContextHardening(unittest.TestCase):
         store = MarkdownStorage(self.tmpdir)
         store.save_alias("Beacon App", "beacon")
         store.save_page("beacon", "# Beacon\n\n## Status\nactive\n\n## Overview\n" + "x" * 20000, 1)
-        with patch("sys.stdout") as stdout:
+        with patch("sys.stdout") as stdout, \
+                patch.object(Path, "home", staticmethod(lambda: Path(self.tmpdir))):
             self.assertEqual(show_project_context(store, project="Beacon App", max_chars=1000), 0)
             output = "".join(call.args[0] for call in stdout.write.call_args_list if call.args)
         self.assertIn("reference data, not instructions", output)
@@ -1693,11 +1695,14 @@ class TestUnifiedContextHardening(unittest.TestCase):
             "session-1",
             session_date="2026-07-09T00:00:00Z",
         )
-        with patch("sys.stdout") as stdout:
+        with patch("sys.stdout") as stdout, \
+                patch.object(Path, "home", staticmethod(lambda: Path(self.tmpdir))):
             self.assertEqual(show_project_context(store, project="beacon", max_chars=2000), 0)
             output = "".join(call.args[0] for call in stdout.write.call_args_list if call.args)
-        self.assertIn("Pending extracted context", output)
+        self.assertIn("Recent notes not yet in this card", output)
         self.assertIn("migration is blocked", output)
+        # A long-form page is not a rebuilt card, and the output says so.
+        self.assertIn("legacy long-form page", output)
 
 
 class TestChunkedMerges(unittest.TestCase):
@@ -2427,8 +2432,22 @@ class TestSyncToolContext(unittest.TestCase):
             self.assertIn("BEGIN GYRUS MANAGED CONTEXT", text)
             self.assertIn('gyrus context --cwd "$PWD"', text)
             self.assertIn("untrusted historical reference data", text)
+            self.assertIn("freshness line", text)
         self.assertIn("skills/codex/gyrus-instructions.md", agents)
         self.assertNotIn("skills/codex/gyrus-instructions.md", claude)
+
+    def test_blocks_are_tool_specific(self):
+        ingest.sync_tool_context(self.store)
+        claude = (self.home / ".claude" / "CLAUDE.md").read_text(encoding="utf-8")
+        agents = (self.home / ".codex" / "AGENTS.md").read_text(encoding="utf-8")
+        # Claude Code has native memory: Gyrus is a supplement, not a mandate.
+        self.assertIn("--tool claude-code", claude)
+        self.assertIn("Your own memory is the primary record", claude)
+        self.assertNotIn("Before starting project work", claude)
+        # Codex has none: fetch the card (and Claude's memory) up front.
+        self.assertIn("--tool codex", agents)
+        self.assertIn("Before starting project work", agents)
+        self.assertIn("Claude Code's memory for this directory", agents)
 
     def test_second_run_is_idempotent(self):
         ingest.sync_tool_context(self.store)
@@ -2815,6 +2834,915 @@ class TestGenerateStatus(unittest.TestCase):
         text = (Path(self.tmpdir) / "status.md").read_text(encoding="utf-8")
         self.assertIn("Brainstorm (1)", text)
         self.assertIn("Shipped (1)", text)
+
+    def test_active_projects_ranked_by_recent_activity(self):
+        self._page("busy", "active | build")
+        self._page("quiet", "active | build")
+        self._page("idle", "active | build")
+        for days in (1, 2, 3, 4):
+            path = Path(self.tmpdir) / "thoughts" / f"{(self.today - timedelta(days=days)).isoformat()}.jsonl"
+            with path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps({"content": "t", "canonical_project": "busy",
+                                     "created_at": f"{(self.today - timedelta(days=days)).isoformat()}T00:00:00Z"}) + "\n")
+        self._activity("quiet", 20)
+        for days in (40, 41, 42, 43):     # enough notes not to look like noise
+            path = Path(self.tmpdir) / "thoughts" / f"{(self.today - timedelta(days=days)).isoformat()}.jsonl"
+            path.write_text(json.dumps({"content": "t", "canonical_project": "idle",
+                                        "created_at": f"{(self.today - timedelta(days=days)).isoformat()}T00:00:00Z"}) + "\n",
+                            encoding="utf-8")
+        ingest.generate_status(self.store)
+        text = (Path(self.tmpdir) / "status.md").read_text(encoding="utf-8")
+        week = text.split("## 🟢 Active this week")[1].split("\n## ")[0]
+        month = text.split("## 🟢 Active this month")[1].split("\n## ")[0]
+        quiet = text.split("## 🟢 Active, quiet 30+ days")[1].split("\n## ")[0]
+        self.assertIn("**busy**", week)
+        self.assertIn("notes 7d: 4", week)
+        self.assertIn("**quiet**", month)
+        self.assertIn("**idle**", quiet)
+        self.assertIn("_This week: busy_", text)
+
+    def test_noise_slugs_go_to_needs_sorting(self):
+        self._page("could-you-please-help-me-sharpen-2", "active | build")
+        self._activity("could-you-please-help-me-sharpen-2", 2)
+        self._page("oneoff", "active | build")
+        self._activity("oneoff", 45)
+        ingest.generate_status(self.store)
+        text = (Path(self.tmpdir) / "status.md").read_text(encoding="utf-8")
+        sorting = text.split("## 🧹 Needs sorting")[1]
+        self.assertIn("could-you-please-help-me-sharpen-2", sorting)
+        self.assertIn("**oneoff**", sorting)
+        self.assertNotIn("Active this week", text)
+
+
+def _card_reply(title="Beacon", focus="Shipping the billing flow",
+                drop=()):
+    sections = {
+        "Status": "active | build",
+        "Overview": "Beacon is a billing tool for clinics.",
+        "Current Focus": f"- {focus}",
+        "Recent Decisions": "- [2026-09-20] Use Postgres (source: codex)",
+        "Open Questions & Blockers": "- Which payment provider? (raised: 2026-09-19)",
+        "Next Steps": "- Wire the invoice export",
+        "Durable Context": "- Clinic data must stay in-region",
+    }
+    body = "\n\n".join(f"## {h}\n{b}" for h, b in sections.items() if h not in drop)
+    return f"# {title}\n\n{body}\n"
+
+
+class TestProjectCards(unittest.TestCase):
+    """Project pages are bounded cards rebuilt from recent notes."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.store = MarkdownStorage(base_dir=self.tmpdir)
+        ingest._reset_merge_results()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+        ingest._reset_merge_results()
+
+    def _notes(self, n, project="beacon", date=None, tags=None):
+        date = date or datetime.now().date().isoformat()
+        thoughts = [{"content": f"Note {i:03d} about {project}", "project": project,
+                     "canonical_project": project, "tags": tags or []}
+                    for i in range(n)]
+        self.store.save_thoughts(thoughts, "codex", f"sess-{project}",
+                                 session_date=f"{date}T12:00:00+00:00")
+        for t in thoughts:
+            t["source"] = "codex"
+            t["created_at"] = f"{date}T12:00:00+00:00"
+        return thoughts
+
+    def test_card_built_and_pending_marked(self):
+        notes = self._notes(5)
+        prompts = []
+
+        def fake_llm(prompt, role="merge", **kwargs):
+            prompts.append((prompt, role, kwargs))
+            return _card_reply()
+
+        state = {}
+        with patch("ingest.call_llm", side_effect=fake_llm):
+            outcomes = ingest.build_project_cards({"beacon": notes}, self.store, state=state)
+        self.assertEqual(outcomes, {"beacon": "llm"})
+        prompt, role, kwargs = prompts[0]
+        self.assertEqual(role, "card")
+        self.assertEqual(kwargs.get("max_tokens"), ingest.CARD_MAX_TOKENS)
+        self.assertIn("Note 004 about beacon", prompt)
+        page, version = self.store.get_page("beacon")
+        self.assertTrue(ingest._is_card(page))
+        self.assertIn("mode=llm", page)
+        self.assertIn("Shipping the billing flow", page)
+        self.assertIn("Notes considered: codex 5", page)
+        self.assertEqual(version, 1)
+        self.assertEqual(len(self.store.get_thoughts(processed=False, skipped=False)), 0)
+        self.assertEqual(state["cards"]["beacon"]["mode"], "llm")
+        self.assertEqual(ingest._merge_results["pages_saved"], {"beacon": 5})
+
+    def test_card_output_is_bounded_whatever_the_model_writes(self):
+        notes = self._notes(3)
+        rambling = _card_reply().replace(
+            "- Clinic data must stay in-region",
+            "\n".join(f"- Durable fact {i} " + "x" * 900 for i in range(40)))
+        with patch("ingest.call_llm", return_value=rambling):
+            ingest.build_project_cards({"beacon": notes}, self.store, state={})
+        page, _ = self.store.get_page("beacon")
+        durable = ingest._section_body(page, "Durable Context")
+        self.assertEqual(durable.count("\n- ") + 1, ingest._CARD_BULLET_LIMITS["Durable Context"])
+        self.assertLess(len(page), 12000)
+
+    def test_missing_section_refilled_not_rejected(self):
+        self._notes(2)
+        previous = ingest._render_card(
+            "# Beacon", "active", "build", "2026-09-01", {},
+            {"Next Steps": "- Keep this step"}, {"built": "2026-09-01T00:00:00", "mode": "llm"})
+        status, stage, sections = ingest._parse_card_response(
+            _card_reply(drop=("Next Steps",)), previous)
+        self.assertEqual(status, "active")
+        self.assertEqual(stage, "build")
+        self.assertEqual(sections["Next Steps"], "- Keep this step")
+
+    def test_heading_aliases_accepted(self):
+        reply = (_card_reply().replace("## Open Questions & Blockers", "## Open Questions")
+                 .replace("## Next Steps", "## Current Sprint / Next Steps"))
+        _, _, sections = ingest._parse_card_response(reply, "")
+        self.assertIn("payment provider", sections["Open Questions & Blockers"])
+        self.assertIn("invoice export", sections["Next Steps"])
+
+    def test_unusable_response_rejected(self):
+        with self.assertRaises(ValueError):
+            ingest._parse_card_response("I could not do that.", "")
+
+    def test_fallback_card_when_model_fails(self):
+        notes = self._notes(3, tags=["decision"])
+        state = {}
+        with patch("ingest.call_llm", side_effect=ValueError("model 'x' is not installed")):
+            outcomes = ingest.build_project_cards({"beacon": notes}, self.store, state=state)
+        self.assertEqual(outcomes, {"beacon": "fallback"})
+        page, _ = self.store.get_page("beacon")
+        self.assertIn("mode=fallback", page)
+        self.assertIn("Automatic summary unavailable", page)
+        self.assertIn("Note 002 about beacon", page)
+        # Nothing is marked processed: the notes wait for a real summary.
+        self.assertEqual(len(self.store.get_thoughts(processed=False, skipped=False)), 3)
+        self.assertEqual(state["cards"]["beacon"]["pending"], 3)
+        self.assertIn("not installed", state["cards"]["beacon"]["last_error"])
+        self.assertIn("beacon", ingest._merge_results["failed"])
+        self.assertEqual(ingest._merge_results["pages_saved"], {})
+
+    def test_legacy_page_archived_on_first_card(self):
+        legacy = ingest.KNOWLEDGE_PAGE_TEMPLATE.format(name="Beacon", date="2026-08-01")
+        legacy = legacy.replace("(No information yet — will be filled as thoughts are merged.)",
+                                "Legacy overview text")
+        self.store.save_page("beacon", legacy, 7)
+        notes = self._notes(2)
+        prompts = []
+        with patch("ingest.call_llm", side_effect=lambda p, **k: prompts.append(p) or _card_reply()):
+            ingest.build_project_cards({"beacon": notes}, self.store, state={})
+        self.assertIn("Legacy overview text", prompts[0])
+        archived = list((Path(self.tmpdir) / "projects.archive").glob("beacon.*.md"))
+        self.assertEqual(len(archived), 1)
+        self.assertIn("Legacy overview text", archived[0].read_text(encoding="utf-8"))
+        page, version = self.store.get_page("beacon")
+        self.assertTrue(ingest._is_card(page))
+        self.assertEqual(version, 8)
+        self.assertEqual({p["slug"] for p in self.store.get_all_pages()}, {"beacon"})
+        self.assertTrue(ingest._sync_path_allowed(f"projects.archive/{archived[0].name}"))
+
+    def test_manual_notes_survive_rebuilds(self):
+        notes = self._notes(1)
+        with patch("ingest.call_llm", return_value=_card_reply()):
+            ingest.build_project_cards({"beacon": notes}, self.store, state={})
+        page, version = self.store.get_page("beacon")
+        self.store.save_page("beacon", page.rstrip() + "\n\n## Manual Notes\nHands off.\n", version)
+        more = self._notes(1, date="2026-09-25")
+        with patch("ingest.call_llm", return_value=_card_reply(focus="Next thing")):
+            ingest.build_project_cards({"beacon": more}, self.store, state={})
+        page, _ = self.store.get_page("beacon")
+        self.assertIn("Next thing", page)
+        self.assertIn("## Manual Notes\nHands off.", page)
+
+    def test_budget_defers_extra_projects(self):
+        batches = {slug: self._notes(n, project=slug)
+                   for slug, n in (("alpha", 3), ("beta", 2), ("gamma", 1))}
+        state = {}
+        with patch("ingest.call_llm", return_value=_card_reply()):
+            outcomes = ingest.build_project_cards(batches, self.store, state=state, max_cards=2)
+        self.assertEqual(outcomes["alpha"], "llm")
+        self.assertEqual(outcomes["beta"], "llm")
+        self.assertEqual(outcomes["gamma"], "deferred")
+        self.assertEqual(state["cards"]["gamma"]["pending"], 1)
+        still_pending = self.store.get_thoughts(processed=False, skipped=False)
+        self.assertEqual({t["canonical_project"] for t in still_pending}, {"gamma"})
+
+    def test_dirty_card_rebuilt_without_new_notes(self):
+        self._notes(2)   # already in the window, not pending
+        state = {"cards_dirty": ["beacon"]}
+        with patch("ingest.call_llm", return_value=_card_reply()) as llm:
+            outcomes = ingest.build_project_cards({}, self.store, state=state)
+        self.assertEqual(outcomes, {"beacon": "llm"})
+        self.assertEqual(llm.call_count, 1)
+        self.assertEqual(state["cards_dirty"], [])
+
+    def test_future_occurred_at_clamped_to_session_date(self):
+        self.assertEqual(ingest._thought_date({
+            "occurred_at": "2026-10-01T10:00:00Z",
+            "created_at": "2026-09-24T12:00:00+00:00"}), "2026-09-24")
+        self.assertEqual(ingest._thought_date({
+            "occurred_at": "2026-09-20T10:00:00Z",
+            "created_at": "2026-09-24T12:00:00+00:00"}), "2026-09-20")
+
+    def test_card_notes_deduplicated_and_bounded(self):
+        rows = [{"id": f"2026-09-2{i % 5}-x{i}", "content": f"Same fact {i % 3}",
+                 "created_at": f"2026-09-2{i % 5}T00:00:00Z", "source": "codex"}
+                for i in range(30)]
+        rows += [{"id": f"2026-09-26-big{i}", "content": "y" * 5000,
+                  "created_at": "2026-09-26T00:00:00Z", "source": "codex"}
+                 for i in range(10)]
+        # New notes: text-duplicates ride along (covered) but are shown once,
+        # and every chunk stays within its size budget.
+        chunks = ingest._chunk_pending_notes(rows)
+        shown = [t for chunk, _ in chunks for t in chunk]
+        self.assertEqual(len({t["content"] for t in shown}), len(shown))
+        self.assertEqual(sum(len(covered) for _, covered in chunks), len(rows))
+        for chunk, _ in chunks:
+            self.assertLessEqual(sum(len(ingest._format_card_note(t)) + 1 for t in chunk),
+                                 ingest.CARD_CHUNK_MAX_CHARS + 700)
+        # Context top-up: de-duplicated against the new notes and bounded.
+        selected = ingest._select_card_notes(chunks[-1][0], rows)
+        contents = [t["content"] for t in selected]
+        self.assertEqual(len(set(contents)), len(contents))
+        total = sum(len(ingest._format_card_note(t)) for t in selected)
+        self.assertLessEqual(total, ingest.CARD_MAX_INPUT_CHARS + 700)
+
+
+class TestCardCatchUpAndSafety(unittest.TestCase):
+    """Backlogs catch up chronologically; nothing is marked processed unseen;
+    a failing model never degrades an existing page."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.store = MarkdownStorage(base_dir=self.tmpdir)
+        ingest._reset_merge_results()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+        ingest._reset_merge_results()
+
+    def _pending(self, n, size=400, project="beacon", start=0):
+        today = datetime.now().date().isoformat()
+        rows = []
+        for i in range(start, start + n):
+            t = {"content": f"Note {i:04d} " + "detail " * (size // 7),
+                 "project": project, "canonical_project": project}
+            self.store.save_thoughts([t], "codex", f"s{i}",
+                                     session_date=f"{today}T{i // 3600 % 24:02d}:{i // 60 % 60:02d}:{i % 60:02d}+00:00")
+            t.update(source="codex",
+                     created_at=f"{today}T{i // 3600 % 24:02d}:{i // 60 % 60:02d}:{i % 60:02d}+00:00")
+            rows.append(t)
+        return rows
+
+    def test_backlog_caught_up_in_chronological_passes(self):
+        notes = self._pending(150)          # ~60KB of notes → several chunks
+        prompts = []
+
+        def fake_llm(prompt, **kwargs):
+            prompts.append(prompt)
+            return _card_reply(focus=f"PASS-{len(prompts)}")
+
+        with patch("ingest.call_llm", side_effect=fake_llm):
+            outcome = ingest.build_project_cards({"beacon": notes}, self.store, state={})
+        self.assertEqual(outcome, {"beacon": "llm"})
+        self.assertGreaterEqual(len(prompts), 3)
+        self.assertIn("Note 0000", prompts[0])
+        self.assertNotIn("Note 0149", prompts[0])
+        self.assertIn("Note 0149", prompts[-1])
+        # Each pass builds on the card the previous pass wrote.
+        self.assertIn("PASS-1", prompts[1])
+        page, version = self.store.get_page("beacon")
+        self.assertIn(f"PASS-{len(prompts)}", page)
+        self.assertEqual(version, len(prompts))
+        self.assertEqual(self.store.get_thoughts(processed=False, skipped=False), [])
+
+    def test_call_budget_leaves_rest_pending(self):
+        notes = self._pending(150)
+        state = {}
+        with patch("ingest.call_llm", return_value=_card_reply()) as llm:
+            ingest.build_project_cards({"beacon": notes}, self.store, state=state,
+                                       max_calls=2)
+        self.assertEqual(llm.call_count, 2)
+        left = self.store.get_thoughts(processed=False, skipped=False)
+        self.assertTrue(left)
+        self.assertEqual(state["cards"]["beacon"]["pending"], len(left))
+        # Oldest notes went first: everything left is newer than anything done.
+        done = [t for t in self.store.get_thoughts() if t.get("processed")]
+        self.assertLess(max(t["created_at"] for t in done),
+                        min(t["created_at"] for t in left))
+
+    def test_only_shown_notes_are_marked(self):
+        notes = self._pending(150)
+        calls = []
+
+        def flaky(prompt, **kwargs):
+            calls.append(prompt)
+            if len(calls) == 2:
+                raise ValueError("model exploded")
+            return _card_reply()
+
+        with patch("ingest.call_llm", side_effect=flaky):
+            outcome = ingest.build_project_cards({"beacon": notes}, self.store, state={})
+        self.assertEqual(outcome["beacon"], "llm")
+        marked = [t for t in self.store.get_thoughts() if t.get("processed")]
+        self.assertTrue(all(t["content"].split(" detail")[0] in calls[0] for t in marked))
+        self.assertIn("beacon", ingest._merge_results["failed"])
+        self.assertIn("beacon", ingest._merge_results["pages_saved"])
+
+    def test_model_failure_leaves_legacy_page_untouched(self):
+        legacy = ingest.KNOWLEDGE_PAGE_TEMPLATE.format(name="Beacon", date="2026-08-01")
+        self.store.save_page("beacon", legacy, 4)
+        notes = self._pending(3)
+        state = {}
+        with patch("ingest.call_llm", side_effect=ValueError("model gone")):
+            outcome = ingest.build_project_cards({"beacon": notes}, self.store, state=state)
+        self.assertEqual(outcome, {"beacon": "failed"})
+        page, version = self.store.get_page("beacon")
+        self.assertFalse(ingest._is_card(page))
+        self.assertEqual(version, 4)
+        self.assertFalse((Path(self.tmpdir) / "projects.archive").exists())
+        self.assertEqual(len(self.store.get_thoughts(processed=False, skipped=False)), 3)
+        self.assertEqual(state["cards"]["beacon"]["mode"], "legacy")
+
+    def test_model_failure_without_new_notes_keeps_card(self):
+        with patch("ingest.call_llm", return_value=_card_reply(focus="Good card")):
+            ingest.build_project_cards({"beacon": self._pending(2)}, self.store, state={})
+        with patch("ingest.call_llm", side_effect=ValueError("down")):
+            outcome = ingest.build_project_cards({}, self.store, state={},
+                                                 rebuild=["beacon"])
+        self.assertEqual(outcome, {"beacon": "failed"})
+        page, version = self.store.get_page("beacon")
+        self.assertIn("Good card", page)
+        self.assertEqual(version, 1)
+
+    def test_version_comment_never_leaks_into_sections(self):
+        with patch("ingest.call_llm", return_value=_card_reply()):
+            ingest.build_project_cards({"beacon": self._pending(2)}, self.store, state={})
+        for i in range(3):
+            with patch("ingest.call_llm", side_effect=ValueError("down")):
+                ingest.build_project_cards({"beacon": self._pending(1, start=10 + i)},
+                                           self.store, state={})
+        page, version = self.store.get_page("beacon")
+        self.assertEqual(page.count("<!-- version:"), 1)
+        self.assertEqual(version, 4)
+        durable = ingest._section_body(page, "Durable Context")
+        self.assertNotIn("- <!--", durable)
+        self.assertIn("in-region", durable)
+
+    def test_dirty_slug_without_page_or_notes_is_not_recreated(self):
+        state = {"cards_dirty": ["gone"]}
+        with patch("ingest.call_llm", return_value=_card_reply()) as llm:
+            outcome = ingest.build_project_cards({}, self.store, state=state)
+        self.assertEqual(outcome, {"gone": "skipped"})
+        self.assertEqual(llm.call_count, 0)
+        self.assertIsNone(self.store.get_page("gone")[0])
+        self.assertEqual(state["cards_dirty"], [])
+
+    def test_new_note_with_old_event_date_is_summarized(self):
+        # 130 already-summarized recent notes, then one new Claude memory fact
+        # dated months ago: it must reach the prompt, not lose to recency.
+        for t in self._pending(130, size=150):
+            self.store.update_thought(t["id"], {"processed": True})
+        fact = {"content": "DURABLE: never run migrations on Fridays",
+                "project": "beacon", "canonical_project": "beacon",
+                "occurred_at": "2026-06-01T00:00:00Z"}
+        now = datetime.now(timezone.utc).isoformat()
+        self.store.save_thoughts([fact], "claude-memory", "m1", session_date=now)
+        fact.update(source="claude-memory", created_at=now)
+        prompts = []
+        with patch("ingest.call_llm",
+                   side_effect=lambda p, **k: prompts.append(p) or _card_reply()):
+            ingest.build_project_cards({"beacon": [fact]}, self.store, state={})
+        self.assertIn("never run migrations on Fridays", prompts[0])
+        row = [t for t in self.store.get_thoughts() if "Fridays" in t["content"]][0]
+        self.assertTrue(row["processed"])
+
+    def test_parser_tolerates_markdown_noise(self):
+        reply = (_card_reply()
+                 .replace("active | build", "**Paused** | waiting on funding")
+                 .replace("- Clinic data must stay in-region",
+                          "### Infra\n1. Clinic data must stay in-region\n2) Postgres only")
+                 + "\n**CHANGE_SUMMARY:** rewrote focus\n")
+        status, stage, sections = ingest._parse_card_response(reply, "")
+        self.assertEqual(status, "paused")
+        self.assertEqual(stage, "waiting on funding")
+        self.assertEqual(sections["Durable Context"],
+                         "- Clinic data must stay in-region\n- Postgres only")
+
+    def test_old_quiet_card_is_not_flagged_stale(self):
+        content = ingest._render_card(
+            "# Beacon", "active", "", "2026-08-01", {}, {},
+            {"built": "2026-08-01T00:00:00", "mode": "llm", "through": "2026-08-01"})
+        self.store.save_page("beacon", content, 1)
+        line, stale = ingest._card_freshness(self.store, "beacon", content)
+        self.assertFalse(stale)
+        self.assertNotIn("⚠", line)
+
+    def test_near_duplicate_pair_in_one_batch_keeps_one(self):
+        ideas = [{"content": "A marketplace for used lab equipment in Africa",
+                  "kind": "idea"},
+                 {"content": "A marketplace for used lab equipment in Africa.",
+                  "kind": "idea"}]
+        self.store.save_thoughts(ideas, "codex", "s-ideas",
+                                 session_date="2026-09-20T00:00:00+00:00")
+        ingest.deduplicate_thoughts(ideas, self.store)
+        self.assertEqual([bool(t.get("skipped")) for t in ideas], [False, True])
+
+    def test_merge_drops_source_slugs_from_rebuild_queue(self):
+        (Path(self.tmpdir) / "projects" / "aa.md").write_text("# aa\n", encoding="utf-8")
+        state = self.store.load_state()
+        state["cards_dirty"] = ["aa", "zz"]
+        self.store.save_state(state)
+        self.assertEqual(run_merge(self.store, ["aa", "bb"], yes=True), 0)
+        self.assertEqual(self.store.load_state()["cards_dirty"], ["bb", "zz"])
+
+
+class TestAnthropicRequestShape(unittest.TestCase):
+    """Current Claude models reject sampling params and think by default."""
+
+    def _call(self, model, reply, **kwargs):
+        sent = {}
+
+        class _Resp:
+            def __init__(self, data): self._d = json.dumps(data).encode()
+            def read(self, *a): return self._d
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+
+        def fake_urlopen(req, timeout=None):
+            sent["body"] = json.loads(req.data)
+            sent["headers"] = {k.lower(): v for k, v in req.header_items()}
+            return _Resp(reply)
+
+        with patch("ingest.urlopen", side_effect=fake_urlopen):
+            text = ingest._call_anthropic(model, [
+                {"role": "system", "content": "sys"},
+                {"role": "user", "content": "hi"}], 4096, "key", **kwargs)
+        return text, sent
+
+    def test_catalog_points_at_current_models(self):
+        self.assertEqual(ingest.MODEL_CATALOG["sonnet"]["model"], "claude-sonnet-5")
+        self.assertEqual(ingest.MODEL_CATALOG["opus"]["model"], "claude-opus-5")
+        self.assertEqual(ingest.MODEL_CATALOG["haiku"]["model"], "claude-haiku-4-5")
+        self.assertEqual(ingest.MODEL_PRICING["sonnet"], (2.00, 10.00))
+
+    def test_sonnet_5_sends_effort_not_temperature_and_skips_thinking(self):
+        reply = {"stop_reason": "end_turn", "content": [
+            {"type": "thinking", "thinking": ""},
+            {"type": "text", "text": "the answer"}]}
+        text, sent = self._call("claude-sonnet-5", reply, effort="low")
+        self.assertEqual(text, "the answer")
+        self.assertNotIn("temperature", sent["body"])
+        self.assertEqual(sent["body"]["output_config"], {"effort": "low"})
+        self.assertGreaterEqual(sent["body"]["max_tokens"], 16000)
+        self.assertNotIn("fallbacks", sent["body"])
+        self.assertEqual(sent["body"]["system"], "sys")
+
+    def test_opus_5_opts_into_default_fallbacks(self):
+        reply = {"stop_reason": "end_turn", "content": [{"type": "text", "text": "ok"}]}
+        _, sent = self._call("claude-opus-5", reply)
+        self.assertEqual(sent["body"]["fallbacks"], "default")
+        self.assertEqual(sent["headers"]["anthropic-beta"], "server-side-fallback-2026-07-01")
+
+    def test_haiku_keeps_temperature_and_no_effort(self):
+        reply = {"stop_reason": "end_turn", "content": [{"type": "text", "text": "ok"}]}
+        _, sent = self._call("claude-haiku-4-5", reply)
+        self.assertEqual(sent["body"]["temperature"], 0)
+        self.assertNotIn("output_config", sent["body"])
+        self.assertEqual(sent["body"]["max_tokens"], 4096)
+
+    def test_refusal_raises_instead_of_returning_nothing(self):
+        reply = {"stop_reason": "refusal", "stop_details": {"category": "cyber"},
+                 "content": []}
+        with self.assertRaises(ValueError) as ctx:
+            self._call("claude-sonnet-5", reply)
+        self.assertIn("refusal: cyber", str(ctx.exception))
+
+    def test_call_llm_passes_effort_by_role(self):
+        seen = []
+        saved = dict(ingest._config)
+        try:
+            ingest._config.update(extract_model="sonnet", merge_model="sonnet",
+                                  keys={"anthropic": "k"})
+            with patch("ingest._call_anthropic",
+                       side_effect=lambda *a, **k: seen.append(k.get("effort")) or "x"):
+                ingest.call_llm("p", role="extract")
+                ingest.call_llm("p", role="card", max_tokens=4096)
+        finally:
+            ingest._config.clear()
+            ingest._config.update(saved)
+        self.assertEqual(seen, ["low", "medium"])
+
+
+class TestOtherProviderRequestShape(unittest.TestCase):
+    """GPT-6 and Gemini 3 reason by default; older models keep temperature."""
+
+    class _Resp:
+        def __init__(self, data): self._d = json.dumps(data).encode()
+        def read(self, *a): return self._d
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    def _send(self, fn, model, reply, **kwargs):
+        sent = {}
+
+        def fake_urlopen(req, timeout=None):
+            sent["body"] = json.loads(req.data)
+            sent["url"] = req.full_url
+            return self._Resp(reply)
+
+        with patch("ingest.urlopen", side_effect=fake_urlopen):
+            text = fn(model, [{"role": "system", "content": "sys"},
+                              {"role": "user", "content": "hi"}], 4096, "key", **kwargs)
+        return text, sent["body"]
+
+    def test_catalog_has_current_models_and_no_dead_aliases(self):
+        self.assertEqual(ingest.MODEL_CATALOG["gemini-flash"]["model"], "gemini-3.8-flash")
+        self.assertEqual(ingest.MODEL_CATALOG["gemini-lite"]["model"], "gemini-3.5-flash-lite")
+        self.assertIn("gpt-6-luna", ingest.MODEL_CATALOG)
+        self.assertNotIn("gpt-5.4-pro", ingest.MODEL_CATALOG)   # Responses-only
+        self.assertEqual(ingest.DEFAULT_EXTRACT_MODEL, "gpt-6-luna")
+        for name in ingest.MODEL_CATALOG:
+            self.assertIn(name, ingest.MODEL_PRICING, name)
+
+    def test_gpt6_uses_reasoning_effort_without_temperature(self):
+        reply = {"choices": [{"message": {"content": "ok"}}]}
+        text, body = self._send(ingest._call_openai, "gpt-6-luna", reply, effort="low")
+        self.assertEqual(text, "ok")
+        self.assertEqual(body["reasoning_effort"], "low")
+        self.assertNotIn("temperature", body)
+        self.assertGreaterEqual(body["max_completion_tokens"], 16000)
+
+    def test_gpt41_keeps_temperature(self):
+        reply = {"choices": [{"message": {"content": "ok"}}]}
+        _, body = self._send(ingest._call_openai, "gpt-4.1-mini", reply, effort="low")
+        self.assertEqual(body["temperature"], 0)
+        self.assertNotIn("reasoning_effort", body)
+        self.assertEqual(body["max_completion_tokens"], 4096)
+
+    def test_gemini3_sets_thinking_level_and_skips_thought_parts(self):
+        reply = {"candidates": [{"content": {"parts": [
+            {"text": "reasoning", "thought": True}, {"text": "answer"}]}}]}
+        text, body = self._send(ingest._call_google, "gemini-3.8-flash", reply, effort="low")
+        self.assertEqual(text, "answer")
+        config = body["generationConfig"]
+        self.assertEqual(config["thinkingConfig"], {"thinkingLevel": "LOW"})
+        self.assertNotIn("temperature", config)
+        self.assertGreaterEqual(config["maxOutputTokens"], 16000)
+        self.assertEqual(body["systemInstruction"], {"parts": [{"text": "sys"}]})
+
+    def test_gemini_empty_answer_raises(self):
+        reply = {"candidates": [{"content": {"parts": []}, "finishReason": "MAX_TOKENS"}]}
+        with self.assertRaises(ValueError) as ctx:
+            self._send(ingest._call_google, "gemini-3.8-flash", reply)
+        self.assertIn("MAX_TOKENS", str(ctx.exception))
+
+
+class TestExtractionJsonRepair(unittest.TestCase):
+    def test_observed_local_model_defects_are_repaired(self):
+        stray = ('[\n  {\n    "content": "Shipped the fix",\n    "project": "gyrus",\n'
+                 '    / "tags": [\n      "decision"\n    ],\n    "kind": "project"\n  }\n]')
+        self.assertEqual(ingest._parse_extracted_thoughts(stray)[0]["tags"], ["decision"])
+        trailing = '[{"content": "A", "tags": ["x",], "kind": "project",},]'
+        self.assertEqual(len(ingest._parse_extracted_thoughts(trailing)), 1)
+        truncated = '[{"content": "A"}, {"content": "B"}, {"content": "C", "pro'
+        self.assertEqual([t["content"] for t in ingest._parse_extracted_thoughts(truncated)],
+                         ["A", "B"])
+
+    def test_garbage_still_fails(self):
+        with self.assertRaises((ValueError, json.JSONDecodeError)):
+            ingest._parse_extracted_thoughts("I could not find anything.")
+
+
+class TestDeadLetterRetry(unittest.TestCase):
+    def test_fix_requeues_dead_letters(self):
+        tmpdir = Path(tempfile.mkdtemp())
+        try:
+            (tmpdir / ".ingest-state.json").write_text(json.dumps({
+                "processed_sessions": {"code:a": 1.0, "code:b": 2.0, "code:keep": 3.0},
+                "dead_letter_sessions": [{"session": "code:a"}, {"session": "code:b"}],
+            }))
+            with patch("ingest._lock_path", return_value=tmpdir / "no.lock"):
+                ok, message = ingest._doctor_fix_dead_letters(tmpdir)
+            self.assertTrue(ok)
+            self.assertIn("queued 2", message)
+            state = json.loads((tmpdir / ".ingest-state.json").read_text())
+            self.assertEqual(state["dead_letter_sessions"], [])
+            self.assertEqual(state["processed_sessions"], {"code:keep": 3.0})
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+    def test_fix_refuses_while_ingest_runs(self):
+        tmpdir = Path(tempfile.mkdtemp())
+        try:
+            lock = tmpdir / "held.lock"
+            lock.write_text("{}")
+            with patch("ingest._lock_path", return_value=lock):
+                ok, message = ingest._doctor_fix_dead_letters(tmpdir)
+            self.assertFalse(ok)
+            self.assertIn("lock", message)
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+class TestSummaryHealth(unittest.TestCase):
+    def setUp(self):
+        ingest._reset_merge_results()
+
+    def tearDown(self):
+        ingest._reset_merge_results()
+
+    def test_failed_runs_counted_and_notified_once(self):
+        state = {}
+        with patch("ingest._notify", return_value=True) as notify:
+            for _ in range(4):
+                ingest._reset_merge_results()
+                ingest._merge_results["failed"]["beacon"] = "model 'x' is not installed"
+                ingest._record_summary_health(state)
+        health = state["summary_health"]
+        self.assertEqual(health["consecutive_failed_runs"], 4)
+        self.assertIn("not installed", health["last_error"])
+        self.assertEqual(notify.call_count, 1)   # cooldown suppresses repeats
+
+    def test_success_resets(self):
+        state = {"summary_health": {"consecutive_failed_runs": 5,
+                                    "failing_since": "2026-09-19T00:00:00"}}
+        ingest._merge_results["pages_saved"]["beacon"] = 2
+        ingest._record_summary_health(state)
+        self.assertEqual(state["summary_health"]["consecutive_failed_runs"], 0)
+        self.assertIsNone(state["summary_health"]["failing_since"])
+
+    def test_idle_run_changes_nothing(self):
+        state = {"summary_health": {"consecutive_failed_runs": 2}}
+        ingest._record_summary_health(state)
+        self.assertEqual(state["summary_health"]["consecutive_failed_runs"], 2)
+
+
+class TestModelDiagnostics(unittest.TestCase):
+    def setUp(self):
+        self.tmpdir = Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_model_installed_matching(self):
+        installed = ["gemma4:26b", "llama3:latest"]
+        self.assertTrue(ingest._model_installed("gemma4:26b", installed))
+        self.assertTrue(ingest._model_installed("llama3", installed))
+        self.assertFalse(ingest._model_installed("qwen3.6:35b-a3b", installed))
+
+    def test_404_names_the_missing_model(self):
+        from urllib.error import HTTPError
+        error = HTTPError("http://localhost:11434/v1/chat/completions", 404,
+                          "Not Found", {}, None)
+        with patch("ingest.urlopen", side_effect=error), \
+                patch("ingest._list_local_models", return_value=["gemma4:26b"]):
+            with self.assertRaises(HTTPError) as ctx:
+                ingest._call_local("qwen3.6:35b-a3b",
+                                   [{"role": "user", "content": "hi"}], 10, None)
+        message = str(ctx.exception.reason)
+        self.assertIn("qwen3.6:35b-a3b' is not installed", message)
+        self.assertIn("gemma4:26b", message)
+        self.assertNotIn("is a local LLM server running", message)
+
+    def test_doctor_flags_missing_local_model(self):
+        (self.tmpdir / "config.json").write_text(json.dumps({
+            "extract_model": "local:gemma4:26b",
+            "merge_model": "local:qwen3.6:35b-a3b"}))
+        with patch("ingest._list_local_models", return_value=["gemma4:26b"]):
+            status, label, msg, hint = ingest._doctor_check_models(self.tmpdir)
+        self.assertEqual((status, label), ("fail", "models"))
+        self.assertIn("merge model 'qwen3.6:35b-a3b'", msg)
+        self.assertIn("gemma4:26b", hint)
+
+    def test_doctor_flags_unreachable_server(self):
+        (self.tmpdir / "config.json").write_text(json.dumps({
+            "extract_model": "local:gemma4:26b", "merge_model": "local:gemma4:26b"}))
+        with patch("ingest._list_local_models", return_value=None):
+            status, _, msg, _ = ingest._doctor_check_models(self.tmpdir)
+        self.assertEqual(status, "fail")
+        self.assertIn("not reachable", msg)
+
+    def test_doctor_summaries_streak(self):
+        runs = [{"timestamp": "2026-09-18T10:00:00", "pages_updated": ["a"], "merge_failed": {}}]
+        runs += [{"timestamp": f"2026-09-2{i}T10:00:00", "pages_updated": [],
+                  "merge_failed": {"a": "model gone"}} for i in range(4)]
+        runs.append({"timestamp": "2026-09-25T10:00:00", "pages_updated": [], "merge_failed": {}})
+        (self.tmpdir / "runs.jsonl").write_text("\n".join(json.dumps(r) for r in runs) + "\n")
+        status, label, msg, hint = ingest._doctor_check_summaries(self.tmpdir)
+        self.assertEqual((status, label), ("fail", "summaries"))
+        self.assertIn("4 run(s) in a row", msg)
+        self.assertIn("2026-09-18 10:00", msg)
+        self.assertIn("model gone", hint)
+
+
+class TestContextHandoff(unittest.TestCase):
+    """`gyrus context`: freshness in-band, Claude memory bridged to other tools."""
+
+    def setUp(self):
+        self.tmpdir = Path(tempfile.mkdtemp())
+        self.home = self.tmpdir / "home"
+        self.repo = self.home / "work" / "beacon"
+        self.repo.mkdir(parents=True)
+        self.store = MarkdownStorage(base_dir=str(self.tmpdir / "kb"))
+        self._home_patch = patch.object(Path, "home", staticmethod(lambda: self.home))
+        self._home_patch.start()
+        memory = (self.home / ".claude" / "projects"
+                  / re.sub(r"[^A-Za-z0-9]", "-", str(self.repo.resolve())) / "memory")
+        memory.mkdir(parents=True)
+        (memory / "MEMORY.md").write_text("- [Deploy](deploy.md) — how we deploy\n")
+        (memory / "deploy.md").write_text(
+            "---\nname: deploy\ndescription: Deploys go through the staging worker first\n"
+            "metadata:\n  type: project\n---\n\nNever deploy straight to prod.\n")
+
+    def tearDown(self):
+        self._home_patch.stop()
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _context(self, **kwargs):
+        import io
+        from contextlib import redirect_stdout
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rc = show_project_context(self.store, **kwargs)
+        return rc, buf.getvalue()
+
+    def _fresh_card(self, mode="llm"):
+        content = ingest._render_card(
+            "# Beacon", "active", "build", "2026-09-25", {"codex": 3},
+            {"Current Focus": "- Invoice export"},
+            {"built": datetime.now().isoformat(timespec="seconds"), "mode": mode,
+             "through": "2026-09-25", "notes": "3"})
+        self.store.save_page("beacon", content, 1)
+
+    def test_fresh_card_has_clean_freshness_line(self):
+        self._fresh_card()
+        rc, out = self._context(project="beacon", tool="claude-code")
+        self.assertEqual(rc, 0)
+        self.assertIn("> Gyrus card for beacon · built", out)
+        self.assertNotIn("⚠", out)
+        self.assertIn("Invoice export", out)
+        self.assertNotIn("gyrus-card:", out)       # metadata comment stripped
+
+    def test_failing_pipeline_is_announced(self):
+        self._fresh_card(mode="fallback")
+        state = self.store.load_state()
+        state["cards"] = {"beacon": {"pending": 12}}
+        state["summary_health"] = {"consecutive_failed_runs": 9,
+                                   "failing_since": "2026-09-19T01:00:00",
+                                   "last_error": "model 'q' is not installed"}
+        self.store.save_state(state)
+        _, out = self._context(project="beacon", tool="codex", cwd=str(self.repo))
+        self.assertIn("⚠ Freshness", out)
+        self.assertIn("12 newer note(s)", out)
+        self.assertIn("9 run(s) in a row since 2026-09-19", out)
+        self.assertIn("without a model", out)
+        log = (self.tmpdir / "kb" / "context-log.jsonl").read_text().splitlines()
+        self.assertTrue(json.loads(log[-1])["stale"])
+        self.assertEqual(json.loads(log[-1])["tool"], "codex")
+
+    def test_claude_memory_bridged_to_codex_only(self):
+        self._fresh_card()
+        _, codex_out = self._context(project="beacon", tool="codex", cwd=str(self.repo))
+        self.assertIn("## Claude Code memory for this directory", codex_out)
+        self.assertIn("Deploys go through the staging worker first", codex_out)
+        self.assertIn("Never deploy straight to prod", codex_out)
+        _, claude_out = self._context(project="beacon", tool="claude", cwd=str(self.repo))
+        self.assertNotIn("Claude Code memory for this directory", claude_out)
+
+    def test_memory_found_from_a_subdirectory(self):
+        sub = self.repo / "src" / "api"
+        sub.mkdir(parents=True)
+        self.assertIsNotNone(ingest._claude_memory_dir_for(str(sub)))
+        self.assertIsNone(ingest._claude_memory_dir_for(str(self.home)))
+
+    def test_bridge_alone_when_no_card(self):
+        rc, out = self._context(cwd=str(self.repo), tool="codex")
+        self.assertEqual(rc, 0)
+        self.assertIn("No Gyrus card matches this directory", out)
+        self.assertIn("Never deploy straight to prod", out)
+
+    def test_cli_passes_tool(self):
+        self._fresh_card()
+        with patch.object(sys, "argv", ["gyrus", "context", "beacon", "--tool", "codex",
+                                        "--cwd", str(self.repo),
+                                        "--base-dir", str(self.tmpdir / "kb")]), \
+                patch("ingest.show_project_context", return_value=0) as show:
+            with self.assertRaises(SystemExit):
+                main()
+        self.assertEqual(show.call_args.kwargs["tool"], "codex")
+
+
+class TestRecoveredBacklogDedup(unittest.TestCase):
+    """A recovered backlog is not re-deduplicated against itself each run."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.store = MarkdownStorage(base_dir=self.tmpdir)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_recovered_thoughts_skip_dedup_and_new_ones_still_checked(self):
+        recovered = [{"id": f"r{i}", "content": f"Recovered fact {i}", "_recovered": True,
+                      "canonical_project": "beacon"} for i in range(300)]
+        new = [{"id": "n1", "content": "A fresh decision about invoices",
+                "canonical_project": "beacon"},
+               {"id": "n2", "content": "A fresh decision about invoices",
+                "canonical_project": "beacon"}]
+        with patch("ingest.SequenceMatcher", wraps=ingest.SequenceMatcher) as matcher:
+            ingest.deduplicate_thoughts(recovered + new, self.store)
+        self.assertLess(matcher.call_count, 10)
+        self.assertFalse(any(t.get("skipped") for t in recovered))
+        self.assertFalse(new[0].get("skipped"))
+        self.assertTrue(new[1].get("skipped"))
+
+    def test_persist_metadata_batches_writes(self):
+        thoughts = [{"content": f"fact {i}", "project": "beacon"} for i in range(50)]
+        self.store.save_thoughts(thoughts, "codex", "s",
+                                 session_date="2026-09-20T00:00:00+00:00")
+        for t in thoughts:
+            t["canonical_project"] = "beacon"
+        thoughts[0]["skipped"] = True
+        thoughts[0]["skip_reason"] = "duplicate"
+        with patch.object(self.store, "update_thought",
+                          wraps=self.store.update_thought) as single:
+            ingest.persist_thought_metadata(thoughts, self.store)
+        self.assertEqual(single.call_count, 0)
+        rows = {t["id"]: t for t in self.store.get_thoughts()}
+        self.assertTrue(all(r["canonical_project"] == "beacon" for r in rows.values()))
+        self.assertTrue(rows[thoughts[0]["id"]]["processed"])
+        self.assertEqual(sum(1 for r in rows.values() if r.get("processed")), 1)
+
+
+class TestSessionSettle(unittest.TestCase):
+    def test_active_resession_deferred_new_session_not(self):
+        now = 1_000_000.0
+        state = {"processed_sessions": {"code:old": now - 3600}}
+        sessions = [
+            {"type": "claude-code", "state_key": "code:old", "mtime": now - 60},
+            {"type": "claude-code", "state_key": "code:new", "mtime": now - 60},
+            {"type": "claude-memory", "state_key": "claude-memory:x", "mtime": now - 60},
+        ]
+        state["processed_sessions"]["claude-memory:x"] = now - 3600
+        keep, deferred = ingest._defer_active_sessions(sessions, state, {}, now=now)
+        self.assertEqual(deferred, 1)
+        self.assertEqual({s["state_key"] for s in keep}, {"code:new", "claude-memory:x"})
+
+    def test_settled_or_long_deferred_sessions_run(self):
+        now = 1_000_000.0
+        state = {"processed_sessions": {"code:quiet": now - 7200,
+                                        "code:marathon": now - 7 * 3600}}
+        sessions = [
+            {"type": "codex", "state_key": "code:quiet", "mtime": now - 3600},
+            {"type": "codex", "state_key": "code:marathon", "mtime": now - 60},
+        ]
+        keep, deferred = ingest._defer_active_sessions(sessions, state, {}, now=now)
+        self.assertEqual(deferred, 0)
+        self.assertEqual(len(keep), 2)
+
+
+class TestStorageBatchHelpers(unittest.TestCase):
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.store = MarkdownStorage(base_dir=self.tmpdir)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_update_thoughts_and_since(self):
+        ids = []
+        for date in ("2026-09-01", "2026-09-20"):
+            ids += self.store.save_thoughts(
+                [{"content": f"a {date}", "project": "p"}, {"content": f"b {date}", "project": "p"}],
+                "codex", "s", session_date=f"{date}T00:00:00+00:00")
+        self.store.update_thoughts(ids[:3], {"processed": True})
+        pending = self.store.get_thoughts(processed=False)
+        self.assertEqual([t["id"] for t in pending], [ids[3]])
+        recent = self.store.get_thoughts(since="2026-09-10")
+        self.assertEqual({t["created_at"][:10] for t in recent}, {"2026-09-20"})
+
+    def test_run_merge_into_card_marks_rebuild(self):
+        card = ingest._render_card("# Clickory", "active", "", "2026-09-01", {}, {},
+                                   {"built": "2026-09-01T00:00:00", "mode": "llm"})
+        self.store.save_page("clickory", card, 1)
+        (Path(self.tmpdir) / "projects" / "clickron.md").write_text(
+            "# clickron\n\n## Key Decisions\n- [2026-07-02] Shard decision (source: codex)\n",
+            encoding="utf-8")
+        self.assertEqual(run_merge(self.store, ["clickron", "clickory"], yes=True), 0)
+        target, _ = self.store.get_page("clickory")
+        carried = ingest._section_body(target, ingest._CARD_CARRY_HEADING)
+        self.assertIn("Shard decision", carried)
+        self.assertNotIn("## Key Decisions", target)
+        self.assertEqual(self.store.load_state()["cards_dirty"], ["clickory"])
 
 
 if __name__ == "__main__":

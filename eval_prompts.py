@@ -546,7 +546,7 @@ def run_eval(args, base_dir, config):
 
     results = {
         "timestamp": datetime.now().isoformat(),
-        "extract_model": config.get("extract_model", "gpt-4.1-mini"),
+        "extract_model": config.get("extract_model", "gpt-6-luna"),
         "merge_model": config.get("merge_model", "sonnet"),
         "extraction": {},
         "merge": {},
@@ -695,7 +695,7 @@ def _estimate_cost(results, config):
     import ingest
     ext_count = len([k for k in results.get("extraction", {}) if not k.startswith("_")])
     merge_count = len([k for k in results.get("merge", {}) if not k.startswith("_")])
-    ext_model = config.get("extract_model", "gpt-4.1-mini")
+    ext_model = config.get("extract_model", "gpt-6-luna")
     merge_model = config.get("merge_model", "sonnet")
     ext_cost = ext_count * ingest._COST_PER_CALL.get(ext_model, 0.01)
     merge_cost = merge_count * ingest._COST_PER_CALL.get(merge_model, 0.03)

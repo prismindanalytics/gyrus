@@ -44,39 +44,40 @@ Building your knowledge base...
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```
 
-Open any project page and see structured knowledge — not a chat log dump, but a real wiki:
+Open any project and see a short handoff card — not a chat log dump — that an agent in any tool can pick up from:
 
 ```markdown
 # Pulse
+<!-- gyrus-card: built=2026-04-03T14:02:11; mode=llm; through=2026-04-03; notes=37 -->
 
 ## Status
-active | post-MVP | Priority: P1 | Division: Analytics
-Last activity: 2026-04-03 | Machine: studio.local
+active | post-MVP
+Last activity: 2026-04-03 | Notes considered: codex 21, claude-code 12, cowork 4
 
 ## Overview
-A real-time analytics dashboard for early-stage startups. Sub-second
-query performance on a columnar database. Positions as a growth
-intelligence platform with embeddable widgets and churn prediction.
+A real-time analytics dashboard for early-stage startups: sub-second queries on a
+columnar database, embeddable widgets, churn prediction.
 
-## Architecture & Technical Stack
-React frontend + columnar DB backend. Streaming ingestion for
-real-time event processing. Custom materialized views for sub-second
-aggregations...
+## Current Focus
+- Public launch prep: website redesign and dynamic sitemap for SEO pages
 
-## Key Decisions
-- [2026-03-20] Killed two side projects to focus on Pulse (source: cowork)
-- [2026-03-24] Churn predictor confirmed as feature, not standalone product (source: claude-code)
-- [2026-03-28] Switched to edge deployment for lower latency (source: antigravity)
+## Recent Decisions
 - [2026-04-01] Dynamic sitemap for SEO pages (source: codex)
+- [2026-03-28] Switched to edge deployment for lower latency (source: antigravity)
+- [2026-03-24] Churn predictor is a feature, not a standalone product (source: claude-code)
 
-## Timeline & History
-- [2026-03-20] Initial concept from Cowork brainstorm session
-- [2026-03-24] Architecture decision: columnar DB with streaming ingestion
-- [2026-03-28] UI polish pass, mobile responsiveness
-- [2026-04-01] Website redesigned, public launch prep
+## Open Questions & Blockers
+- Pricing for the embeddable widget tier (raised: 2026-03-30)
+
+## Next Steps
+- Mobile responsiveness pass before launch
+
+## Durable Context
+- Columnar DB with streaming ingestion; aggregations rely on materialized views
+- Two side projects were killed on 2026-03-20 to focus on Pulse
 ```
 
-This is what Gyrus builds automatically from your scattered AI sessions. Pages are LLM-maintained drafts — review and edit them like any other doc.
+This is what Gyrus builds automatically from your scattered AI sessions. Cards are LLM-written drafts rebuilt every run — add a `## Manual Notes` section for anything you want kept verbatim.
 
 ---
 
@@ -89,17 +90,17 @@ Your AI tools                          Your knowledge base
 │ Codex / Cursor   │──┤  Gyrus         │   beacon.md            │
 │ Copilot / Cline  │──┤────────────▶   │   me.md                │
 │ Aider / others   │──┘  Extract       │   ideas.md             │
-│ (any machine)    │     → Merge       │ ~/.gyrus/status.md     │
+│ (any machine)    │     → Summarize   │ ~/.gyrus/status.md     │
 │                  │                   │ ~/.gyrus/cross-cutting.md│
 └─────────────────┘                    └────────────────────────┘
 ```
 
 1. **Scans** sessions from 10 AI coding tools: Claude Code, Claude Cowork, OpenAI Codex, Google Antigravity, Cursor, GitHub Copilot, Cline, Continue.dev, Aider, and OpenCode
-2. **Extracts** strategic decisions, insights, status changes (GPT-4.1 Mini by default — run `gyrus compare` to benchmark on your data)
+2. **Extracts** strategic decisions, insights, status changes (GPT-6 Luna by default — run `gyrus compare` to benchmark on your data)
 3. **Resolves** project names ("Pulse App" = "pulse" = "Pulse") via fuzzy matching
 4. **Deduplicates** across sessions and machines
-5. **Merges** new knowledge into existing wiki pages (stronger model — Sonnet by default)
-6. **Refines** — each merge pass makes pages deeper, not just longer (knowledge compounds)
+5. **Summarizes** each active project into a short handoff card, rebuilt from the previous card plus recent notes (one bounded model call per project — Claude Sonnet 5 by default, or a local model)
+6. **Hands off** — `gyrus context` serves the card with a freshness line, plus Claude Code's own memory for the directory when another tool asks
 
 No database or Gyrus account. Use a local model for a fully local workflow, or connect the cloud LLM provider you choose. The knowledge base itself remains plain markdown on your machine unless you enable sync.
 
@@ -118,10 +119,11 @@ After install, Gyrus creates:
   thoughts/            # Raw extracted thoughts (JSONL, one file per day)
     2025-04-01.jsonl
     2025-04-02.jsonl
-  projects/            # Knowledge pages (one markdown file per project)
+  projects/            # Handoff cards (one markdown file per project)
     beacon.md
     atlas.md
     wanderly.md
+  projects.archive/    # Long-form pages retired when a project got its first card
   me.md                # Personal patterns, preferences, working style
   ideas.md             # Standalone ideas and brainstorms
   status.md            # Quick summary of all projects
@@ -131,9 +133,9 @@ After install, Gyrus creates:
   ingest.log           # Log output from scheduled runs
 ```
 
-**projects/** — One wiki page per project, iteratively refined with each new session. These are the core output — structured knowledge that compounds over time.
+**projects/** — One short handoff card per project, rebuilt each run from the previous card plus recent notes. Its size stays bounded however much history accumulates.
 
-**thoughts/** — Raw extracted thoughts before merging. JSONL format, one file per day. Useful for debugging or reviewing what was extracted.
+**thoughts/** — Every extracted note, JSONL, one file per day. This is the full record; cards summarize the recent part of it.
 
 **me.md** — Personal memory: your working patterns, tool preferences, recurring strategies. Things that aren't about a specific project but about how you work. Personal profiling is opt-in (`enable_personal_profile` in `config.json`).
 
@@ -184,16 +186,16 @@ Gyrus works with any supported LLM. Configure anytime in `~/.gyrus/config.json`:
 
 ```json
 {
-  "extract_model": "gpt-4.1-mini",
+  "extract_model": "gpt-6-luna",
   "merge_model": "sonnet"
 }
 ```
 
 **Available model presets (26, plus any `local:<model-tag>`):**
-- **Anthropic:** `haiku` (Claude Haiku 4.5), `sonnet` (Claude Sonnet 4.6), `opus` (Claude Opus 4.6)
-- **OpenAI:** `gpt-4.1-mini`, `gpt-4.1-nano`, `gpt-4.1`, `gpt-5.4-mini`, `gpt-5.4-nano`, `gpt-5.4`, `gpt-5.4-pro`, `o3`, `o4-mini`
-- **Google:** `gemini-flash` (Gemini 3 Flash), `gemini-lite` (Gemini 3.1 Flash Lite), `gemini-pro` (Gemini 3.1 Pro)
-- **Local catalog:** `gemma4-e2b`, `gemma4-e4b`, `qwen3.5-9b`, `gemma4-26b`, `qwen3.6-35b`, `llama3.3`, `qwen3`, `qwen3-coder`, `deepseek-v3`, `gpt-oss`, `gemma3`
+- **Anthropic:** `haiku` (Claude Haiku 4.5), `sonnet` (Claude Sonnet 5), `opus` (Claude Opus 5), `fable` (Claude Fable 5.1)
+- **OpenAI:** `gpt-6-luna`, `gpt-6-sol`, `gpt-6-astra`, `gpt-5.4-mini`, `gpt-5.4-nano`, `gpt-5.4`, `gpt-4.1-mini`, `gpt-4.1` (`gpt-4.1-nano` and `o4-mini` retire 2026-10-23, `o3` on 2026-12-11)
+- **Google:** `gemini-flash` (Gemini 3.8 Flash), `gemini-lite` (Gemini 3.5 Flash-Lite), `gemini-pro` (Gemini 3.1 Pro, preview)
+- **Local catalog:** `gemma4-e2b`, `gemma4-e4b`, `qwen3.5-9b`, `gemma4-26b`, `qwen3.8-27b`, `qwen3.6-35b`, `llama3.3`, `qwen3`, `qwen3-coder`, `deepseek-v3`, `gpt-oss`, `gemma3`
 
 Or pass any raw model ID (e.g. `claude-sonnet-4-20250514`).
 
@@ -201,7 +203,7 @@ Or pass any raw model ID (e.g. `claude-sonnet-4-20250514`).
 
 ```json
 {
-  "extract_model": "gpt-4.1-mini",
+  "extract_model": "gpt-6-luna",
   "merge_model": "sonnet",
   "excluded_tools": [],
   "redact_sensitive_data": true,
@@ -220,8 +222,8 @@ SMTP_PASSWORD=...             # only if email digests use SMTP
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `extract_model` | `gpt-4.1-mini` | Model for extracting thoughts from sessions |
-| `merge_model` | `sonnet` | Model for merging thoughts into knowledge pages (stronger) |
+| `extract_model` | `gpt-6-luna` | Model for extracting thoughts from sessions |
+| `merge_model` | `sonnet` | Model that writes project cards (and the ideas page) |
 | `excluded_tools` | `[]` | Tools to skip during ingestion (e.g. `["antigravity"]`). Valid keys include the 10 session tools plus `claude-memory` (Claude Code auto-memory) |
 | `repo_groups` | `{}` | Map repo folder names to canonical project names (e.g. `{"backend": "myapp", "frontend": "myapp"}`) |
 | `allow_public_sync` | `false` | Explicitly permit syncing a GitHub repository marked public (private is strongly recommended) |
@@ -231,6 +233,11 @@ SMTP_PASSWORD=...             # only if email digests use SMTP
 | `include_global_memory` | `false` | Also include global tool guidance when memory context is enabled |
 | `include_cowork_outputs` | `false` | Opt in to Cowork output artifacts (may contain arbitrary data) |
 | `enable_personal_profile` | `false` | Allow meta/work-style thoughts to populate `me.md` |
+| `cards.max_per_run` | `12` | Project cards rebuilt per run, busiest first; the rest wait for the next run |
+| `cards.max_calls_per_run` | `60` | Model calls spent on cards per run (a backlog takes several passes) |
+| `session_settle_minutes` | `45` | A session already extracted once waits until it has been quiet this long before it is extracted again |
+| `session_max_defer_hours` | `6` | …but is never held back longer than this while it keeps changing |
+| `notifications` | `true` | Desktop notification (macOS) after 3 consecutive runs in which every summary failed |
 | `digest.enabled` | `false` | Enable daily digest after each ingestion run |
 | `digest.email` | — | Email address to send digest to |
 | `digest.provider` | `"resend"` | Email provider: `"resend"` or `"smtp"` |
@@ -248,7 +255,7 @@ Keep provider credentials in `.env`, not `config.json`, because `config.json` is
 | `gyrus init` | First-time setup wizard (storage, API key, GitHub, cron) |
 | `gyrus init --clone <url>` | Second-machine setup — pulls an existing knowledge base |
 | `gyrus doctor` | Diagnose ingest health (storage, sync, backlog, API keys) |
-| `gyrus context --cwd PATH` | Print bounded, shared project context for Claude/Codex handoffs |
+| `gyrus context --cwd PATH [--tool codex]` | Print the project's handoff card with a freshness line. With a `--tool` other than `claude-code`, Claude Code's native memory for that directory is appended |
 | `gyrus models` | Show current extract/merge models, list cloud + local options, switch interactively |
 | `gyrus doctor --fix` | Same, plus auto-patch safe things: stale locks, missing cron, dataless files, git init/sync |
 | `gyrus sync` | Manually pull + push the GitHub remote |
@@ -263,11 +270,11 @@ Keep provider credentials in `.env`, not `config.json`, because `config.json` is
 | `gyrus curate` | Create golden test fixtures from real sessions |
 | `gyrus update` | Update Gyrus code to the latest version from GitHub |
 | `--dry-run` | Run extraction without saving; it still sends eligible text to the configured model |
-| `--backfill` | Rebuild knowledge pages from existing thoughts |
+| `--backfill` | Rebuild every project card now (converts remaining long-form pages) |
 | `--no-autosync` | Skip the automatic git pull/push this run |
 | `--base-dir PATH` | Use a custom base directory (default: `~/.gyrus`) |
 
-`gyrus context` is intentionally read-only and does not pull from GitHub or call a model; run normal ingestion first when you need to refresh a synced page.
+`gyrus context` does not pull from GitHub or call a model; run normal ingestion first when you need to refresh a synced card. It appends one line per call to `~/.gyrus/context-log.jsonl` (local, never synced) so `gyrus doctor` can report how often agents use it and how often the card was stale.
 
 ---
 
@@ -319,34 +326,36 @@ If a tool isn't installed, Gyrus skips it silently — no errors, no cost.
 
 ---
 
-## How Knowledge Pages Work
+## How Project Cards Work
 
-Each project gets a wiki-style markdown page that is **iteratively refined** — not appended to.
+Each project has a **handoff card**: a short brief, rebuilt every run, that lets
+an agent in any tool pick up the work without rereading chat logs.
 
-### The merge process
+### The rebuild
 
-1. New thoughts arrive for a project (e.g. "beacon")
-2. Gyrus reads the existing `projects/beacon.md` page
-3. Sends both to the merge model: "Here's the current page and new thoughts. Update the page."
-4. The model integrates new information — updating sections, adding decisions, resolving contradictions
-5. The updated page is saved with an incremented version number
+1. New notes arrive for a project (e.g. "beacon")
+2. Gyrus reads the current card plus the new notes, topped up with the project's other notes from the last 14 days (de-duplicated, size-bounded)
+3. One model call writes the new card: Status, Overview, Current Focus, Recent Decisions, Open Questions & Blockers, Next Steps, Durable Context
+4. The output is validated and clipped to fixed limits, so a card stays a few KB however long the project runs
+5. The new notes that went in are marked processed; the full history stays in `thoughts/`
 
-### What makes this different from appending
+Earlier versions merged notes into an ever-growing wiki page and re-emitted the whole page each time. Pages grew into the model's output limit, lost their last section, failed validation, and stopped updating — on exactly the busiest projects. Cards keep the output bounded instead. The first time a project with a long-form page gets a card, the old page is condensed into it and archived to `projects.archive/`.
 
-- **Week 1:** "Pulse is a real-time analytics dashboard"
-- **Week 2:** The Overview section now includes target market and competitive positioning
-- **Week 3:** Architecture section added, Key Decisions updated with kill/commit choices
-- **Week 4:** Timeline refined, contradictions resolved, stale info removed
+### When the model is unavailable
 
-The page gets **deeper and more accurate** over time, not just longer. Old information that's been superseded gets updated in place.
+If the summary call fails (server down, model not installed, bad output), Gyrus still rewrites the card without a model: the previous card's durable sections plus the newest raw notes, marked as unsummarized. Those notes stay pending and are summarized once the model is back. Three failed runs in a row trigger a desktop notification (macOS; set `"notifications": false` to disable), and `gyrus context` and `gyrus doctor` both say so.
 
-### Manual edits are preserved
+### Freshness line
 
-You can edit any knowledge page by hand. Gyrus reads the current page before each merge, so your manual edits are treated as part of the existing knowledge and built upon.
+`gyrus context` opens with one line saying when the card was built and which notes it covers. If the card is stale, was written without a model, has unsummarized notes, or summaries are failing, the line says so and tells the agent to verify against the repo.
 
-### Version tracking
+### Manual edits
 
-Each page has a hidden version comment at the bottom (`<!-- version: N -->`). You can track how many merge passes have refined it.
+Add a `## Manual Notes` section to any card for text that must survive rebuilds — it is copied verbatim. Everything else is rewritten each run.
+
+### Budget and catch-up
+
+Each run rebuilds at most `cards.max_per_run` cards (default 12, busiest projects first) using at most `cards.max_calls_per_run` model calls (default 60). A project with more new notes than fit in one prompt — say, after an outage — catches up in several chronological passes within the run, each building on the last. Anything that doesn't fit stays pending for the next run, and a note is only marked processed once a pass has actually summarized it.
 
 ---
 
@@ -439,7 +448,7 @@ brew install ollama          # macOS
 
 # 2. Pull models (extraction wants fast + JSON-compliant; merge wants reasoning)
 ollama pull qwen3.5:9b       # ~6 GB, strong JSON compliance — extraction
-ollama pull gemma4:26b       # ~18 GB reasoning — merge
+ollama pull gemma4:26b       # ~18 GB — writes cards (~30-50 s each on an M2 Ultra)
 
 # 3. Start the server (or leave it running)
 ollama serve &
@@ -466,7 +475,7 @@ Model can be any catalog name or `local:<any-ollama-tag>` for arbitrary models.
 |---|---|---|---|
 | 8–16 GB RAM | `gemma4-e2b` or `gemma4-e4b` | same | `gemma4-e2b`, `gemma4-e4b` |
 | 16 GB RAM | `qwen3.5-9b` | same | `qwen3.5-9b` |
-| 24+ GB RAM | `qwen3.5-9b` | `gemma4-26b` or `qwen3.6-35b` | `qwen3.6-35b` is MoE with ~3B active — fast inference |
+| 24+ GB RAM | `qwen3.5-9b` or `gemma4-26b` | `gemma4-26b` or `qwen3.8-27b` | `qwen3.8-27b` is the newest and writes the sharpest cards, ~1.5-3x slower than `gemma4-26b`; extraction runs on every session, so keep it on the faster model |
 
 Pull with `ollama pull <tag>` (e.g. `ollama pull gemma4:e2b`), then:
 
