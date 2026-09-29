@@ -10,7 +10,7 @@ Knowledge pages are local markdown files by default.
 https://gyrus.sh
 """
 
-__version__ = "2026.9.28.2"
+__version__ = "2026.9.29.1"
 
 import argparse
 import atexit
@@ -2197,6 +2197,13 @@ def _repair_model_json(text):
     fixed = re.sub(r"(?m)^[ \t]*//.*$", "", text)
     # A line that should start with a key or string but has junk in front.
     fixed = re.sub(r'(?m)^([ \t]*)[^\s"\[\]{},:0-9tfn-][^\s"]*[ \t]+(?=")', r"\1", fixed)
+    # A key whose opening quote was replaced by junk: `    _tags": [`.
+    fixed = re.sub(r'(?m)^([ \t]*)[^\s"\[\]{}:,A-Za-z]{0,2}([A-Za-z_]\w*)"(\s*:)',
+                   _repair_json_key, fixed)
+    # Junk-only lines, and junk glued to a brace: `  /`, `  _{`.
+    fixed = re.sub(r"(?m)^[ \t]*[^\s\w\"{}\[\],:]{1,3},?[ \t]*$", "", fixed)
+    fixed = re.sub(r'(?m)^([ \t]*)[^\s"{}\[\]\w-]{1,2}(?=[{}\[\]])', r"\1", fixed)
+    fixed = re.sub(r",(\s*,)+", ",", fixed)
     fixed = re.sub(r",(\s*[}\]])", r"\1", fixed)
     stripped = fixed.rstrip()
     if stripped.startswith("[") and not stripped.endswith("]"):
@@ -2204,6 +2211,53 @@ def _repair_model_json(text):
         if last > 0:
             fixed = re.sub(r",\s*$", "", stripped[:last + 1]) + "]"
     return fixed
+
+
+_THOUGHT_KEYS = ("content", "project", "tags", "kind", "occurred_at")
+
+
+def _repair_json_key(match):
+    indent, key, colon = match.group(1), match.group(2), match.group(3)
+    for known in _THOUGHT_KEYS:          # `_tags` → `tags`
+        if key != known and key.endswith(known):
+            key = known
+            break
+    return f'{indent}"{key}"{colon}'
+
+
+def _salvage_json_objects(text):
+    """Every top-level object in a JSON array that parses on its own.
+
+    Last resort after repair: one corrupted object costs that note, not the
+    whole session's extraction.
+    """
+    objects, depth, start, in_string, escaped = [], 0, None, False, False
+    for i, ch in enumerate(text):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}" and depth:
+            depth -= 1
+            if depth == 0 and start is not None:
+                try:
+                    obj = json.loads(_repair_model_json(text[start:i + 1]))
+                except json.JSONDecodeError:
+                    obj = None
+                if isinstance(obj, dict):
+                    objects.append(obj)
+                start = None
+    return objects
 
 
 def _parse_extracted_thoughts(response_text):
@@ -2216,11 +2270,14 @@ def _parse_extracted_thoughts(response_text):
     response_text = _strip_json_fences(response_text or "")
     try:
         parsed = json.loads(response_text)
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as strict_error:
         repaired = _repair_model_json(response_text)
-        if repaired == response_text:
-            raise
-        parsed = json.loads(repaired)   # still invalid → the original error class
+        try:
+            parsed = json.loads(repaired)
+        except json.JSONDecodeError:
+            parsed = _salvage_json_objects(repaired)
+            if not parsed:
+                raise strict_error
     if isinstance(parsed, dict) and isinstance(parsed.get("thoughts"), list):
         parsed = parsed["thoughts"]
     if not isinstance(parsed, list):

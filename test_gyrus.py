@@ -3417,9 +3417,27 @@ class TestExtractionJsonRepair(unittest.TestCase):
         self.assertEqual([t["content"] for t in ingest._parse_extracted_thoughts(truncated)],
                          ["A", "B"])
 
+    def test_corrupted_key_quote_and_junk_lines(self):
+        live = ('[\n  {\n    "content": "Fixed leverage ordering",\n    "project": "calledthird",\n'
+                '    _tags": [\n      "decision",\n      "bugfix"\n    ],\n    "kind": "project"\n  }\n]')
+        parsed = ingest._parse_extracted_thoughts(live)
+        self.assertEqual(parsed[0]["tags"], ["decision", "bugfix"])
+        for raw in ('[\n  {"content": "A"},\n  /\n  {"content": "B"}\n]',
+                    '[\n  {"content": "A"},\n  _{"content": "B"}\n]',
+                    '[\n  {"content": "A"},,\n  {"content": "B"}\n]'):
+            self.assertEqual([t["content"] for t in ingest._parse_extracted_thoughts(raw)],
+                             ["A", "B"], raw)
+
+    def test_hopeless_object_is_dropped_not_the_session(self):
+        raw = '[\n  {"content": "A"},\n  {"content": "B" "x" : ::},\n  {"content": "C"}\n]'
+        self.assertEqual([t["content"] for t in ingest._parse_extracted_thoughts(raw)],
+                         ["A", "C"])
+
     def test_garbage_still_fails(self):
         with self.assertRaises((ValueError, json.JSONDecodeError)):
             ingest._parse_extracted_thoughts("I could not find anything.")
+        with self.assertRaises((ValueError, json.JSONDecodeError)):
+            ingest._parse_extracted_thoughts("[{broken")
 
 
 class TestDeadLetterRetry(unittest.TestCase):
