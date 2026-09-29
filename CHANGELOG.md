@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.5.0 — 2026-09-28
+
+**Handoff cards: bounded project summaries, freshness in-band, and Claude's native memory bridged to other tools.**
+
+Seven weeks after 0.4.0 the live pipeline was failing again: the four busiest project pages had grown to the 16K-token output limit (about 64KB), so every whole-page merge came back without its last section and was rejected (3,913 times), and since 2026-09-19 every merge 404'd because the configured merge model had been removed from Ollama — reported as "is a local LLM server running?". Nothing surfaced either failure to a person.
+
+### Changed
+- **Project pages are now handoff cards.** Each run rebuilds a project's card from the previous card plus its new notes, topped up with recent context, in bounded model calls (`role="card"`, 4K output tokens). Sections: Status, Overview, Current Focus, Recent Decisions, Open Questions & Blockers, Next Steps, Durable Context, plus a verbatim `## Manual Notes`. Output is clipped to fixed per-section limits, so card size no longer grows with history. A model response missing a section is repaired from the previous card instead of rejected.
+- **Backlogs catch up chronologically:** pending notes are summarized in arrival order, one prompt-sized pass at a time, each pass building on the card the previous one wrote, so the final card reflects the newest notes. A note is marked processed only by the pass that showed it to the model. Per run: at most `cards.max_per_run` projects (default 12, busiest first) and `cards.max_calls_per_run` model calls (default 60); the rest stays pending.
+- A project's long-form page is condensed into its first successful card and archived to `projects.archive/` (synced, invisible to page discovery). `gyrus --backfill` rebuilds every card now.
+- **Model-free fallback:** when the summary call fails for a project with new notes, its card is rewritten from the previous card's durable sections plus the newest raw notes, marked as unsummarized; the notes stay pending until a model succeeds. A long-form page is never replaced this way, and a card with no new notes is left untouched.
+- `gyrus merge` into a card parks the source pages' history in a `Carried From Merged Pages` section and schedules the card for rebuild on the next run.
+- Managed `CLAUDE.md`/`AGENTS.md`/`GEMINI.md` blocks are tool-specific. Claude Code's block treats its own auto-memory as the primary record and Gyrus as the cross-tool supplement (no read-first mandate). Codex and Antigravity are told to run `gyrus context --cwd "$PWD" --tool <tool>` before project work. All blocks point at the freshness line and drop the stale `me.md`/digest pointers.
+- `status.md` ranks active projects by activity: this week / this month / quiet 30+ days, with 7-day and 30-day note counts. Junk-looking slugs and projects with ≤3 notes that stopped a month ago move to a **Needs sorting** bucket.
+
+### Added
+- `gyrus context` opens with a **freshness line**: when the card was built and which notes it covers, or a warning when it is a legacy page, was written without a model, has unsummarized notes, or summaries are failing.
+- `gyrus context --tool codex` (any tool other than `claude-code`) appends **Claude Code's native memory** for the directory or its nearest parent — deterministic, no model, newest first, bounded. Works even when no Gyrus card matches.
+- Every `gyrus context` call is logged to `context-log.jsonl` (local, never synced); `gyrus doctor` reports calls per tool over 7 days and the share that served a stale card.
+- `gyrus doctor` checks that configured local models are installed (`models`) and whether recent runs saved any summary (`summaries`).
+- Desktop notification (macOS) after 3 consecutive runs in which every summary failed, at most once a day. Disable with `"notifications": false`.
+- A 404 from a local server now names the missing model and lists the installed ones.
+
+### Models
+- **Current model generation.** `sonnet` is now Claude Sonnet 5 (`claude-sonnet-5`, $2/$10 per MTok) and `opus` Claude Opus 5 (`claude-opus-5`); new `fable` (Claude Fable 5.1). OpenAI gains `gpt-6-astra`, `gpt-6-sol` and `gpt-6-luna`; `gpt-5.4-pro` is removed (Responses-only), and `gpt-4.1-nano`, `o4-mini` (retiring 2026-10-23) and `o3` (2026-12-11) are flagged. `gemini-flash` is now Gemini 3.8 Flash and `gemini-lite` Gemini 3.5 Flash-Lite; the old `gemini-3.1-flash-lite-preview` target was shut down on 2026-05-25. Prices updated from the providers' pricing pages; local catalog gains `qwen3.8-27b`.
+- **Defaults:** extraction defaults to `gpt-6-luna` (was `gpt-4.1-mini`); the card model default stays `sonnet`, now Sonnet 5. The installer's OpenAI-only default for cards is `gpt-6-sol`.
+- **Request shapes for reasoning models.** Sonnet 5, Opus 4.7+/5.x, Fable, GPT-6 and Gemini 3 reject or misbehave with `temperature=0` and think by default. Gyrus now omits sampling parameters for them, sets effort instead (`low` for extraction, `medium` for cards: `output_config.effort`, `reasoning_effort`, `thinkingConfig.thinkingLevel`), leaves room for reasoning inside the output cap, reads the text block rather than `content[0]` (a thinking block on these models), and raises on a refusal or an empty answer instead of parsing nothing. Opus 5 and Fable 5.1 requests opt into server-side refusal fallbacks (`fallbacks: "default"`). Older models keep `temperature=0`.
+
+### Fixed
+- **Malformed extraction JSON from local models:** gemma4:26b intermittently emitted a stray token before a key (`    / "tags": [`), `//` comments, trailing commas, or a cut-off array, and each such session was retried three times and dead-lettered (74 on the dogfood machine). The parser now repairs exactly those defects after a strict parse fails; anything else still fails.
+- `gyrus doctor --fix` re-queues dead-lettered sessions. The previous advice (delete `dead_letter_sessions`) never retried anything, because dead-lettered sessions are also checkpointed as processed.
+- **Re-extraction churn:** a session already extracted once is not re-extracted while it is still being written (`session_settle_minutes`, default 45), for at most `session_max_defer_hours` (default 6). One live session had yielded 562 thoughts from hourly re-extraction.
+- Notes whose model-reported `occurred_at` is later than the session date use the session date (live data had notes dated days in the future).
+- **Hour-long runs:** every run re-deduplicated the whole pending backlog against itself (quadratic `SequenceMatcher`), so with ~5,000 pending notes each hourly run spent ~55 minutes there before doing anything else. Notes recovered from a prior run were already de-duplicated when first saved and are no longer re-checked.
+- Deduplication no longer marks BOTH halves of a near-duplicate pair that arrive in the same batch (each used to find the other among the just-saved thoughts).
+- Marking notes processed and persisting alias/dedup metadata are batched (`update_thoughts`): each daily thoughts file is rewritten once per distinct update instead of once per thought.
+
 ## 0.4.0 — 2026-08-01
 
 **The dogfood release: chunked merges, honest telemetry, junk-slug quarantine, and doc surfaces that upgrade themselves.**

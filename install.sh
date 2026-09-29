@@ -565,14 +565,14 @@ if [ "$MODEL_MODE" = "1" ]; then
     EXTRACT_MODEL="haiku"
     MERGE_MODEL="haiku"
     if [ -n "$OPENAI_KEY" ] || ([ -f "$ENV_FILE" ] && grep -q "OPENAI_API_KEY=sk-" "$ENV_FILE" 2>/dev/null); then
-      EXTRACT_MODEL="gpt-4.1-mini"
+      EXTRACT_MODEL="gpt-6-luna"
     elif [ -n "$GOOGLE_KEY" ] || ([ -f "$ENV_FILE" ] && grep -q "GEMINI_API_KEY=AI" "$ENV_FILE" 2>/dev/null); then
       EXTRACT_MODEL="gemini-flash"
     fi
     if [ -n "$ANTHRO_KEY" ] || ([ -f "$ENV_FILE" ] && grep -q "ANTHROPIC_API_KEY=sk-" "$ENV_FILE" 2>/dev/null); then
       MERGE_MODEL="sonnet"
     elif [ -n "$OPENAI_KEY" ] || ([ -f "$ENV_FILE" ] && grep -q "OPENAI_API_KEY=sk-" "$ENV_FILE" 2>/dev/null); then
-      MERGE_MODEL="gpt-4.1"
+      MERGE_MODEL="gpt-6-sol"
     elif [ -n "$GOOGLE_KEY" ] || ([ -f "$ENV_FILE" ] && grep -q "GEMINI_API_KEY=AI" "$ENV_FILE" 2>/dev/null); then
       MERGE_MODEL="gemini-pro"
     fi

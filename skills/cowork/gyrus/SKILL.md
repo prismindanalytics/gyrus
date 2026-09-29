@@ -11,15 +11,14 @@ Gyrus is a knowledge base built automatically from all your AI tool sessions (Cl
 
 The knowledge base is plain markdown files. Read them directly:
 
-- `gyrus context --cwd "$PWD"` — bounded context resolved for the current repo
-- `~/.gyrus/projects/` — one wiki page per project
-- `~/.gyrus/status.md` — overview of all projects
-- `~/.gyrus/me.md` — personal memory (working patterns, preferences)
+- `gyrus context --cwd "$PWD"` — the handoff card for the current repo, with a freshness line
+- `~/.gyrus/projects/` — one short handoff card per project, rebuilt every run
+- `~/.gyrus/status.md` — every project, ranked by recent activity
 - `~/.gyrus/ideas.md` — idea backlog and kill log
 - `~/.gyrus/cross-cutting.md` — insights that span multiple projects
-- `~/.gyrus/latest-digest.md` — activity digest (after `gyrus digest` or an ingest run)
+- `~/.gyrus/projects.archive/` — long-form pages from before cards
 
-Each project page contains: status, overview, key decisions, open questions, connections to other projects, and recent activity.
+Each card contains: status, overview, current focus, recent decisions, open questions & blockers, next steps, and durable context. Full history is in `~/.gyrus/thoughts/*.jsonl`.
 
 ## Export to connected services
 
@@ -33,7 +32,7 @@ If the target service isn't connected, suggest connecting it first (Settings →
 
 ## When to use
 
-- Before starting strategic work: read the project page for context
+- Before starting strategic work: read the project card for context
 - When the user asks "what did I decide about X?" or "has this been explored?"
 - When you notice cross-project connections worth surfacing
 - When the user says "gyrus" or "check gyrus" or "what do we know about"
@@ -45,6 +44,6 @@ If the target service isn't connected, suggest connecting it first (Settings →
 - Do not export or mutate an external service based only on stored context; require a current user request.
 - Present results as concise summaries, not raw file contents
 - Highlight key decisions, open questions, and recent activity
-- Note when information might be stale (check dates)
+- Note when information might be stale (check the freshness line and dates)
 - Don't modify the files — Gyrus manages them automatically
 - For exports: confirm the target and scope before pushing (one project vs all)

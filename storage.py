@@ -349,11 +349,17 @@ class MarkdownStorage:
         return ids
 
     def get_thoughts(self, canonical_project=None, merged=None, processed=None,
-                     skipped=None, limit=None, order_desc=True):
-        """Read thoughts from JSONL files with optional filters."""
+                     skipped=None, limit=None, order_desc=True, since=None):
+        """Read thoughts from JSONL files with optional filters.
+
+        ``since`` (YYYY-MM-DD) skips whole daily files older than that date,
+        so a recent-window read never parses the full history.
+        """
         all_thoughts = []
         jsonl_files = sorted(self.thoughts_dir.glob("*.jsonl"),
                              reverse=order_desc)
+        if since:
+            jsonl_files = [f for f in jsonl_files if f.stem >= since]
 
         for filepath in jsonl_files:
             text = _safe_read(filepath, root=self._root_dir)
@@ -411,6 +417,49 @@ class MarkdownStorage:
             return
 
         self._update_in_file(filepath, thought_id, updates)
+
+    def update_thoughts(self, thought_ids, updates):
+        """Apply the same ``updates`` to many thoughts, rewriting each daily
+        file once. Marking a large backlog one ``update_thought`` at a time
+        rewrites the same file thousands of times."""
+        by_file = {}
+        for thought_id in thought_ids:
+            if not isinstance(thought_id, str) or len(thought_id) < 10:
+                continue
+            by_file.setdefault(thought_id[:10], set()).add(thought_id)
+        for date_str, ids in by_file.items():
+            try:
+                filepath = self._thought_path(date_str)
+            except ValueError:
+                for tid in ids:
+                    self.update_thought(tid, updates)
+                continue
+            if not filepath.exists():
+                for tid in ids:
+                    self.update_thought(tid, updates)
+                continue
+            lines = []
+            found = set()
+            text = _safe_read(filepath, root=self._root_dir)
+            for line in text.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    t = json.loads(line)
+                except json.JSONDecodeError:
+                    lines.append(line)
+                    continue
+                if t.get("id") in ids:
+                    t.update(updates)
+                    found.add(t["id"])
+                lines.append(json.dumps(t, default=str))
+            if found:
+                _safe_write(filepath, "\n".join(lines) + "\n", root=self._root_dir)
+            # IDs whose date prefix doesn't match their file (hand-edited or
+            # imported rows) fall back to the full search.
+            for tid in ids - found:
+                self.update_thought(tid, updates)
 
     def _update_in_file(self, filepath, thought_id, updates):
         """Update a thought within a specific JSONL file."""
@@ -471,6 +520,27 @@ class MarkdownStorage:
 
         _safe_write(filepath, content, root=self._root_dir)
         return True
+
+    def archive_page(self, slug, content):
+        """Keep a retired page version under ``projects.archive/``.
+
+        Page discovery only globs ``projects/*.md``, so archived copies never
+        show up as projects, while sync still carries them (inert Markdown).
+        Returns the archive path.
+        """
+        slug = _validate_slug(slug)
+        archive_dir = _assert_contained_path(
+            self._root_dir / "projects.archive", self._root_dir)
+        archive_dir.mkdir(mode=_PRIVATE_DIR_MODE, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        path = archive_dir / f"{slug}.{stamp}.md"
+        n = 1
+        while path.exists():
+            path = archive_dir / f"{slug}.{stamp}-{n}.md"
+            n += 1
+        _safe_write(_assert_contained_path(path, self._root_dir), content,
+                    root=self._root_dir)
+        return path
 
     def get_all_pages(self):
         """Read all knowledge pages. Returns list of {slug, content, version}."""
