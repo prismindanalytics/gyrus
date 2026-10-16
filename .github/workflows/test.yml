@@ -18,7 +18,7 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
-      - run: python -m unittest test_gyrus -v
+      - run: python -m unittest discover -v
 
   version-lockstep:
     # Keep the executable and package metadata aligned so self-update and

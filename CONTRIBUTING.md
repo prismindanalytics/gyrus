@@ -11,11 +11,11 @@ Gyrus supports Python 3.10+ and has no runtime dependencies. With
 ```bash
 git clone https://github.com/prismindanalytics/gyrus.git
 cd gyrus
-uv run --python 3.12 python -m unittest test_gyrus -v
+uv run --python 3.12 python -m unittest discover -v
 uv build
 ```
 
-You can also run the tests with `python3 -m unittest test_gyrus -v` when a
+You can also run the tests with `python3 -m unittest discover -v` when a
 compatible Python is already installed.
 
 ## Making a change

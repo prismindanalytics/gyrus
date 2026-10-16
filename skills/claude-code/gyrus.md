@@ -10,10 +10,21 @@ projects.
 
 ```bash
 gyrus context --cwd "$PWD" --tool claude-code   # this repo's cross-tool handoff card
-cat ~/.gyrus/status.md                          # every project, ranked by recent activity
-cat ~/.gyrus/ideas.md                           # idea backlog
-grep -ri "SEARCH_TERM" ~/.gyrus/projects/ ~/.gyrus/projects.archive/ ~/.gyrus/ideas.md ~/.gyrus/cross-cutting.md
 ```
+
+Cross-project status, ideas, and archived history are optional: consult them
+only when the current task needs them. Do not preload the whole status or
+idea backlog. Search the relevant files with a specific term and bounded output:
+
+```bash
+# When the task needs project status or related ideas
+rg -n -i -m 20 --max-columns 240 --max-columns-preview "SEARCH_TERM" ~/.gyrus/status.md ~/.gyrus/ideas.md
+
+# When the task needs history beyond the current project's handoff
+rg -n -i -m 5 --max-columns 240 --max-columns-preview "SEARCH_TERM" ~/.gyrus/projects/ ~/.gyrus/projects.archive/ ~/.gyrus/cross-cutting.md | head -n 80
+```
+
+Narrow to a matching project or line range before reading more.
 
 Each project card (`~/.gyrus/projects/PROJECT.md`) is rebuilt every run from
 the previous card plus recent notes: Status, Overview, Current Focus, Recent

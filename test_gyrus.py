@@ -699,6 +699,16 @@ class TestMainCLI(unittest.TestCase):
 
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
+        home = patch.object(Path, "home", return_value=Path(self.tmpdir) / "home")
+        home.start()
+        self.addCleanup(home.stop)
+        config = patch.dict(ingest._config)
+        config.start()
+        self.addCleanup(config.stop)
+        model = patch("ingest.call_llm", side_effect=AssertionError("CLI startup must not call a model"))
+        self.model = model.start()
+        self.addCleanup(model.stop)
+        self.addCleanup(self.model.assert_not_called)
 
     def tearDown(self):
         shutil.rmtree(self.tmpdir)
@@ -715,6 +725,7 @@ class TestMainCLI(unittest.TestCase):
                 with patch.multiple(
                     "ingest",
                     find_claude_code_sessions=MagicMock(return_value=[]),
+                    find_claude_memory_sessions=MagicMock(return_value=[]),
                     find_cowork_sessions=MagicMock(return_value=[]),
                     find_antigravity_sessions=MagicMock(return_value=[]),
                     find_codex_sessions=MagicMock(return_value=[]),
@@ -740,6 +751,7 @@ class TestMainCLI(unittest.TestCase):
                 with patch.multiple(
                     "ingest",
                     find_claude_code_sessions=MagicMock(return_value=[]),
+                    find_claude_memory_sessions=MagicMock(return_value=[]),
                     find_cowork_sessions=MagicMock(return_value=[]),
                     find_antigravity_sessions=MagicMock(return_value=[]),
                     find_codex_sessions=MagicMock(return_value=[]),
@@ -902,6 +914,133 @@ class TestReadTextSafe(unittest.TestCase):
 
 # ─── v0.2: Doctor checks ────────────────────────────────────────────────────
 
+class TestDoctorSources(unittest.TestCase):
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmpdir.cleanup)
+        self.base = Path(self.tmpdir.name)
+        self.paths = {}
+
+    def add_file(self, source, relative):
+        root = self.base / source
+        self.paths[source] = str(root)
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch()
+        return path
+
+    def check_sources(self):
+        # Diagnostics must work from names/stat alone, even for unreadable or
+        # unhydrated transcripts and without querying Cursor's database.
+        with patch.object(ingest, "PATHS", self.paths), \
+                patch("builtins.open", side_effect=AssertionError("read contents")), \
+                patch.object(Path, "open", side_effect=AssertionError("read contents")), \
+                patch.object(sqlite3, "connect", side_effect=AssertionError("read DB")):
+            return ingest._doctor_check_sources()
+
+    def test_codex_current_and_legacy_layouts(self):
+        for relative in ("2026/10/16/rollout.jsonl", "2025/old.jsonl", "flat.jsonl"):
+            self.add_file("codex", relative)
+        status, _, detail, _ = self.check_sources()
+        self.assertEqual(status, "ok")
+        self.assertEqual(detail, "codex (3)")
+
+    def test_supported_fixed_source_layouts_and_session_counts(self):
+        self.add_file("claude-code", "repo/session.jsonl")
+        self.add_file("claude-code", "repo/session/subagents/agent.jsonl")
+        self.add_file("cowork", "workspace/group/local_123.json")
+        self.add_file("cowork", "workspace/group/local_123/.claude/projects/repo/a.jsonl")
+        self.add_file("cowork", "workspace/group/local_123/.claude/projects/repo/b.jsonl")
+        self.add_file("cowork", "workspace/group/local_orphan/.claude/projects/repo/a.jsonl")
+        self.add_file("antigravity", "session/task.md")
+        self.add_file("antigravity", "session/walkthrough.txt")
+        self.add_file("cursor", "workspace/state.vscdb")
+        self.add_file("copilot", "workspace/chatSessions/session.jsonl")
+        self.add_file("cline", "task/api_conversation_history.json")
+        self.add_file("continue", "session.json")
+        self.add_file("continue", "sessions.json")
+        self.add_file("opencode", "workspace/session.json")
+        status, _, detail, _ = self.check_sources()
+        self.assertEqual(status, "ok")
+        self.assertEqual(detail, ", ".join(
+            f"{name} (1)" for name in (
+                "claude-code", "cowork", "antigravity", "cursor", "copilot",
+                "cline", "continue", "opencode")))
+
+    def test_missing_sources_indexes_and_named_directories_are_not_sessions(self):
+        self.paths["codex"] = str(self.base / "missing")
+        self.add_file("continue", "sessions.json")
+        self.add_file("cowork", "workspace/group/local_empty.json")
+        fake = self.add_file("claude-code", "repo/directory.jsonl")
+        fake.unlink()
+        fake.mkdir()
+        status, _, _, action = self.check_sources()
+        self.assertEqual(status, "fail")
+        self.assertIn("Aider project histories are not scanned", action)
+
+
+class TestDoctorUnsummarizedHistory(unittest.TestCase):
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmpdir.cleanup)
+        self.base = Path(self.tmpdir.name)
+        (self.base / "thoughts").mkdir()
+
+    def write_records(self, records):
+        path = self.base / "thoughts" / "2026-10-16.jsonl"
+        path.write_text("\n".join(json.dumps(record) for record in records) + "\n")
+        return path
+
+    def test_counts_abandoned_merges_without_requeueing(self):
+        abandoned = {"skipped": True, "skip_reason": "merge_dead_letter", "processed": True}
+        path = self.write_records([
+            dict(abandoned, kind="project"), dict(abandoned, kind="idea"),
+            abandoned,  # legacy project notes can predate kind
+            dict(abandoned, kind="idea", skipped=False),  # already recovered
+            {"kind": "project", "skipped": True, "skip_reason": "duplicate"},
+            {"kind": "project", "processed": False},
+        ])
+        before = path.read_bytes()
+        status, label, detail, hint = ingest._doctor_check_unsummarized_history(self.base)
+        self.assertEqual((status, label), ("warn", "unsummarized history"))
+        self.assertIn("3 note(s) never summarized", detail)
+        self.assertIn("2 project, 1 idea", detail)
+        self.assertIn("retained as raw history", detail)
+        self.assertIn("does not requeue", hint)
+        self.assertNotIn(label, ingest._DOCTOR_FIXERS)
+        self.assertEqual(path.read_bytes(), before)
+
+    def test_empty_history_is_healthy(self):
+        status, _, detail, hint = ingest._doctor_check_unsummarized_history(self.base)
+        self.assertEqual(status, "ok")
+        self.assertEqual(detail, "no abandoned merge notes")
+        self.assertIsNone(hint)
+
+    def test_incomplete_history_is_not_reported_as_healthy(self):
+        path = self.write_records([None, ["unexpected"]])
+        with path.open("a") as handle:
+            handle.write("malformed\n")
+        status, _, detail, _ = ingest._doctor_check_unsummarized_history(self.base)
+        self.assertEqual(status, "warn")
+        self.assertIn("3 invalid record(s)", detail)
+        with patch.object(ingest, "_is_dataless", return_value=True), \
+                patch.object(ingest, "_safe_read") as read:
+            status, _, detail, _ = ingest._doctor_check_unsummarized_history(self.base)
+        read.assert_not_called()
+        self.assertEqual(status, "warn")
+        self.assertIn("1 unreadable file(s)", detail)
+
+    @unittest.skipIf(os.name == "nt", "symlink creation requires privileges on Windows")
+    def test_refuses_symlinked_thought_files(self):
+        outside = self.base / "outside.jsonl"
+        outside.write_text(json.dumps({"skipped": True, "skip_reason": "merge_dead_letter"}))
+        (self.base / "thoughts" / "2026-10-16.jsonl").symlink_to(outside)
+        status, _, detail, _ = ingest._doctor_check_unsummarized_history(self.base)
+        self.assertEqual(status, "warn")
+        self.assertIn("1 unreadable file(s)", detail)
+        self.assertNotIn("never summarized", detail)
+
+
 class TestDoctorChecks(unittest.TestCase):
     """Doctor checks return (status, label, msg, hint) tuples and never raise."""
 
@@ -963,6 +1102,7 @@ class TestDoctorChecks(unittest.TestCase):
         self.assertIsInstance(rc, int)
         self.assertIn(rc, (0, 1))
         self.assertIn("gyrus doctor", buf.getvalue())
+        self.assertIn("unsummarized history", buf.getvalue())
 
 
 # ─── v0.2: Doctor auto-fixes (--fix) ────────────────────────────────────────
@@ -1411,11 +1551,11 @@ class TestLocalLLM(unittest.TestCase):
             self.assertEqual(_local_base_url(), "http://x:9/v1")
 
     def test_detect_local_llm_returns_none_when_nothing_listening(self):
-        """With no server running the detection function returns (None,None,[]).
-        Uses a bogus host to force connection failure."""
+        """Connection failures are handled without contacting a real server."""
         import ingest
         with patch.object(ingest, "_LOCAL_LLM_CANDIDATES",
-                          [("http://127.0.0.1:1/v1", "bogus")]):
+                          [("http://127.0.0.1:1/v1", "bogus")]), \
+                patch.object(ingest, "urlopen", side_effect=ingest.URLError("refused")):
             url, name, models = _detect_local_llm(timeout=1)
         self.assertIsNone(url)
         self.assertEqual(models, [])
@@ -2448,6 +2588,34 @@ class TestSyncToolContext(unittest.TestCase):
         self.assertIn("--tool codex", agents)
         self.assertIn("Before starting project work", agents)
         self.assertIn("Claude Code's memory for this directory", agents)
+
+    def test_global_lookups_are_optional_and_bounded_on_every_surface(self):
+        (self.home / ".gemini").mkdir()
+        ingest.sync_tool_context(self.store)
+        for relative in (".claude/CLAUDE.md", ".codex/AGENTS.md", ".gemini/GEMINI.md"):
+            with self.subTest(surface=relative):
+                text = (self.home / relative).read_text(encoding="utf-8")
+                self.assertIn("only when\nthe current task needs them", text)
+                self.assertIn("Do not preload the whole status or idea backlog", text)
+                self.assertIn("rg -n -i -m 20 --max-columns 240", text)
+                self.assertIn("| head -n 80", text)
+                self.assertNotRegex(text, r"cat [^\n]*(?:status|ideas)\.md")
+                self.assertNotIn("grep -ri", text)
+
+    def test_existing_managed_block_refresh_preserves_user_notes(self):
+        agents_path = self.home / ".codex" / "AGENTS.md"
+        agents_path.write_text(
+            "# User notes\nKeep this.\n\n"
+            "<!-- BEGIN GYRUS MANAGED CONTEXT -->\n"
+            "  cat /old/ideas.md\n"
+            "<!-- END GYRUS MANAGED CONTEXT -->\n"
+            "\n# More notes\nKeep these too.\n", encoding="utf-8")
+        ingest.sync_tool_context(self.store)
+        text = agents_path.read_text(encoding="utf-8")
+        self.assertIn("# User notes\nKeep this.", text)
+        self.assertIn("# More notes\nKeep these too.", text)
+        self.assertNotIn("cat /old/ideas.md", text)
+        self.assertIn("Do not preload the whole status or idea backlog", text)
 
     def test_second_run_is_idempotent(self):
         ingest.sync_tool_context(self.store)
@@ -3761,6 +3929,85 @@ class TestStorageBatchHelpers(unittest.TestCase):
         self.assertIn("Shard decision", carried)
         self.assertNotIn("## Key Decisions", target)
         self.assertEqual(self.store.load_state()["cards_dirty"], ["clickory"])
+
+
+class TestCardDateContinuity(unittest.TestCase):
+    """Late historical evidence cannot rewind a card's existing coverage."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.store = MarkdownStorage(base_dir=self.tmpdir)
+        ingest._reset_merge_results()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+        ingest._reset_merge_results()
+
+    def _previous(self, activity="2026-09-28", through="2026-09-28"):
+        card = ingest._render_card(
+            "# Beacon", "active", "build", activity, {},
+            {"Overview": "A billing tool", "Next Steps": "- Ship export"},
+            {"built": "2026-09-29T00:00:00", "mode": "llm", "through": through})
+        self.store.save_page("beacon", card, 1)
+
+    def _note(self, label, event_date, arrival="2026-10-15T12:00:00+00:00"):
+        note = {"content": label, "project": "beacon", "canonical_project": "beacon",
+                "occurred_at": event_date}
+        self.store.save_thoughts([note], "codex", label, session_date=arrival)
+        note.update(source="codex", created_at=arrival)
+        return note
+
+    def test_historical_note_preserves_activity_and_coverage(self):
+        self._previous()
+        old_note = self._note("Historical design rationale", "2026-08-09")
+        with patch("ingest.call_llm", return_value=_card_reply()) as llm:
+            result = ingest.build_project_card("beacon", [old_note], [], self.store, {})
+        self.assertEqual(result, "llm")
+        page, _ = self.store.get_page("beacon")
+        self.assertIn("Last activity: 2026-09-28", page)
+        self.assertEqual(ingest._parse_card_meta(page)["through"], "2026-09-28")
+        self.assertIn("Historical design rationale", llm.call_args.args[0])
+        self.assertEqual(self.store.get_thoughts(processed=False, skipped=False), [])
+
+    def test_fallback_preserves_coverage_until_a_summary_succeeds(self):
+        for event_date, expected_activity in (("2026-08-09", "2026-09-28"),
+                                               ("2026-10-15", "2026-10-15")):
+            with self.subTest(event_date=event_date):
+                self._previous()
+                note = self._note("Evidence from " + event_date, event_date)
+                with patch("ingest.call_llm", side_effect=ValueError("model unavailable")):
+                    result = ingest.build_project_card("beacon", [note], [], self.store, {})
+                self.assertEqual(result, "fallback")
+                page, _ = self.store.get_page("beacon")
+                self.assertIn("Last activity: " + expected_activity, page)
+                self.assertEqual(ingest._parse_card_meta(page)["through"], "2026-09-28")
+                self.assertTrue(self.store.get_thoughts(processed=False, skipped=False))
+
+    def test_call_budget_does_not_claim_unsummarized_coverage(self):
+        self._previous()
+        notes = [self._note("First evidence", "2026-10-01", "2026-10-01T12:00:00+00:00"),
+                 self._note("Second evidence", "2026-10-10", "2026-10-10T12:00:00+00:00")]
+        state = {}
+        with patch("ingest.CARD_CHUNK_MAX_THOUGHTS", 1), \
+                patch("ingest.call_llm", return_value=_card_reply()):
+            result = ingest.build_project_card(
+                "beacon", notes, [], self.store, state, call_budget=[1])
+        self.assertEqual(result, "llm")
+        page, _ = self.store.get_page("beacon")
+        self.assertIn("Last activity: 2026-10-10", page)
+        self.assertEqual(ingest._parse_card_meta(page)["through"], "2026-10-01")
+        self.assertEqual(state["beacon"]["pending"], 1)
+        remaining = self.store.get_thoughts(processed=False, skipped=False)
+        self.assertEqual([t["content"] for t in remaining], ["Second evidence"])
+
+    def test_previous_pending_activity_is_not_summary_coverage(self):
+        self._previous(activity="2026-10-10", through="2026-09-28")
+        note = self._note("Older evidence arrived late", "2026-08-09")
+        with patch("ingest.call_llm", return_value=_card_reply()):
+            ingest.build_project_card("beacon", [note], [], self.store, {})
+        page, _ = self.store.get_page("beacon")
+        self.assertIn("Last activity: 2026-10-10", page)
+        self.assertEqual(ingest._parse_card_meta(page)["through"], "2026-09-28")
 
 
 if __name__ == "__main__":
