@@ -173,7 +173,7 @@ New-Item -ItemType Directory -Path $GyrusBinDir -Force | Out-Null
 $GyrusBin = "$GyrusBinDir\gyrus.cmd"
 @"
 @echo off
-REM Gyrus CLI wrapper — https://gyrus.sh
+REM Gyrus CLI wrapper - https://gyrus.sh
 setlocal
 if "%GYRUS_HOME%"=="" set "GYRUS_HOME=%USERPROFILE%\.gyrus"
 if "%UV_BIN%"=="" set "UV_BIN=uv"

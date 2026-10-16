@@ -1,0 +1,8 @@
+Asset: handoff.webp
+Created with the built-in image_gen tool, using the approved Gyrus homepage mockup as the edit reference. Transparent background enabled. Delivered as WebP (quality 86, full-quality alpha).
+
+Final generation prompt:
+Use case: precise-object-edit. Asset type: production homepage hero illustration.
+The input is the approved Gyrus homepage mockup. Extract ONLY the central three-document-and-coral-thread illustration into a clean wide transparent PNG asset, tightly composed with modest margins, approximately 2.4:1 aspect ratio.
+Preserve the main warm-white paper document, its subtle angle and folded corner, the two smaller dark charcoal session documents, the continuous coral cord through the punched holes, their original relative positions and proportions, realistic paper/cord materials and restrained soft contact shadows. Preserve the exact document typography: "Project context", "Decisions", "Open work", "Next steps", and the coral check marks. Preserve the two side documents' simple grey line marks.
+Remove ALL surrounding website UI: navigation, gyrus wordmark, headline, subtitle, install button, footer, horizontal rule. Remove the dark page background and floor, leaving genuine transparency around the objects plus subtle transparent contact shadows suitable for placement on #121212. No visible background rectangle. The illustration should fill the wide canvas, with no large empty top area. Do not redesign the illustration or add objects, words, highlights, glows, decorative patterns, or a platform. Keep the approved focal point on the center document.

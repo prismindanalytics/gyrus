@@ -2,7 +2,7 @@
 
 ## 2026.10.16.2 — 2026-10-16
 
-- Redesign gyrus.sh around compact handoffs, with an interactive example, responsive layouts, platform-specific installation, and current data-handling guidance. Remove outdated model, cost, and benchmark claims.
+- Redesign gyrus.sh with a focused homepage and a custom handoff illustration. Move installation, configuration, commands, privacy, and troubleshooting into a dedicated Docs page, replacing outdated model, cost, and benchmark claims.
 - Fix the Windows launcher to preserve subcommands, quoted arguments, caller directory, and exit status.
 - Ignore local context telemetry, rotated runtime logs, and generated development metadata.
 - Isolate CLI unit tests from real session sources and model calls; discover all regression test modules in CI.

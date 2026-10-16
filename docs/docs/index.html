@@ -1,0 +1,665 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#121212" />
+    <title>Docs — Gyrus</title>
+    <meta
+      name="description"
+      content="Install and configure Gyrus. Learn about project handoffs, local and cloud models, supported tools, privacy, and troubleshooting."
+    />
+    <link rel="canonical" href="https://gyrus.sh/docs/" />
+    <link rel="icon" href="/assets/favicon.svg" type="image/svg+xml" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;450;500;550;600;650;700&family=IBM+Plex+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/assets/docs.css" />
+    <script src="/assets/docs.js" defer></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+    <header class="docs-header">
+      <a class="wordmark" href="/" aria-label="Gyrus home">gyrus</a>
+      <span class="header-divider" aria-hidden="true">/</span>
+      <a class="header-current" href="/docs/" aria-current="page">Docs</a>
+      <a class="source-link" href="https://github.com/prismindanalytics/gyrus"
+        >GitHub <span aria-hidden="true">↗</span></a
+      >
+    </header>
+
+    <div class="docs-layout">
+      <aside class="sidebar">
+        <details class="contents" open>
+          <summary>On this page <span aria-hidden="true">⌄</span></summary>
+          <nav aria-label="Documentation sections">
+            <a href="#install">Install</a>
+            <a href="#workflow">Daily workflow</a>
+            <a href="#models">Models &amp; settings</a>
+            <a href="#commands">Command reference</a>
+            <a href="#files">Files &amp; history</a>
+            <a href="#privacy">Privacy &amp; cost</a>
+            <a href="#troubleshooting">Troubleshooting</a>
+          </nav>
+        </details>
+        <a
+          class="sidebar-help"
+          href="https://github.com/prismindanalytics/gyrus/issues"
+          >Report an issue <span aria-hidden="true">↗</span></a
+        >
+      </aside>
+
+      <main id="main" class="docs-content">
+        <div class="docs-intro">
+          <p class="eyebrow">THE REFERENCE</p>
+          <h1>Documentation</h1>
+          <p>
+            Set up Gyrus and bring useful context into your next coding session.
+          </p>
+        </div>
+
+        <section id="install" aria-labelledby="install-title">
+          <h2 id="install-title">Install</h2>
+          <p>
+            You need a running local model server or an API key for a supported
+            cloud provider. The installer handles Python through
+            <a href="https://docs.astral.sh/uv/">uv</a>.
+          </p>
+
+          <div class="install-box">
+            <div
+              class="install-tabs"
+              role="tablist"
+              aria-label="Installation platform"
+              hidden
+            >
+              <button
+                id="tab-unix"
+                type="button"
+                role="tab"
+                aria-selected="true"
+                aria-controls="install-unix"
+                data-platform="unix"
+              >
+                macOS / Linux
+              </button>
+              <button
+                id="tab-windows"
+                type="button"
+                role="tab"
+                aria-selected="false"
+                aria-controls="install-windows"
+                tabindex="-1"
+                data-platform="windows"
+              >
+                Windows
+              </button>
+            </div>
+            <div id="install-unix" class="install-panel">
+              <h3 class="no-js-platform">macOS / Linux</h3>
+              <div class="code-label">
+                <span>Terminal</span
+                ><button
+                  type="button"
+                  class="copy-button"
+                  data-copy="unix-command"
+                  aria-label="Copy macOS and Linux installation command"
+                  hidden
+                >
+                  Copy
+                </button>
+              </div>
+              <pre><code id="unix-command">curl -fsSL https://gyrus.sh/install | bash</code></pre>
+              <a
+                class="inspect-link"
+                href="https://github.com/prismindanalytics/gyrus/blob/main/install.sh"
+                >Read the installer <span aria-hidden="true">↗</span></a
+              >
+            </div>
+            <div id="install-windows" class="install-panel">
+              <h3 class="no-js-platform">Windows</h3>
+              <div class="code-label">
+                <span>PowerShell · Git required</span
+                ><button
+                  type="button"
+                  class="copy-button"
+                  data-copy="windows-command"
+                  aria-label="Copy Windows installation commands"
+                  hidden
+                >
+                  Copy
+                </button>
+              </div>
+              <pre><code id="windows-command">git clone https://github.com/prismindanalytics/gyrus.git
+cd gyrus
+.\install.ps1</code></pre>
+              <a
+                class="inspect-link"
+                href="https://github.com/prismindanalytics/gyrus/blob/main/install.ps1"
+                >Read the installer <span aria-hidden="true">↗</span></a
+              >
+            </div>
+          </div>
+
+          <p>
+            The setup wizard walks through your storage location, model choices,
+            optional private Git sync, and an ingestion schedule. It also
+            installs context instructions for detected tools.
+          </p>
+          <p>
+            After setup, run <code>gyrus doctor</code> to check the
+            installation, then <code>gyrus</code> to process eligible session
+            history. The first run may take longer while it works through
+            existing sessions.
+          </p>
+
+          <h3>Scheduling and a second machine</h3>
+          <p>
+            The installer offers cron on macOS and Linux, or a Scheduled Task on
+            Windows. Use <code>gyrus log</code> to see recent runs. Reopen setup
+            with <code>gyrus init</code> when you want to change the setup
+            options.
+          </p>
+          <p>
+            Git sync is optional. To connect another machine to an existing
+            knowledge base after installing Gyrus, replace this example with
+            your private repository URL:
+          </p>
+          <div class="code-block">
+            <pre><code>gyrus init --clone https://github.com/you/gyrus-knowledge</code></pre>
+          </div>
+        </section>
+
+        <section id="workflow" aria-labelledby="workflow-title">
+          <h2 id="workflow-title">Daily workflow</h2>
+          <p>
+            Gyrus extracts notes from supported local session histories and uses
+            them to update a compact handoff card for each project. Start a new
+            session with the card for the repository you are working in:
+          </p>
+          <div class="code-block">
+            <div class="code-label">
+              <span>From your project directory</span
+              ><button
+                type="button"
+                class="copy-button"
+                data-copy="context-command"
+                aria-label="Copy context command"
+                hidden
+              >
+                Copy
+              </button>
+            </div>
+            <pre><code id="context-command">gyrus context --cwd "$PWD" --tool codex</code></pre>
+          </div>
+          <p>
+            <code>gyrus context</code> reads local files. It does not call a
+            model or pull from GitHub. With a caller other than
+            <code>claude-code</code>, it can also include Claude Code’s native
+            memory for that directory.
+          </p>
+          <p>
+            Read the freshness line first. It reports when the card was built,
+            what notes it covers, and known pending work or summary failures.
+            Run normal ingestion when the card needs updating.
+          </p>
+
+          <h3>Supported session sources</h3>
+          <p>
+            Gyrus has adapters for these tools’ local session histories.
+            Availability depends on the files each tool writes on your machine.
+          </p>
+          <ul class="source-list">
+            <li>Claude Code</li>
+            <li>Codex</li>
+            <li>Claude Cowork</li>
+            <li>Cursor</li>
+            <li>Antigravity</li>
+            <li>GitHub Copilot</li>
+            <li>Cline</li>
+            <li>Continue.dev</li>
+            <li>Aider</li>
+            <li>OpenCode</li>
+          </ul>
+          <p>
+            It also imports supported Claude Code auto-memory files when they
+            change. Exclude an adapter with <code>excluded_tools</code> in your
+            config; use <code>claude-memory</code> to exclude that memory
+            import. See the
+            <a
+              href="https://github.com/prismindanalytics/gyrus#where-gyrus-reads-sessions"
+              >source path reference</a
+            >
+            for default locations.
+          </p>
+
+          <h3>How cards stay compact</h3>
+          <p>
+            A rebuild uses the previous card, new project notes, and a bounded
+            selection of recent notes. Fixed section limits keep the result
+            small. A backlog may need several passes; work that does not fit
+            remains pending.
+          </p>
+          <p>
+            When summarization fails, Gyrus can preserve the previous card with
+            unsummarized notes as a fallback. Those notes stay pending for a
+            later successful pass. A fresh build time alone does not mean the
+            new work has been summarized.
+          </p>
+        </section>
+
+        <section id="models" aria-labelledby="models-title">
+          <h2 id="models-title">Models &amp; settings</h2>
+          <p>
+            Gyrus has two model roles: <strong>extraction</strong> turns session
+            text into notes; <strong>card writing</strong> turns notes into
+            project handoffs. Choose both with <code>gyrus models</code>, or
+            edit <code>~/.gyrus/config.json</code>.
+          </p>
+
+          <h3>Use models on your machine</h3>
+          <p>
+            Run an OpenAI-compatible model server, such as Ollama, LM Studio, or
+            llama.cpp. Install the model you want on that server, then configure
+            both roles. Replace <code>your-installed-model</code> with the exact
+            model tag:
+          </p>
+          <div class="code-block">
+            <pre><code>{
+  "extract_model": "local:your-installed-model",
+  "merge_model": "local:your-installed-model",
+  "local_base_url": "http://localhost:11434/v1"
+}</code></pre>
+          </div>
+          <p>
+            The example endpoint is Ollama’s default. Set
+            <code>local_base_url</code> to your server’s loopback URL. Keep the
+            server running when scheduled ingestion runs.
+          </p>
+
+          <h3>Use a cloud provider</h3>
+          <p>
+            Gyrus supports Anthropic, OpenAI, and Google model providers.
+            <code>gyrus models</code> shows the choices available to your
+            installed version. Put provider credentials in
+            <code>~/.gyrus/.env</code>, using <code>ANTHROPIC_API_KEY</code>,
+            <code>OPENAI_API_KEY</code>, or <code>GEMINI_API_KEY</code>.
+          </p>
+          <p>
+            You can mix local and cloud roles. Any role using a cloud provider
+            sends the text it processes to that provider. Keep secrets out of
+            <code>config.json</code>, which is included when Git sync is
+            enabled.
+          </p>
+
+          <h3>Useful settings</h3>
+          <div
+            class="table-scroll"
+            tabindex="0"
+            role="region"
+            aria-label="Configuration settings"
+          >
+            <table>
+              <thead>
+                <tr>
+                  <th scope="col">Setting</th>
+                  <th scope="col">What it controls</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><code>excluded_tools</code></td>
+                  <td>
+                    Adapter keys to skip during ingestion. Defaults to an empty
+                    list.
+                  </td>
+                </tr>
+                <tr>
+                  <td><code>repo_groups</code></td>
+                  <td>Map repository folder names to a shared project name.</td>
+                </tr>
+                <tr>
+                  <td><code>ideas_mode</code></td>
+                  <td>
+                    <code>"merge"</code> updates the ideas page with a model.
+                    <code>"append"</code> archives incoming idea notes verbatim.
+                  </td>
+                </tr>
+                <tr>
+                  <td><code>cards.max_per_run</code></td>
+                  <td>Maximum project cards rebuilt in a run. Default: 12.</td>
+                </tr>
+                <tr>
+                  <td><code>cards.max_calls_per_run</code></td>
+                  <td>
+                    Model-call budget for card writing per run. Default: 60.
+                  </td>
+                </tr>
+                <tr>
+                  <td><code>enable_personal_profile</code></td>
+                  <td>
+                    Opt in to personal and work-style notes in
+                    <code>me.md</code>. Default: false.
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p>
+            <code>cards</code> settings live inside a nested
+            <code>"cards": { … }</code> object. For all settings, see the
+            <a
+              href="https://github.com/prismindanalytics/gyrus#full-configjson-reference"
+              >configuration reference</a
+            >.
+          </p>
+        </section>
+
+        <section id="commands" aria-labelledby="commands-title">
+          <h2 id="commands-title">Command reference</h2>
+          <p>
+            Run <code>gyrus help</code> for the full set of options in your
+            installed version.
+          </p>
+          <div
+            class="table-scroll"
+            tabindex="0"
+            role="region"
+            aria-label="Gyrus command reference"
+          >
+            <table class="commands-table">
+              <thead>
+                <tr>
+                  <th scope="col">Command</th>
+                  <th scope="col">Purpose</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><code>gyrus</code></td>
+                  <td>
+                    Process eligible sessions and pending notes, then update the
+                    knowledge base.
+                  </td>
+                </tr>
+                <tr>
+                  <td><code>gyrus context --cwd PATH</code></td>
+                  <td>
+                    Read a project handoff. Add <code>--tool codex</code> or the
+                    calling tool’s name.
+                  </td>
+                </tr>
+                <tr>
+                  <td><code>gyrus doctor</code></td>
+                  <td>
+                    Report storage, schedule, model, sync, and ingestion health.
+                  </td>
+                </tr>
+                <tr>
+                  <td><code>gyrus doctor --fix</code></td>
+                  <td>
+                    Run diagnostics and attempt supported automatic repairs.
+                    This can change local setup.
+                  </td>
+                </tr>
+                <tr>
+                  <td><code>gyrus models</code></td>
+                  <td>Inspect or change extraction and card-writing models.</td>
+                </tr>
+                <tr>
+                  <td><code>gyrus init</code></td>
+                  <td>Open the setup wizard.</td>
+                </tr>
+                <tr>
+                  <td><code>gyrus sync</code></td>
+                  <td>Pull and push the configured Git remote.</td>
+                </tr>
+                <tr>
+                  <td><code>gyrus log</code></td>
+                  <td>Read recent run history.</td>
+                </tr>
+                <tr>
+                  <td><code>gyrus status</code></td>
+                  <td>Review and set project statuses.</td>
+                </tr>
+                <tr>
+                  <td><code>gyrus merge</code></td>
+                  <td>
+                    Review suggested project-name consolidations. Accepted
+                    merges change stored project data.
+                  </td>
+                </tr>
+                <tr>
+                  <td><code>gyrus compare</code></td>
+                  <td>
+                    Compare models using your sessions. Add
+                    <code>--local-only</code> to limit the comparison to local
+                    models.
+                  </td>
+                </tr>
+                <tr>
+                  <td><code>gyrus update</code></td>
+                  <td>Update installed Gyrus code from GitHub.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p>
+            <code>--dry-run</code> runs extraction without saving; it still
+            sends eligible text to the configured model.
+            <code>--no-autosync</code> skips automatic Git sync for that run.
+            <code>--base-dir PATH</code> selects a different knowledge-base
+            directory.
+          </p>
+        </section>
+
+        <section id="files" aria-labelledby="files-title">
+          <h2 id="files-title">Files &amp; history</h2>
+          <p>
+            Your knowledge base is accessible through <code>~/.gyrus/</code>.
+            The installer can link that path to the storage directory you
+            choose. Markdown files open in any text editor.
+          </p>
+          <dl class="file-list">
+            <div>
+              <dt><code>projects/</code></dt>
+              <dd>One compact Markdown handoff card per project.</dd>
+            </div>
+            <div>
+              <dt><code>thoughts/</code></dt>
+              <dd>
+                Extracted notes in dated JSONL files. These are extracted
+                history, not copies of complete session transcripts.
+              </dd>
+            </div>
+            <div>
+              <dt><code>status.md</code></dt>
+              <dd>A summary of project statuses.</dd>
+            </div>
+            <div>
+              <dt><code>ideas.md</code></dt>
+              <dd>Standalone ideas, with optional verbatim append mode.</dd>
+            </div>
+            <div>
+              <dt><code>projects.archive/</code></dt>
+              <dd>
+                Older long-form project pages archived when they are converted
+                to cards.
+              </dd>
+            </div>
+            <div>
+              <dt><code>config.json</code> / <code>.env</code></dt>
+              <dd>Non-secret settings and separate provider credentials.</dd>
+            </div>
+          </dl>
+          <h3>Keep your own notes</h3>
+          <p>
+            Add a <code>## Manual Notes</code> section to a project card for
+            text that must survive regeneration. That section is preserved
+            verbatim; generated sections are rewritten when the card is rebuilt.
+          </p>
+          <h3>Keep ideas without rewriting the backlog</h3>
+          <p>
+            Set <code>"ideas_mode": "append"</code> to add incoming idea notes
+            verbatim under <em>Recent Idea Notes</em>. This preserves the
+            existing page and skips model-based idea merging. Extraction can
+            still use a model. The archive grows over time and does not
+            automatically consolidate ideas.
+          </p>
+        </section>
+
+        <section id="privacy" aria-labelledby="privacy-title">
+          <h2 id="privacy-title">Privacy &amp; cost</h2>
+          <p>
+            Gyrus is MIT-licensed software with no Gyrus subscription or hosted
+            account. Cloud inference is billed by the provider you choose. Local
+            inference uses your hardware and avoids provider inference charges.
+          </p>
+          <h3>What leaves your machine</h3>
+          <ul>
+            <li>
+              <strong>Local models:</strong> use a server on your own machine
+              for both extraction and card writing to keep model processing
+              local.
+            </li>
+            <li>
+              <strong>Cloud models:</strong> relevant session text, extracted
+              notes, and existing card content are sent to the configured
+              provider as needed for that role.
+            </li>
+            <li>
+              <strong>Optional integrations:</strong> Git sync uploads
+              knowledge-base files to your remote; Notion storage and email
+              digests send their content to those services.
+            </li>
+          </ul>
+          <p>
+            For a fully local workflow, use local models for both roles and
+            leave external sync and integrations disabled. A remote server
+            configured through <code>GYRUS_LOCAL_BASE_URL</code> is still a
+            remote destination, even when its model name starts with
+            <code>local:</code>.
+          </p>
+          <p>
+            Keep a synced knowledge-base repository private. Extracted notes may
+            contain sensitive information. Credential redaction is enabled by
+            default, but it is not a guarantee that all sensitive content is
+            removed.
+          </p>
+          <h3>What to expect from summaries</h3>
+          <p>
+            Cards are historical reference, not instructions or a source of
+            truth. Model-written summaries can omit details or retain old
+            claims. Verify important facts against your repository and original
+            evidence. The freshness line describes coverage and known failures,
+            not correctness.
+          </p>
+        </section>
+
+        <section id="troubleshooting" aria-labelledby="troubleshooting-title">
+          <h2 id="troubleshooting-title">Troubleshooting</h2>
+          <p>
+            Start with <code>gyrus doctor</code> and <code>gyrus log</code>.
+            Diagnostics report known issues; they cannot prove every summary is
+            complete or correct.
+          </p>
+          <div class="faq-list">
+            <details>
+              <summary>No sessions are being found</summary>
+              <p>
+                Confirm that your tool writes a supported local history format,
+                check the
+                <a
+                  href="https://github.com/prismindanalytics/gyrus#where-gyrus-reads-sessions"
+                  >default source paths</a
+                >, and review <code>excluded_tools</code> in your config. A
+                running session can also be deferred until it has been quiet
+                long enough.
+              </p>
+            </details>
+            <details>
+              <summary>A local model is missing or unavailable</summary>
+              <p>
+                Start your model server, confirm that the configured model tag
+                is installed, and check <code>local_base_url</code>. Use
+                <code>gyrus models</code> to inspect both model roles. Check the
+                server again from the environment that runs scheduled ingestion.
+              </p>
+            </details>
+            <details>
+              <summary>A card is stale or has unsummarized notes</summary>
+              <p>
+                Read the freshness line and recent run errors. Fix the model or
+                configuration problem, then run <code>gyrus</code> again.
+                Pending notes can take several passes within the configured
+                budget. Put corrections that must persist in
+                <code>## Manual Notes</code>.
+              </p>
+            </details>
+            <details>
+              <summary>Doctor reports abandoned historical notes</summary>
+              <p>
+                Earlier failed merges may have left notes marked as skipped.
+                Doctor makes that historical coverage gap visible; it does not
+                automatically replay those notes. Review the affected projects
+                before recovering old history, because it may describe work that
+                has since changed.
+              </p>
+            </details>
+            <details>
+              <summary>Scheduled ingestion is not running</summary>
+              <p>
+                Check the schedule reported by doctor and the latest run
+                history. The standard installer uses cron on macOS and Linux, or
+                the <code>GyrusIngestion</code> Scheduled Task on Windows.
+                Confirm that the scheduled process can access session files and
+                reach the configured model server.
+              </p>
+            </details>
+            <details>
+              <summary>The same project has several names</summary>
+              <p>
+                Run <code>gyrus merge</code> to review potential aliases. Check
+                the suggested groups before accepting them: similar names can
+                belong to different projects. Use <code>repo_groups</code> when
+                multiple repository folders intentionally share a project.
+              </p>
+            </details>
+            <details>
+              <summary>How does this work with native tool memory?</summary>
+              <p>
+                Each tool continues to use its own memory. Gyrus adds a handoff
+                from supported session sources across tools. The context command
+                can also pass Claude Code’s scoped memory to another calling
+                tool when those files are available.
+              </p>
+            </details>
+          </div>
+          <p class="help-link">
+            Still stuck?
+            <a href="https://github.com/prismindanalytics/gyrus/issues"
+              >Open an issue</a
+            >
+            with your Gyrus version and relevant, redacted error output.
+          </p>
+        </section>
+
+        <footer class="docs-footer">
+          <a href="/">Back to Gyrus <span aria-hidden="true">↗</span></a>
+          <a href="https://github.com/prismindanalytics/gyrus/blob/main/LICENSE"
+            >MIT license</a
+          >
+        </footer>
+      </main>
+    </div>
+    <div
+      class="copy-status"
+      role="status"
+      aria-live="polite"
+      aria-atomic="true"
+    ></div>
+  </body>
+</html>

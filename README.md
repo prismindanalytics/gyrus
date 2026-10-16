@@ -2,17 +2,17 @@
 
 > *A **gyrus** is a ridge on the cerebral cortex — the folded surface that gives the brain its computational density. Each fold packs more thinking into less space. That's what this tool does for your AI workflows.*
 
-**Your AI tools don't talk to each other. Gyrus fixes that.**
+**Keep the thread.**
 
-You use Claude Code, Cowork, Codex, Antigravity, Cursor, Copilot, or another coding agent — maybe several in the same day. Each one starts from zero. None of them know what you decided in the others. Your strategic thinking is scattered across dozens of sessions on multiple machines.
+Gyrus carries project context between AI coding sessions. It reads supported local session histories and turns decisions, open questions, and next steps into compact Markdown handoff cards.
 
-Gyrus reads all your AI tool sessions, extracts the important stuff, and builds a knowledge base that gets smarter every hour. Every tool, every machine, same brain.
+Use it alongside your tools' native memory. Keep the files on your machine, choose local or cloud models, and optionally sync a private knowledge base across machines.
 
 ```bash
 curl -fsSL https://gyrus.sh/install | bash
 ```
 
-One command. Use a local model or bring an API key. That's it.
+Choose your models and schedule during setup. Read the [Docs](https://gyrus.sh/docs/) for installation, configuration, everyday commands, and troubleshooting.
 
 ---
 

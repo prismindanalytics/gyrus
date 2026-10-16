@@ -26,6 +26,10 @@ def installed_windows_launcher():
 class TestWindowsLauncher(unittest.TestCase):
     def test_launcher_forwards_once_and_preserves_working_directory(self):
         launcher = installed_windows_launcher()
+        # The installer writes this file with Set-Content -Encoding ASCII.
+        # Check on every platform so incompatible text does not hide behind
+        # the Windows-only integration test.
+        launcher.encode("ascii")
         commands = [line.strip() for line in launcher.splitlines()
                     if line.strip() and not line.lstrip().lower().startswith("rem ")]
         self.assertEqual(sum(line.count("%*") for line in commands), 1)
