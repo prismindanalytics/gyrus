@@ -178,49 +178,10 @@ setlocal
 if "%GYRUS_HOME%"=="" set "GYRUS_HOME=%USERPROFILE%\.gyrus"
 if "%UV_BIN%"=="" set "UV_BIN=uv"
 
-set "SUBCMD=%~1"
-if "%SUBCMD%"==""         goto :run
-if /I "%SUBCMD%"=="init"   (shift & set "FLAG=--init" & goto :flag)
-if /I "%SUBCMD%"=="sync"   (shift & set "FLAG=--sync" & goto :flag)
-if /I "%SUBCMD%"=="update" (shift & set "FLAG=--update" & goto :flag)
-if /I "%SUBCMD%"=="compare" (shift & set "FLAG=--compare-models" & goto :flag)
-if /I "%SUBCMD%"=="digest" (shift & set "FLAG=--digest" & goto :flag)
-if /I "%SUBCMD%"=="status" (shift & set "FLAG=--review-status" & goto :flag)
-if /I "%SUBCMD%"=="doctor" (shift & set "FLAG=--doctor" & goto :flag)
-if /I "%SUBCMD%"=="context" (shift & set "FLAG=--context" & goto :flag)
-if /I "%SUBCMD%"=="log"    (shift & set "FLAG=--show-log" & goto :flag)
-if /I "%SUBCMD%"=="help"   goto :help
-if /I "%SUBCMD%"=="-h"     goto :help
-if /I "%SUBCMD%"=="--help" goto :help
-goto :run
-
-:flag
-cd /d "%GYRUS_HOME%" && "%UV_BIN%" run --python 3.12 ingest.py %FLAG% %*
-goto :end
-
-:run
-cd /d "%GYRUS_HOME%" && "%UV_BIN%" run --python 3.12 ingest.py %*
-goto :end
-
-:help
-echo Usage: gyrus [command] [options]
-echo.
-echo Commands:
-echo   (none)    Run ingestion
-echo   init      First-time setup (storage, API key, GitHub, schedule)
-echo   sync      Manually pull + push GitHub remote
-echo   status    Review and set project statuses
-echo   doctor    Diagnose ingest health
-echo   context   Print bounded project context for Claude/Codex handoffs
-echo   digest    Generate activity digest
-echo   compare   Benchmark models
-echo   update    Update Gyrus code
-echo   log       Show recent run history
-echo.
-echo Docs: https://gyrus.sh
-
-:end
-endlocal
+REM Python handles every subcommand; forward its argument list unchanged.
+REM Keep the caller's directory so context can infer the current project.
+"%UV_BIN%" run --no-project --python 3.12 "%GYRUS_HOME%\ingest.py" %*
+exit /b %errorlevel%
 "@ | Set-Content $GyrusBin -Encoding ASCII
 Write-Ok "Installed 'gyrus' command to $GyrusBin"
 
@@ -470,6 +431,9 @@ model-comparison.html
 # per-machine state
 .ingest-state.json
 ingest.log
+ingest.log.*
+context-log.jsonl
+context-log.jsonl.*
 latest-digest.md
 runs.jsonl
 .notion-state.json

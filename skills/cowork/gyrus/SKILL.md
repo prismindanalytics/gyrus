@@ -9,7 +9,8 @@ Gyrus is a knowledge base built automatically from all your AI tool sessions (Cl
 
 ## How to read
 
-The knowledge base is plain markdown files. Read them directly:
+Start with the current project's handoff. The remaining files are available
+for targeted lookups when the task needs them:
 
 - `gyrus context --cwd "$PWD"` — the handoff card for the current repo, with a freshness line
 - `~/.gyrus/projects/` — one short handoff card per project, rebuilt every run
@@ -17,6 +18,15 @@ The knowledge base is plain markdown files. Read them directly:
 - `~/.gyrus/ideas.md` — idea backlog and kill log
 - `~/.gyrus/cross-cutting.md` — insights that span multiple projects
 - `~/.gyrus/projects.archive/` — long-form pages from before cards
+
+Cross-project status, ideas, and archived history are optional. Do not preload
+the whole status or idea backlog. Search relevant files with a specific term
+and bounded output, then narrow to a matching project or line range:
+
+```bash
+rg -n -i -m 20 --max-columns 240 --max-columns-preview "SEARCH_TERM" ~/.gyrus/status.md ~/.gyrus/ideas.md
+rg -n -i -m 5 --max-columns 240 --max-columns-preview "SEARCH_TERM" ~/.gyrus/projects/ ~/.gyrus/projects.archive/ ~/.gyrus/cross-cutting.md | head -n 80
+```
 
 Each card contains: status, overview, current focus, recent decisions, open questions & blockers, next steps, and durable context. Full history is in `~/.gyrus/thoughts/*.jsonl`.
 

@@ -10,6 +10,7 @@ __pycache__/
 dist/
 build/
 .eggs/
+uv.lock
 
 # Node
 node_modules/
@@ -18,6 +19,9 @@ node_modules/
 .gyrus.lock
 .ingest-state.json
 ingest.log
+ingest.log.*
+context-log.jsonl
+context-log.jsonl.*
 projects/
 thoughts/
 ideas.md
@@ -46,6 +50,7 @@ Thumbs.db
 
 # Testing
 .pytest_cache/
+.ruff_cache/
 
 # Old Nerve architecture (pre-Gyrus)
 src/

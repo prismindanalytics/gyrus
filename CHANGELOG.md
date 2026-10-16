@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026.10.16.2 — 2026-10-16
+
+- Redesign gyrus.sh around compact handoffs, with an interactive example, responsive layouts, platform-specific installation, and current data-handling guidance. Remove outdated model, cost, and benchmark claims.
+- Fix the Windows launcher to preserve subcommands, quoted arguments, caller directory, and exit status.
+- Ignore local context telemetry, rotated runtime logs, and generated development metadata.
+- Isolate CLI unit tests from real session sources and model calls; discover all regression test modules in CI.
+
+## 2026.10.16.1 — 2026-10-16
+
+- Preserve a card's date coverage when newly discovered notes describe older events; failed summaries do not advance summarized coverage.
+- Detect current session layouts in `gyrus doctor`, including Codex's year/month/day directories, and expose historical notes abandoned after merge failures.
+- Make cross-project status and idea searches optional in managed tool instructions, with bounded search examples.
+- Add opt-in `ideas_mode: "append"` to record new ideas without repeatedly regenerating a large backlog. Preserve existing content and use stable note markers to make retries safe.
+
 ## 0.5.0 — 2026-09-28
 
 **Handoff cards: bounded project summaries, freshness in-band, and Claude's native memory bridged to other tools.**

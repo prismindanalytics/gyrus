@@ -207,7 +207,8 @@ Or pass any raw model ID (e.g. `claude-sonnet-4-20250514`).
   "merge_model": "sonnet",
   "excluded_tools": [],
   "redact_sensitive_data": true,
-  "enable_personal_profile": false
+  "enable_personal_profile": false,
+  "ideas_mode": "merge"
 }
 ```
 
@@ -223,7 +224,7 @@ SMTP_PASSWORD=...             # only if email digests use SMTP
 | Key | Default | Description |
 |-----|---------|-------------|
 | `extract_model` | `gpt-6-luna` | Model for extracting thoughts from sessions |
-| `merge_model` | `sonnet` | Model that writes project cards (and the ideas page) |
+| `merge_model` | `sonnet` | Model that writes project cards (and the ideas page in `merge` mode) |
 | `excluded_tools` | `[]` | Tools to skip during ingestion (e.g. `["antigravity"]`). Valid keys include the 10 session tools plus `claude-memory` (Claude Code auto-memory) |
 | `repo_groups` | `{}` | Map repo folder names to canonical project names (e.g. `{"backend": "myapp", "frontend": "myapp"}`) |
 | `allow_public_sync` | `false` | Explicitly permit syncing a GitHub repository marked public (private is strongly recommended) |
@@ -233,6 +234,7 @@ SMTP_PASSWORD=...             # only if email digests use SMTP
 | `include_global_memory` | `false` | Also include global tool guidance when memory context is enabled |
 | `include_cowork_outputs` | `false` | Opt in to Cowork output artifacts (may contain arbitrary data) |
 | `enable_personal_profile` | `false` | Allow meta/work-style thoughts to populate `me.md` |
+| `ideas_mode` | `"merge"` | Set `"append"` to archive new ideas verbatim under **Recent Idea Notes**, preserving the existing backlog without model calls |
 | `cards.max_per_run` | `12` | Project cards rebuilt per run, busiest first; the rest wait for the next run |
 | `cards.max_calls_per_run` | `60` | Model calls spent on cards per run (a backlog takes several passes) |
 | `session_settle_minutes` | `45` | A session already extracted once waits until it has been quiet this long before it is extracted again |
@@ -245,6 +247,8 @@ SMTP_PASSWORD=...             # only if email digests use SMTP
 | `digest.smtp_host` / `smtp_port` / `smtp_user` | Gmail defaults | Non-secret SMTP connection settings |
 
 Keep provider credentials in `.env`, not `config.json`, because `config.json` is included when Git sync is enabled.
+
+For a large ideas backlog, set `"ideas_mode": "append"`. New notes keep their event date, source, and stable ID; existing ideas and Manual Notes stay intact. This mode is a growing raw archive, with no automatic consolidation or graduation of ideas.
 
 **Recommendation:** Run `gyrus compare` to benchmark on your own data. It tests all available models, generates sample wiki pages, and an AI judge grades quality. You choose both extraction and merge models.
 

@@ -656,6 +656,9 @@ model-comparison.html
 # per-machine state
 .ingest-state.json
 ingest.log
+ingest.log.*
+context-log.jsonl
+context-log.jsonl.*
 latest-digest.md
 runs.jsonl
 .notion-state.json
